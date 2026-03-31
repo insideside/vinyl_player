@@ -50,7 +50,7 @@ import secrets
 import http.cookies
 
 SERVER_PORT = 7656
-MUSIC_DIR = ""
+_user_music_dirs = {}  # username -> current MUSIC_DIR
 USERS_FILE = Path.home() / ".vinyl_users.json"
 SETTINGS_FILE = Path.home() / ".vinyl_settings.json"
 VK_APP_ID = 2685278
@@ -125,12 +125,15 @@ def load_users():
     return {}
 
 
+_users_lock = threading.Lock()
+
 def save_users(users):
-    USERS_FILE.write_text(json.dumps(users, ensure_ascii=False, indent=2))
-    try:
-        USERS_FILE.chmod(0o600)
-    except Exception:
-        pass
+    with _users_lock:
+        USERS_FILE.write_text(json.dumps(users, ensure_ascii=False, indent=2))
+        try:
+            USERS_FILE.chmod(0o600)
+        except Exception:
+            pass
 
 
 def create_user(username, password, is_admin=False, role="user"):
@@ -493,7 +496,7 @@ def vk_download_worker(urls, folder, order, mode, run_meta_after, username=""):
             metadata_worker(folder, username)
 
     except Exception as e:
-        vk_state["log"].append("ОШИБКА: " + str(e))
+        vk_state["log"].append("ОШИБКА: внутренняя ошибка сервера")
     finally:
         vk_state["running"] = False
         vk_state["done"] = True
@@ -569,6 +572,8 @@ def get_metadata(filepath):
     return meta
 
 
+MAX_TRACKS = 50000
+
 def scan_library(music_dir):
     """Сканирует директорию и возвращает список треков с метаданными (без обложек)."""
     tracks = []
@@ -578,6 +583,8 @@ def scan_library(music_dir):
 
     files = sorted(music_path.iterdir(), key=lambda f: f.name)
     for f in files:
+        if len(tracks) >= MAX_TRACKS:
+            break
         if f.suffix.lower() in SUPPORTED_FORMATS and f.is_file():
             meta = get_metadata(str(f))
             tracks.append({
@@ -3861,7 +3868,7 @@ class Handler(BaseHTTPRequestHandler):
         return None
 
     def _set_cookie(self, token):
-        self.send_header("Set-Cookie", "session={}; Path=/; HttpOnly; SameSite=Lax; Max-Age={}".format(token, 86400*30))
+        self.send_header("Set-Cookie", "session={}; Path=/; HttpOnly; SameSite=Strict; Max-Age={}".format(token, 86400*30))
 
     def _needs_auth(self, path):
         return not path.startswith("/api/auth/")
@@ -3927,8 +3934,7 @@ class Handler(BaseHTTPRequestHandler):
             elif not is_admin_user and not is_path_within(folder, get_music_root()):
                 self._respond_json({"error": "Доступ запрещён. Каталог вне корневой папки музыки."})
                 return
-            global MUSIC_DIR
-            MUSIC_DIR = folder
+            _user_music_dirs[user] = folder
             if not is_demo:
                 add_user_folder(user, folder)
             set_user_last_folder(user, folder)
@@ -3939,10 +3945,10 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/search":
             params = parse_qs(parsed.query)
             q = params.get("q", [""])[0].lower().strip()
-            if not q or not MUSIC_DIR:
+            if not q or not _user_music_dirs.get(user, ""):
                 self._respond_json({"results": []})
                 return
-            track_list = scan_library(MUSIC_DIR)
+            track_list = scan_library(_user_music_dirs.get(user, ""))
             results = [t for t in track_list if q in "{} {} {}".format(t["title"], t["artist"], t["album"]).lower()]
             self._respond_json({"results": results})
 
@@ -3967,10 +3973,11 @@ class Handler(BaseHTTPRequestHandler):
             filename = unquote(path[len("/api/cover/"):])
             # Verify user access to current MUSIC_DIR
             user_folders = get_user_folders(user)
-            if MUSIC_DIR and MUSIC_DIR not in user_folders:
+            udir = _user_music_dirs.get(user, "")
+            if udir and udir not in user_folders:
                 self._respond(403, "text/plain", b"Forbidden")
                 return
-            filepath = _safe_path(MUSIC_DIR, filename)
+            filepath = _safe_path(_user_music_dirs.get(user, ""), filename)
             if not filepath or not filepath.is_file():
                 self._respond(404, "text/plain", b"Not found")
                 return
@@ -4039,10 +4046,11 @@ class Handler(BaseHTTPRequestHandler):
         elif path.startswith("/api/stream/"):
             filename = unquote(path[len("/api/stream/"):])
             user_folders = get_user_folders(user)
-            if MUSIC_DIR and MUSIC_DIR not in user_folders:
+            udir = _user_music_dirs.get(user, "")
+            if udir and udir not in user_folders:
                 self._respond(403, "text/plain", b"Forbidden")
                 return
-            filepath = _safe_path(MUSIC_DIR, filename)
+            filepath = _safe_path(_user_music_dirs.get(user, ""), filename)
             if not filepath or not filepath.is_file():
                 self._respond(404, "text/plain", b"Not found")
                 return
@@ -4181,7 +4189,7 @@ class Handler(BaseHTTPRequestHandler):
                     _sessions.pop(tok, None)
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
-            self.send_header("Set-Cookie", "session=; Path=/; Max-Age=0")
+            self.send_header("Set-Cookie", "session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0")
             body_bytes = json.dumps({"ok": True}).encode()
             self.send_header("Content-Length", str(len(body_bytes)))
             self.end_headers()
@@ -4201,7 +4209,7 @@ class Handler(BaseHTTPRequestHandler):
             if ms["running"]:
                 self._respond_json({"ok": False, "already_running": True})
                 return
-            folder = data.get("path", MUSIC_DIR)
+            folder = data.get("path", _user_music_dirs.get(user, ""))
             if not folder or not Path(folder).is_dir():
                 self._respond_json({"ok": False, "error": "Папка не найдена."})
                 return
@@ -4219,7 +4227,7 @@ class Handler(BaseHTTPRequestHandler):
 
         elif path == "/api/meta/single":
             if self._deny_demo(udata): return
-            folder = data.get("folder", MUSIC_DIR)
+            folder = data.get("folder", _user_music_dirs.get(user, ""))
             filename = data.get("file", "")
             if not folder or not filename:
                 self._respond_json({"ok": False})
@@ -4300,7 +4308,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._respond_json({"ok": False, "error": "VK не авторизован."})
                 return
             urls = data.get("urls", [])
-            folder = data.get("folder", MUSIC_DIR)
+            folder = data.get("folder", _user_music_dirs.get(user, ""))
             user_folders = get_user_folders(user)
             if folder not in user_folders:
                 is_admin_user = udata.get("is_admin", False) if udata else False
@@ -4323,7 +4331,7 @@ class Handler(BaseHTTPRequestHandler):
 
         elif path == "/api/reorder":
             if self._deny_demo(udata): return
-            folder = data.get("folder", MUSIC_DIR)
+            folder = data.get("folder", _user_music_dirs.get(user, ""))
             new_order = data.get("order", [])
             if not folder or not new_order:
                 self._respond_json({"ok": False, "error": "Нет данных"})
@@ -4338,11 +4346,16 @@ class Handler(BaseHTTPRequestHandler):
                 pad = len(str(len(new_order)))
                 temp_map = {}
                 for i, fname in enumerate(new_order):
-                    src = p / fname
-                    if src.exists():
-                        tmp = p / ("__tmp_reorder_{}_{}".format(i, fname))
-                        src.rename(tmp)
-                        temp_map[i] = (tmp, fname)
+                    # Sanitize filename — prevent path traversal
+                    safe_name = Path(fname).name  # strips any ../
+                    if safe_name != fname or '..' in fname:
+                        continue
+                    src = _safe_path(folder, safe_name)
+                    if not src or not src.exists():
+                        continue
+                    tmp = p / ("__tmp_reorder_{}_{}".format(i, safe_name))
+                    src.rename(tmp)
+                    temp_map[i] = (tmp, safe_name)
                 for i in sorted(temp_map.keys()):
                     tmp, fname = temp_map[i]
                     rm = re.match(r'^\d+\.\s+(.+)$', Path(fname).stem)
@@ -4352,7 +4365,7 @@ class Handler(BaseHTTPRequestHandler):
                     tmp.rename(p / new_name)
                 self._respond_json({"ok": True})
             except Exception as e:
-                self._respond_json({"ok": False, "error": str(e)})
+                self._respond_json({"ok": False, "error": "Ошибка переименования."})
 
         elif path == "/api/wan/start":
             if not udata or not udata.get("is_admin"):
@@ -4468,6 +4481,10 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("X-XSS-Protection", "1; mode=block")
+        self.send_header("Referrer-Policy", "strict-origin-when-cross-origin")
         self.end_headers()
         self.wfile.write(body)
 
