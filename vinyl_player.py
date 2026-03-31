@@ -1744,9 +1744,12 @@ body { touch-action: pan-y; }
         <input type="text" id="vkSearchQuery" class="folder-path-input" style="flex:1" placeholder="Название трека или артист..." onkeydown="if(event.key==='Enter')vkSearchTracks()">
         <button class="folder-btn folder-btn-primary" onclick="vkSearchTracks()">Найти</button>
       </div>
-      <div id="vkSearchResults" style="max-height:250px;overflow-y:auto;border-radius:8px"></div>
-      <div id="vkSearchActions" style="display:none;margin-top:8px">
-        <div style="display:flex;gap:6px;align-items:center;margin-bottom:6px">
+      <div id="vkSearchResults" style="max-height:200px;overflow-y:auto;border-radius:8px"></div>
+      <!-- Selected queue -->
+      <div id="vkQueueSection" style="display:none;margin-top:8px">
+        <div style="font-size:11px;color:rgba(255,255,255,0.4);margin-bottom:4px">Очередь загрузки (перетащите для изменения порядка):</div>
+        <div id="vkQueue" style="max-height:150px;overflow-y:auto;border:1px solid rgba(255,255,255,0.06);border-radius:8px;background:rgba(255,255,255,0.02)"></div>
+        <div style="display:flex;gap:6px;align-items:center;margin-top:6px">
           <select id="vkSearchMode" class="folder-select" style="flex:1;padding:7px 26px 7px 8px;font-size:12px">
             <option value="prepend">В начало</option>
             <option value="append">В конец</option>
@@ -1755,7 +1758,7 @@ body { touch-action: pan-y; }
             <input type="checkbox" id="vkSearchMeta" style="accent-color:#e94560"> Meta
           </label>
         </div>
-        <button class="folder-btn folder-btn-primary" style="width:100%" onclick="vkDownloadSelected()">Скачать выбранные</button>
+        <button class="folder-btn folder-btn-primary" style="width:100%;margin-top:6px" onclick="vkDownloadSelected()">Скачать очередь</button>
       </div>
     </div>
     <!-- Progress (shared) -->
@@ -3312,6 +3315,8 @@ function pollVk() {
       vkPolling = false;
       if (d.done) {
         showToast('Загрузка завершена!');
+        vkQueue = [];
+        renderVkQueue();
         var curFolder = document.getElementById('folderSelect').value;
         if (curFolder) loadFolder(curFolder);
       }
@@ -3333,6 +3338,7 @@ function showVkTab(tab) {
 }
 
 var vkSearchResults = [];
+var vkQueue = []; // [{id, title, artist, duration}, ...]
 
 function vkSearchTracks() {
   var q = document.getElementById('vkSearchQuery').value.trim();
@@ -3343,33 +3349,85 @@ function vkSearchTracks() {
   .then(function(r){return r.json()}).then(function(d) {
     if (!d.ok) { showToast(d.error || 'Ошибка'); return; }
     vkSearchResults = d.results || [];
-    var html = '';
-    if (!vkSearchResults.length) {
-      html = '<div style="padding:12px;color:rgba(255,255,255,0.3);text-align:center">Ничего не найдено</div>';
-    }
-    for (var i = 0; i < vkSearchResults.length; i++) {
-      var r = vkSearchResults[i];
-      var dur = Math.floor(r.duration/60) + ':' + ('0'+r.duration%60).slice(-2);
-      var avail = r.has_url ? '' : ' style="opacity:0.3"';
-      html += '<div class="playlist-item"' + avail + '>'
-        + '<label style="display:flex;align-items:center;gap:10px;cursor:pointer;flex:1;min-width:0">'
-        + '<input type="checkbox" value="' + r.owner_id + '_' + r.track_id + '" class="vk-search-check" style="accent-color:#e94560;flex-shrink:0"' + (r.has_url ? '' : ' disabled') + '>'
-        + '<div class="info"><div class="name">' + esc(r.title) + '</div>'
-        + '<div class="artist">' + esc(r.artist) + ' · ' + dur + '</div></div>'
-        + '</label></div>';
-    }
-    document.getElementById('vkSearchResults').innerHTML = html;
-    document.getElementById('vkSearchActions').style.display = vkSearchResults.length ? '' : 'none';
+    renderVkSearchResults();
   });
 }
 
+function renderVkSearchResults() {
+  var html = '';
+  if (!vkSearchResults.length) {
+    html = '<div style="padding:12px;color:rgba(255,255,255,0.3);text-align:center">Ничего не найдено</div>';
+  }
+  var queueIds = vkQueue.map(function(q){return q.id});
+  for (var i = 0; i < vkSearchResults.length; i++) {
+    var r = vkSearchResults[i];
+    var id = r.owner_id + '_' + r.track_id;
+    var dur = Math.floor(r.duration/60) + ':' + ('0'+r.duration%60).slice(-2);
+    var inQueue = queueIds.indexOf(id) >= 0;
+    var avail = r.has_url;
+    html += '<div class="playlist-item" style="' + (!avail ? 'opacity:0.3' : '') + '">'
+      + '<div class="info" style="flex:1;min-width:0"><div class="name">' + esc(r.title) + '</div>'
+      + '<div class="artist">' + esc(r.artist) + ' · ' + dur + '</div></div>'
+      + (avail ? '<button class="folder-btn ' + (inQueue ? 'folder-btn-primary' : 'folder-btn-secondary') + '" style="padding:4px 10px;font-size:11px;flex-shrink:0" onclick="toggleVkQueue(' + i + ')">' + (inQueue ? '✓' : '+') + '</button>' : '')
+      + '</div>';
+  }
+  document.getElementById('vkSearchResults').innerHTML = html;
+}
+
+function toggleVkQueue(idx) {
+  var r = vkSearchResults[idx];
+  var id = r.owner_id + '_' + r.track_id;
+  var pos = -1;
+  for (var i = 0; i < vkQueue.length; i++) { if (vkQueue[i].id === id) { pos = i; break; } }
+  if (pos >= 0) {
+    vkQueue.splice(pos, 1);
+  } else {
+    vkQueue.push({id: id, title: r.title, artist: r.artist, duration: r.duration});
+  }
+  renderVkSearchResults();
+  renderVkQueue();
+}
+
+function renderVkQueue() {
+  var el = document.getElementById('vkQueue');
+  var section = document.getElementById('vkQueueSection');
+  if (!vkQueue.length) { section.style.display = 'none'; return; }
+  section.style.display = '';
+  var html = '';
+  for (var i = 0; i < vkQueue.length; i++) {
+    var q = vkQueue[i];
+    var dur = Math.floor(q.duration/60) + ':' + ('0'+q.duration%60).slice(-2);
+    html += '<div class="playlist-item" draggable="true" data-qi="' + i + '"'
+      + ' ondragstart="vkQueueDragStart(event,' + i + ')" ondragover="vkQueueDragOver(event,' + i + ')" ondrop="vkQueueDrop(event,' + i + ')" ondragend="vkQueueDragEnd(event)">'
+      + '<span class="drag-handle" style="cursor:grab;color:rgba(255,255,255,0.2);margin-right:6px">≡</span>'
+      + '<div class="info" style="flex:1;min-width:0"><div class="name" style="font-size:12px">' + esc(q.title) + '</div>'
+      + '<div class="artist" style="font-size:11px">' + esc(q.artist) + ' · ' + dur + '</div></div>'
+      + '<button class="folder-btn-icon" style="width:22px;height:22px;font-size:11px;color:#e94560;flex-shrink:0" onclick="removeVkQueue(' + i + ')">&times;</button>'
+      + '</div>';
+  }
+  el.innerHTML = html;
+}
+
+// Queue drag reorder
+var vkQDragIdx = null;
+function vkQueueDragStart(e, i) { vkQDragIdx = i; e.dataTransfer.effectAllowed = 'move'; e.target.closest('.playlist-item').style.opacity = '0.4'; }
+function vkQueueDragEnd(e) { vkQDragIdx = null; e.target.closest('.playlist-item').style.opacity = ''; }
+function vkQueueDragOver(e, i) { e.preventDefault(); }
+function vkQueueDrop(e, targetIdx) {
+  e.preventDefault();
+  if (vkQDragIdx === null || vkQDragIdx === targetIdx) return;
+  var item = vkQueue.splice(vkQDragIdx, 1)[0];
+  vkQueue.splice(targetIdx, 0, item);
+  vkQDragIdx = null;
+  renderVkQueue();
+}
+function removeVkQueue(i) { vkQueue.splice(i, 1); renderVkSearchResults(); renderVkQueue(); }
+
 function vkDownloadSelected() {
-  var checks = document.querySelectorAll('.vk-search-check:checked');
-  if (!checks.length) { showToast('Выберите треки'); return; }
+  if (!vkQueue.length) { showToast('Добавьте треки в очередь'); return; }
   var folder = document.getElementById('folderSelect').value;
   if (!folder) { showToast('Выберите каталог'); return; }
-  var ids = [];
-  for (var i = 0; i < checks.length; i++) ids.push(checks[i].value);
+  var ids = vkQueue.map(function(q){return q.id});
   var mode = document.getElementById('vkSearchMode').value;
   var runMeta = document.getElementById('vkSearchMeta').checked;
   fetch('/api/vk/download_tracks', {method:'POST', headers:{'Content-Type':'application/json'},
