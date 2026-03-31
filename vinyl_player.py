@@ -1231,6 +1231,12 @@ body {
 .playlist-item .info { flex: 1; overflow: hidden; }
 .playlist-item .info .name { font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .playlist-item .info .artist { font-size: 12px; color: rgba(255,255,255,0.4); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.track-edit-btn {
+  width: 28px; height: 28px; flex-shrink: 0; border: none; border-radius: 50%;
+  background: none; color: rgba(255,255,255,0.15); cursor: pointer;
+  display: flex; align-items: center; justify-content: center; transition: color 0.15s;
+}
+.track-edit-btn:hover { color: rgba(255,255,255,0.5); }
 
 /* ── Cover Flow ── */
 .coverflow-wrap {
@@ -1814,6 +1820,29 @@ body { touch-action: pan-y; }
   </div>
 </div>
 
+<!-- Track edit modal -->
+<div class="meta-overlay" id="trackEditOverlay" onclick="if(event.target===this)this.classList.remove('show')">
+  <div class="meta-modal" style="width:min(400px,90vw)">
+    <h3>Редактирование трека</h3>
+    <div style="font-size:11px;color:rgba(255,255,255,0.3);margin-bottom:10px" id="trackEditFile"></div>
+    <label style="font-size:12px;color:rgba(255,255,255,0.4);display:block;margin-bottom:4px">Название</label>
+    <input type="text" id="trackEditTitle" class="folder-path-input" style="margin-bottom:8px">
+    <label style="font-size:12px;color:rgba(255,255,255,0.4);display:block;margin-bottom:4px">Артист</label>
+    <input type="text" id="trackEditArtist" class="folder-path-input" style="margin-bottom:8px">
+    <div id="trackEditOrderRow" style="display:none;margin-bottom:8px">
+      <label style="font-size:12px;color:rgba(255,255,255,0.4);display:block;margin-bottom:4px">Порядковый номер</label>
+      <input type="number" id="trackEditOrder" class="folder-path-input" min="1" style="width:100px">
+    </div>
+    <label style="display:flex;align-items:center;gap:6px;color:rgba(255,255,255,0.5);cursor:pointer;font-size:12px;margin-bottom:12px">
+      <input type="checkbox" id="trackEditMeta" style="accent-color:#e94560"> Найти Meta-данные после сохранения
+    </label>
+    <div style="display:flex;gap:6px">
+      <button class="folder-btn folder-btn-primary" style="flex:1" onclick="saveTrackEdit()">Сохранить</button>
+      <button class="folder-btn folder-btn-secondary" style="flex:1" onclick="document.getElementById('trackEditOverlay').classList.remove('show')">Отмена</button>
+    </div>
+  </div>
+</div>
+
 <!-- Browse modal -->
 <div class="meta-overlay" id="browseOverlay" onclick="if(event.target===this)this.classList.remove('show')">
   <div class="meta-modal" style="width:480px;max-height:80vh;display:flex;flex-direction:column">
@@ -2232,7 +2261,9 @@ function renderTracks() {
       html += '<div class="playlist-item' + (i === currentIdx ? ' active' : '') + '" onclick="playFromList(' + i + ')">'
         + '<div class="cover-thumb">' + coverHtml + '</div>'
         + '<div class="info"><div class="name">' + esc(t.title) + '</div>'
-        + '<div class="artist">' + esc(t.artist) + '</div></div></div>';
+        + '<div class="artist">' + esc(t.artist) + '</div></div>'
+        + (userRole !== 'demo' ? '<button class="track-edit-btn" onclick="event.stopPropagation();openTrackEdit(' + i + ')" data-tip="Редактировать"><svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 000-1.41l-2.34-2.34a1 1 0 00-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg></button>' : '')
+        + '</div>';
     }
   }
   document.getElementById('trackList').innerHTML = html;
@@ -3889,6 +3920,75 @@ function downloadCatalog() {
   }, 'Скачать');
 }
 
+// ── Track Edit ──
+var editingTrackIdx = -1;
+
+function openTrackEdit(idx) {
+  if (idx < 0 || idx >= tracks.length) return;
+  editingTrackIdx = idx;
+  var t = tracks[idx];
+  document.getElementById('trackEditFile').textContent = t.file;
+  document.getElementById('trackEditTitle').value = t.title || '';
+  document.getElementById('trackEditArtist').value = t.artist || '';
+  document.getElementById('trackEditMeta').checked = false;
+  // Check if numbered
+  var m = t.file.match(/^(\d+)\.\s/);
+  var orderRow = document.getElementById('trackEditOrderRow');
+  if (m) {
+    orderRow.style.display = '';
+    document.getElementById('trackEditOrder').value = parseInt(m[1]);
+  } else {
+    orderRow.style.display = 'none';
+  }
+  document.getElementById('trackEditOverlay').classList.add('show');
+  document.getElementById('trackEditTitle').focus();
+}
+
+function saveTrackEdit() {
+  if (editingTrackIdx < 0) return;
+  var t = tracks[editingTrackIdx];
+  var folder = document.getElementById('folderSelect').value;
+  var title = document.getElementById('trackEditTitle').value.trim();
+  var artist = document.getElementById('trackEditArtist').value.trim();
+  var orderEl = document.getElementById('trackEditOrder');
+  var order = orderEl.offsetParent ? parseInt(orderEl.value) || 0 : 0;
+  var runMeta = document.getElementById('trackEditMeta').checked;
+  if (!title) { showToast('Введите название'); return; }
+
+  // If this track is playing, pause and remember position
+  var wasPlaying = isPlaying && currentIdx === editingTrackIdx;
+  var playPos = wasPlaying ? audio.currentTime : 0;
+  if (wasPlaying) { audio.pause(); setPlayState(false); }
+
+  fetch('/api/track/edit', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({folder: folder, file: t.file, title: title, artist: artist, order: order, run_meta: runMeta})})
+  .then(function(r){return r.json()}).then(function(d) {
+    if (d.ok) {
+      showToast('Трек обновлён');
+      document.getElementById('trackEditOverlay').classList.remove('show');
+      // Reload folder
+      loadFolder(folder);
+      // Resume playback with new filename
+      if (wasPlaying && d.new_file) {
+        setTimeout(function() {
+          // Find the track with new filename
+          for (var i = 0; i < tracks.length; i++) {
+            if (tracks[i].file === d.new_file) {
+              selectTrack(i, false);
+              audio.currentTime = playPos;
+              audio.play();
+              setPlayState(true);
+              break;
+            }
+          }
+        }, 1000);
+      }
+    } else {
+      showToast(d.error || 'Ошибка');
+    }
+  });
+}
+
 function scrollTracklistTop() {
   var tl = document.getElementById('trackList');
   if (tl) tl.scrollTo({top: 0, behavior: 'smooth'});
@@ -4590,6 +4690,88 @@ class Handler(BaseHTTPRequestHandler):
             t = threading.Thread(target=dl_tracks, daemon=True)
             t.start()
             self._respond_json({"ok": True})
+
+        elif path == "/api/track/edit":
+            if self._deny_demo(udata): return
+            folder = data.get("folder", _user_music_dirs.get(user, ""))
+            old_file = data.get("file", "")
+            new_title = data.get("title", "").strip()
+            new_artist = data.get("artist", "").strip()
+            new_order = data.get("order", 0)
+            run_meta = data.get("run_meta", False)
+            if not folder or not old_file or not new_title:
+                self._respond_json({"ok": False, "error": "Заполните название."})
+                return
+            user_folders = get_user_folders(user)
+            if folder not in user_folders:
+                self._respond_json({"ok": False, "error": "Нет доступа."})
+                return
+            old_path = _safe_path(folder, old_file)
+            if not old_path or not old_path.exists():
+                self._respond_json({"ok": False, "error": "Файл не найден."})
+                return
+            ext = old_path.suffix
+            # Determine if numbered catalog
+            old_match = re.match(r'^(\d+)\.\s+(.+)$', old_path.stem)
+            if old_match:
+                old_num = int(old_match.group(1))
+                target_num = int(new_order) if new_order else old_num
+                pad = len(old_match.group(1))
+                new_name = "{}. {} - {}{}".format(str(target_num).zfill(pad), vk_safe_filename(new_artist) if new_artist else vk_safe_filename(new_title), vk_safe_filename(new_title), ext)
+                if new_artist:
+                    new_name = "{}. {} - {}{}".format(str(target_num).zfill(pad), vk_safe_filename(new_artist), vk_safe_filename(new_title), ext)
+                else:
+                    new_name = "{}. {}{}".format(str(target_num).zfill(pad), vk_safe_filename(new_title), ext)
+                # Handle order change
+                if target_num != old_num:
+                    # Renumber: shift tracks to make room
+                    all_tracks = vk_get_existing_tracks(folder)
+                    # Remove old from list
+                    all_tracks = [(n, name, p) for n, name, p in all_tracks if p != old_path]
+                    # Insert at new position
+                    all_tracks.insert(max(0, target_num - 1), (target_num, "", old_path))
+                    # Rename old file to temp
+                    tmp = old_path.parent / ("__tmp_edit_" + old_path.name)
+                    old_path.rename(tmp)
+                    # Renumber remaining
+                    pad = len(str(len(all_tracks)))
+                    for i, (_, name, p) in enumerate(all_tracks):
+                        if p == old_path:
+                            # This is our track
+                            final_name = "{}. {}{}".format(str(i+1).zfill(pad),
+                                (vk_safe_filename(new_artist) + " - " + vk_safe_filename(new_title)) if new_artist else vk_safe_filename(new_title), ext)
+                            tmp.rename(old_path.parent / final_name)
+                            new_name = final_name
+                        else:
+                            if p.exists():
+                                nm = re.match(r'^\d+\.\s+(.+)$', p.stem)
+                                name_part = nm.group(1) if nm else p.stem
+                                rn = "{}. {}{}".format(str(i+1).zfill(pad), name_part, p.suffix)
+                                rp = p.parent / rn
+                                if p != rp:
+                                    p.rename(rp)
+                else:
+                    new_path = old_path.parent / new_name
+                    if new_path != old_path:
+                        old_path.rename(new_path)
+            else:
+                # Non-numbered: just rename
+                if new_artist:
+                    new_name = "{} - {}{}".format(vk_safe_filename(new_artist), vk_safe_filename(new_title), ext)
+                else:
+                    new_name = "{}{}".format(vk_safe_filename(new_title), ext)
+                new_path = old_path.parent / new_name
+                if new_path != old_path:
+                    old_path.rename(new_path)
+            # Run meta if requested
+            if run_meta:
+                threading.Thread(target=lambda: (
+                    search_metadata(new_artist or '', new_title) and
+                    write_metadata_to_file(str(Path(folder) / new_name),
+                        search_metadata(new_artist or '', new_title),
+                        fetch_cover_art(search_metadata(new_artist or '', new_title) or {}))
+                ), daemon=True).start()
+            self._respond_json({"ok": True, "new_file": new_name})
 
         elif path == "/api/reorder":
             if self._deny_demo(udata): return
