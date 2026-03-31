@@ -1028,7 +1028,7 @@ body {
 .playlist-side {
   width: 360px; background: rgba(0,0,0,0.4); backdrop-filter: blur(20px);
   display: flex; flex-direction: column; border-left: 1px solid rgba(255,255,255,0.06);
-  transition: width 0.3s ease, opacity 0.3s ease;
+  transition: width 0.35s cubic-bezier(0.4,0,0.2,1), opacity 0.25s ease;
   overflow: hidden;
 }
 
@@ -1183,7 +1183,6 @@ body {
   padding: 12px 12px; border-bottom: 1px solid rgba(255,255,255,0.06);
   font-size: 14px; font-weight: 600; color: rgba(255,255,255,0.6);
   transition: transform 0.25s ease, opacity 0.25s ease;
-  position: sticky; top: 0; z-index: 3; background: inherit;
 }
 .playlist-header.header-hidden {
   transform: translateY(-100%); opacity: 0; pointer-events: none;
@@ -1332,13 +1331,16 @@ body {
 /* ── Sidebar toggle (desktop) ── */
 .sidebar-toggle {
   display: none; position: absolute; right: 360px; top: 108px;
-  z-index: 5; width: 20px; height: 56px; border: none; border-radius: 6px 0 0 6px;
+  z-index: 5; width: 30px; height: 56px; border: none; border-radius: 8px 0 0 8px;
   background: rgba(255,255,255,0.06); color: rgba(255,255,255,0.3); cursor: pointer;
   align-items: center; justify-content: center;
-  transition: right 0.3s ease, background 0.15s;
+  transition: right 0.35s cubic-bezier(0.4,0,0.2,1), background 0.15s;
 }
 .sidebar-toggle:hover { color: rgba(255,255,255,0.6); background: rgba(255,255,255,0.12); }
-.sidebar-collapsed .playlist-side { width: 0; opacity: 0; overflow: hidden; padding: 0; border: none; }
+.sidebar-collapsed .playlist-side {
+  width: 0; overflow: hidden; padding: 0; border: none;
+  opacity: 0; pointer-events: none;
+}
 .sidebar-collapsed .sidebar-toggle { right: 0; }
 @media (min-width: 769px) {
   .sidebar-toggle { display: flex; }
