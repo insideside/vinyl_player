@@ -915,8 +915,8 @@ def fetch_cover_art(meta):
     return None
 
 
-def write_metadata_to_file(filepath, meta, cover_data):
-    """Записывает метаданные в файл. Имя файла НЕ меняется."""
+def write_metadata_to_file(filepath, meta, cover_data, overwrite=False):
+    """Записывает метаданные в файл. НЕ перезаписывает существующие поля (если overwrite=False)."""
     if not HAS_MUTAGEN:
         return False
     p = Path(filepath)
@@ -930,15 +930,18 @@ def write_metadata_to_file(filepath, meta, cover_data):
                 from mutagen.id3 import ID3 as ID3Class
                 tags = ID3Class()
 
-            if meta.get('title'):
+            # Only fill empty fields unless overwrite=True
+            if meta.get('title') and (overwrite or not tags.get('TIT2')):
                 tags.setall('TIT2', [TIT2(encoding=3, text=meta['title'])])
-            if meta.get('artist'):
+            if meta.get('artist') and (overwrite or not tags.get('TPE1')):
                 tags.setall('TPE1', [TPE1(encoding=3, text=meta['artist'])])
-            if meta.get('album'):
+            if meta.get('album') and (overwrite or not tags.get('TALB')):
                 tags.setall('TALB', [TALB(encoding=3, text=meta['album'])])
-            if meta.get('year'):
+            if meta.get('year') and (overwrite or not tags.get('TDRC')):
                 tags.setall('TDRC', [TDRC(encoding=3, text=meta['year'])])
-            if cover_data:
+            # Cover: only add if no existing cover
+            has_cover = any(k.startswith('APIC') for k in tags)
+            if cover_data and (overwrite or not has_cover):
                 tags.setall('APIC', [APIC(
                     encoding=3, mime='image/jpeg', type=3,
                     desc='Cover', data=cover_data
@@ -948,15 +951,15 @@ def write_metadata_to_file(filepath, meta, cover_data):
 
         elif ext == '.flac':
             audio = FLAC(filepath)
-            if meta.get('title'):
+            if meta.get('title') and (overwrite or not audio.get('title')):
                 audio['title'] = meta['title']
-            if meta.get('artist'):
+            if meta.get('artist') and (overwrite or not audio.get('artist')):
                 audio['artist'] = meta['artist']
-            if meta.get('album'):
+            if meta.get('album') and (overwrite or not audio.get('album')):
                 audio['album'] = meta['album']
-            if meta.get('year'):
+            if meta.get('year') and (overwrite or not audio.get('date')):
                 audio['date'] = meta['year']
-            if cover_data:
+            if cover_data and (overwrite or not audio.pictures):
                 pic = Picture()
                 pic.type = 3
                 pic.mime = 'image/jpeg'
@@ -970,15 +973,15 @@ def write_metadata_to_file(filepath, meta, cover_data):
             audio = MP4(filepath)
             if audio.tags is None:
                 audio.add_tags()
-            if meta.get('title'):
+            if meta.get('title') and (overwrite or not audio.tags.get('\xa9nam')):
                 audio.tags['\xa9nam'] = [meta['title']]
-            if meta.get('artist'):
+            if meta.get('artist') and (overwrite or not audio.tags.get('\xa9ART')):
                 audio.tags['\xa9ART'] = [meta['artist']]
             if meta.get('album'):
                 audio.tags['\xa9alb'] = [meta['album']]
-            if meta.get('year'):
+            if meta.get('year') and (overwrite or not audio.tags.get('\xa9day')):
                 audio.tags['\xa9day'] = [meta['year']]
-            if cover_data:
+            if cover_data and (overwrite or not audio.tags.get('covr')):
                 audio.tags['covr'] = [MP4Cover(cover_data, imageformat=MP4Cover.FORMAT_JPEG)]
             audio.save()
             return True
