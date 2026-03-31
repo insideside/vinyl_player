@@ -1334,24 +1334,16 @@ body {
   width: 36px; height: 36px; flex-shrink: 0;
   background: none; border: none; cursor: pointer;
   display: flex; align-items: center; justify-content: center;
+  opacity: 0.35; transition: opacity 0.15s;
 }
-.pw-eye::after {
-  content: ''; width: 16px; height: 16px; display: block;
-  background: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIGZpbGw9IiM2NjYiIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZD0iTTEyIDQuNUM3IDQuNSAyLjczIDcuNjEgMSAxMmMxLjczIDQuMzkgNiA3LjUgMTEgNy41czkuMjctMy4xMSAxMS03LjVjLTEuNzMtNC4zOS02LTcuNS0xMS03LjV6TTEyIDE3Yy0yLjc2IDAtNS0yLjI0LTUtNXMyLjI0LTUgNS01IDUgMi4yNCA1IDUtMi4yNCA1LTUgNXptMC04Yy0xLjY2IDAtMyAxLjM0LTMgM3MxLjM0IDMgMyAzIDMtMS4zNCAzLTMtMS4zNC0zLTMtM3oiLz48L3N2Zz4=") center/contain no-repeat;
-}
-.pw-eye:hover::after {
-  background-image: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIGZpbGw9IiNhYWEiIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZD0iTTEyIDQuNUM3IDQuNSAyLjczIDcuNjEgMSAxMmMxLjczIDQuMzkgNiA3LjUgMTEgNy41czkuMjctMy4xMSAxMS03LjVjLTEuNzMtNC4zOS02LTcuNS0xMS03LjV6TTEyIDE3Yy0yLjc2IDAtNS0yLjI0LTUtNXMyLjI0LTUgNS01IDUgMi4yNCA1IDUtMi4yNCA1LTUgNXptMC04Yy0xLjY2IDAtMyAxLjM0LTMgM3MxLjM0IDMgMyAzIDMtMS4zNCAzLTMtMS4zNC0zLTMtM3oiLz48L3N2Zz4=");
-}
-.pw-eye.visible::after {
-  background-image: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIGZpbGw9IiNlOTQ1NjAiIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZD0iTTEyIDQuNUM3IDQuNSAyLjczIDcuNjEgMSAxMmMxLjczIDQuMzkgNiA3LjUgMTEgNy41czkuMjctMy4xMSAxMS03LjVjLTEuNzMtNC4zOS02LTcuNS0xMS03LjV6TTEyIDE3Yy0yLjc2IDAtNS0yLjI0LTUtNXMyLjI0LTUgNS01IDUgMi4yNCA1IDUtMi4yNCA1LTUgNXptMC04Yy0xLjY2IDAtMyAxLjM0LTMgM3MxLjM0IDMgMyAzIDMtMS4zNCAzLTMtMS4zNC0zLTMtM3oiLz48L3N2Zz4=");
-}
+.pw-eye:hover { opacity: 0.6; }
+.pw-eye.visible { opacity: 1; }
+.pw-eye img { width: 16px; height: 16px; }
+.pw-eye.visible img { filter: brightness(0) saturate(100%) invert(38%) sepia(82%) saturate(2000%) hue-rotate(330deg); }
 
 /* Admin key icon */
 .admin-pw-btn { width: 26px; height: 26px; }
-.admin-pw-btn::after {
-  content: ''; width: 14px; height: 14px; display: block;
-  background: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIGZpbGw9IiM5OTkiIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZD0iTTEyLjY1IDEwYTYgNiAwIDEgMCAwIDRIMTd2M2gzdi0zaDJ2LTRoLTkuMzV6TTcgMTRhMiAyIDAgMSAxIDAtNCAyIDIgMCAwIDEgMCA0eiIvPjwvc3ZnPg==") center/contain no-repeat;
-}
+.admin-pw-btn img { width: 14px; height: 14px; }
 
 /* ── Tooltips ── */
 [data-tip] { position: relative; }
@@ -1726,8 +1718,8 @@ body { touch-action: pan-y; }
     <h3>Профиль</h3>
     <div style="font-size:14px;color:rgba(255,255,255,0.6);margin:8px 0 16px" id="profileUser"></div>
     <div style="font-size:12px;color:rgba(255,255,255,0.4);margin-bottom:8px">Сменить пароль</div>
-    <div class="pw-field"><input type="password" id="profOldPw" placeholder="Текущий пароль"><button class="pw-eye" onclick="togglePwVis('profOldPw',this)"></button></div>
-    <div class="pw-field" style="margin-top:6px"><input type="password" id="profNewPw" placeholder="Новый пароль"><button class="pw-eye" onclick="togglePwVis('profNewPw',this)"></button></div>
+    <div class="pw-field"><input type="password" id="profOldPw" placeholder="Текущий пароль"><button class="pw-eye" onclick="togglePwVis('profOldPw',this)"><img src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIGZpbGw9IiM4ODgiIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZD0iTTEyIDQuNUM3IDQuNSAyLjczIDcuNjEgMSAxMmMxLjczIDQuMzkgNiA3LjUgMTEgNy41czkuMjctMy4xMSAxMS03LjVjLTEuNzMtNC4zOS02LTcuNS0xMS03LjV6TTEyIDE3Yy0yLjc2IDAtNS0yLjI0LTUtNXMyLjI0LTUgNS01IDUgMi4yNCA1IDUtMi4yNCA1LTUgNXptMC04Yy0xLjY2IDAtMyAxLjM0LTMgM3MxLjM0IDMgMyAzIDMtMS4zNCAzLTMtMS4zNC0zLTMtM3oiLz48L3N2Zz4="></button></div>
+    <div class="pw-field" style="margin-top:6px"><input type="password" id="profNewPw" placeholder="Новый пароль"><button class="pw-eye" onclick="togglePwVis('profNewPw',this)"><img src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIGZpbGw9IiM4ODgiIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZD0iTTEyIDQuNUM3IDQuNSAyLjczIDcuNjEgMSAxMmMxLjczIDQuMzkgNiA3LjUgMTEgNy41czkuMjctMy4xMSAxMS03LjVjLTEuNzMtNC4zOS02LTcuNS0xMS03LjV6TTEyIDE3Yy0yLjc2IDAtNS0yLjI0LTUtNXMyLjI0LTUgNS01IDUgMi4yNCA1IDUtMi4yNCA1LTUgNXptMC04Yy0xLjY2IDAtMyAxLjM0LTMgM3MxLjM0IDMgMyAzIDMtMS4zNCAzLTMtMS4zNC0zLTMtM3oiLz48L3N2Zz4="></button></div>
     <button class="folder-btn folder-btn-primary" style="width:100%;margin-top:12px" onclick="changeMyPassword()">Сменить пароль</button>
     <div style="display:flex;gap:8px;margin-top:16px;padding-top:12px;border-top:1px solid rgba(255,255,255,0.06)">
       <button class="folder-btn folder-btn-secondary" style="flex:1" onclick="doLogout()">Выйти</button>
@@ -1767,8 +1759,8 @@ body { touch-action: pan-y; }
   <div class="meta-modal" style="width:380px">
     <h3>Сменить пароль</h3>
     <div style="font-size:14px;color:rgba(255,255,255,0.5);margin-bottom:12px" id="pwChangeUser"></div>
-    <div class="pw-field" style="margin-bottom:6px"><input type="password" id="pwChangeNew" placeholder="Новый пароль"><button class="pw-eye" onclick="togglePwVis('pwChangeNew',this)"></button></div>
-    <div class="pw-field"><input type="password" id="pwChangeConfirm" placeholder="Подтвердите пароль"><button class="pw-eye" onclick="togglePwVis('pwChangeConfirm',this)"></button></div>
+    <div class="pw-field" style="margin-bottom:6px"><input type="password" id="pwChangeNew" placeholder="Новый пароль"><button class="pw-eye" onclick="togglePwVis('pwChangeNew',this)"><img src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIGZpbGw9IiM4ODgiIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZD0iTTEyIDQuNUM3IDQuNSAyLjczIDcuNjEgMSAxMmMxLjczIDQuMzkgNiA3LjUgMTEgNy41czkuMjctMy4xMSAxMS03LjVjLTEuNzMtNC4zOS02LTcuNS0xMS03LjV6TTEyIDE3Yy0yLjc2IDAtNS0yLjI0LTUtNXMyLjI0LTUgNS01IDUgMi4yNCA1IDUtMi4yNCA1LTUgNXptMC04Yy0xLjY2IDAtMyAxLjM0LTMgM3MxLjM0IDMgMyAzIDMtMS4zNCAzLTMtMS4zNC0zLTMtM3oiLz48L3N2Zz4="></button></div>
+    <div class="pw-field"><input type="password" id="pwChangeConfirm" placeholder="Подтвердите пароль"><button class="pw-eye" onclick="togglePwVis('pwChangeConfirm',this)"><img src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIGZpbGw9IiM4ODgiIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZD0iTTEyIDQuNUM3IDQuNSAyLjczIDcuNjEgMSAxMmMxLjczIDQuMzkgNiA3LjUgMTEgNy41czkuMjctMy4xMSAxMS03LjVjLTEuNzMtNC4zOS02LTcuNS0xMS03LjV6TTEyIDE3Yy0yLjc2IDAtNS0yLjI0LTUtNXMyLjI0LTUgNS01IDUgMi4yNCA1IDUtMi4yNCA1LTUgNXptMC04Yy0xLjY2IDAtMyAxLjM0LTMgM3MxLjM0IDMgMyAzIDMtMS4zNCAzLTMtMS4zNC0zLTMtM3oiLz48L3N2Zz4="></button></div>
     <div style="display:flex;gap:8px;margin-top:12px">
       <button class="folder-btn folder-btn-primary" style="flex:1" onclick="submitPwChange()">Сменить</button>
       <button class="folder-btn folder-btn-secondary" style="flex:1" onclick="document.getElementById('pwChangeOverlay').classList.remove('show')">Отмена</button>
@@ -3224,7 +3216,7 @@ function loadAdminUsers() {
         + '<div style="display:flex;align-items:center;gap:8px">'
         + '<div style="flex:1"><b>' + esc(u.username) + '</b>'
         + (u.is_admin ? ' <span style="color:#e94560;font-size:10px">admin</span>' : '') + '</div>'
-        + '<button class="folder-btn-icon admin-pw-btn" onclick="adminChangePassword(\'' + esc(u.username) + '\')" title="Сменить пароль"></button>'
+        + '<button class="folder-btn-icon admin-pw-btn" onclick="adminChangePassword(\'' + esc(u.username) + '\')" title="Сменить пароль"><img src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIGZpbGw9IiM4ODgiIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZD0iTTEyLjY1IDEwYTYgNiAwIDEgMCAwIDRIMTd2M2gzdi0zaDJ2LTRoLTkuMzV6TTcgMTRhMiAyIDAgMSAxIDAtNCAyIDIgMCAwIDEgMCA0eiIvPjwvc3ZnPg=="></button>'
         + '<button class="folder-btn-icon" style="width:26px;height:26px;font-size:13px" onclick="adminAddFolder(\'' + esc(u.username) + '\')" title="Добавить каталог">+</button>'
         + (u.is_admin ? '' : '<button class="folder-btn-icon" style="width:26px;height:26px;font-size:13px;color:#e94560" onclick="adminDeleteUser(\'' + esc(u.username) + '\')" title="Удалить">&times;</button>')
         + '</div>'
