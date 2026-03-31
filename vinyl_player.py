@@ -2516,9 +2516,9 @@ function initMediaSession() {
   navigator.mediaSession.setActionHandler('seekto', function(d) {
     if (d.seekTime !== undefined && audio.duration) audio.currentTime = d.seekTime;
   });
-  // Explicitly disable seek buttons so iOS shows prev/next instead
-  try { navigator.mediaSession.setActionHandler('seekbackward', null); } catch(e) {}
-  try { navigator.mediaSession.setActionHandler('seekforward', null); } catch(e) {}
+  // iOS: override seek buttons to act as prev/next
+  try { navigator.mediaSession.setActionHandler('seekbackward', function() { prevTrack(); }); } catch(e) {}
+  try { navigator.mediaSession.setActionHandler('seekforward', function() { nextTrack(); }); } catch(e) {}
 }
 
 // Update position state for lock screen progress bar
