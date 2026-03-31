@@ -1011,38 +1011,35 @@ def _save_meta_done(music_dir, done_set):
 
 
 def metadata_worker(music_dir, username=""):
-    """Фоновый процесс поиска и записи метаданных."""
+    """Сканирует и собирает предложения по метаданным (без записи)."""
     meta_state = get_meta_state(username)
     meta_state["running"] = True
     meta_state["done"] = False
     meta_state["cancel"] = False
     meta_state["log"] = []
     meta_state["progress"] = 0
+    meta_state["proposals"] = []
 
     files = sorted(Path(music_dir).iterdir(), key=lambda f: f.name)
-    tracks = [f for f in files if f.suffix.lower() in SUPPORTED_FORMATS and f.is_file()]
-    meta_state["total"] = len(tracks)
+    track_files = [f for f in files if f.suffix.lower() in SUPPORTED_FORMATS and f.is_file()]
+    meta_state["total"] = len(track_files)
 
     done_set = _load_meta_done(music_dir)
-    updated = 0
-    skipped = 0
-    failed = 0
+    found_count = 0
 
-    for i, f in enumerate(tracks):
+    for i, f in enumerate(track_files):
         if meta_state["cancel"]:
-            meta_state["log"].append("\n  Отменено пользователем.")
+            meta_state["log"].append("\n  Отменено.")
             break
 
         meta_state["progress"] = i + 1
 
         if f.name in done_set:
-            skipped += 1
             continue
 
         existing = get_metadata(str(f))
-        if existing.get("artist") and existing.get("album"):
+        if existing.get("artist") and existing.get("album") and existing.get("cover"):
             done_set.add(f.name)
-            skipped += 1
             continue
 
         artist, title = parse_track_name(f.name)
@@ -1051,33 +1048,71 @@ def metadata_worker(music_dir, username=""):
         found_meta = search_metadata(artist, title)
         if not found_meta:
             meta_state["log"].append("    Не найдено")
-            failed += 1
             time.sleep(0.3)
             continue
 
-        cover_data = fetch_cover_art(found_meta)
+        has_cover = bool(fetch_cover_art(found_meta)) if found_meta else False
 
-        info = "{} - {} ({} {})".format(
+        proposal = {
+            "file": f.name,
+            "old_artist": existing.get("artist", ""),
+            "old_title": existing.get("title", f.stem),
+            "old_album": existing.get("album", ""),
+            "old_has_cover": existing.get("cover") is not None,
+            "new_artist": found_meta.get("artist", ""),
+            "new_title": found_meta.get("title", ""),
+            "new_album": found_meta.get("album", ""),
+            "new_year": found_meta.get("year", ""),
+            "new_has_cover": has_cover,
+            "checked": True,
+        }
+        # Store full meta for apply phase
+        proposal["_meta"] = found_meta
+        meta_state["proposals"].append(proposal)
+        found_count += 1
+        meta_state["log"].append("    Найдено: {} - {} ({})".format(
             found_meta.get('artist', '?'), found_meta.get('title', '?'),
-            found_meta.get('album', ''), found_meta.get('year', ''))
-
-        if write_metadata_to_file(str(f), found_meta, cover_data):
-            cover_status = " +cover" if cover_data else ""
-            meta_state["log"].append("    OK: " + info + cover_status)
-            updated += 1
-            done_set.add(f.name)
-            _save_meta_done(music_dir, done_set)
-        else:
-            meta_state["log"].append("    Ошибка записи тегов")
-            failed += 1
-
+            found_meta.get('album', '')))
         time.sleep(0.3)
 
-    meta_state["log"].append("\n========================================")
-    meta_state["log"].append("Готово! Обновлено: {}, пропущено: {}, не найдено: {}".format(
-        updated, skipped, failed))
+    meta_state["log"].append("\nСканирование завершено. Найдено предложений: {}".format(found_count))
     meta_state["running"] = False
     meta_state["done"] = True
+
+
+def metadata_apply(music_dir, proposals, username=""):
+    """Применяет подтверждённые предложения метаданных."""
+    meta_state = get_meta_state(username)
+    meta_state["running"] = True
+    meta_state["done"] = False
+    meta_state["log"] = ["Применяю метаданные..."]
+    meta_state["progress"] = 0
+    meta_state["total"] = len(proposals)
+
+    done_set = _load_meta_done(music_dir)
+    applied = 0
+
+    for i, p in enumerate(proposals):
+        meta_state["progress"] = i + 1
+        filepath = Path(music_dir) / p["file"]
+        if not filepath.exists():
+            continue
+        found_meta = p.get("_meta", {})
+        if not found_meta:
+            continue
+        cover_data = fetch_cover_art(found_meta)
+        if write_metadata_to_file(str(filepath), found_meta, cover_data):
+            applied += 1
+            done_set.add(p["file"])
+            meta_state["log"].append("  OK: " + p["file"])
+        else:
+            meta_state["log"].append("  Ошибка: " + p["file"])
+
+    _save_meta_done(music_dir, done_set)
+    meta_state["log"].append("\nПрименено: {}/{}".format(applied, len(proposals)))
+    meta_state["running"] = False
+    meta_state["done"] = True
+    meta_state["proposals"] = []
 
 
 # ──────────────────── HTML ────────────────────
@@ -1778,14 +1813,24 @@ body { touch-action: pan-y; }
 
 <!-- Meta search modal -->
 <div class="meta-overlay" id="metaOverlay" onclick="if(event.target===this)closeMetaModal()">
-  <div class="meta-modal">
+  <div class="meta-modal" style="width:min(550px,94vw);max-height:90vh;overflow-y:auto">
     <h3>Поиск метаданных</h3>
-    <div style="font-size:11px;color:rgba(255,255,255,0.3);margin-bottom:8px">Deezer + iTunes + Last.fm + MusicBrainz</div>
+    <div style="font-size:11px;color:rgba(255,255,255,0.3);margin-bottom:8px">Deezer + iTunes + Genius + Last.fm + MusicBrainz</div>
     <div class="meta-progress" id="metaProgress"></div>
     <div class="meta-bar"><div class="meta-bar-fill" id="metaBarFill" style="width:0%"></div></div>
-    <div class="meta-log" id="metaLog"></div>
+    <div class="meta-log" id="metaLog" style="max-height:150px;overflow-y:auto"></div>
+    <!-- Proposals review -->
+    <div id="metaProposals" style="display:none;margin-top:10px">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+        <span style="font-size:13px;font-weight:600;flex:1">Предложения</span>
+        <button class="folder-btn folder-btn-secondary" style="padding:4px 10px;font-size:11px" onclick="metaToggleAll(true)">Все</button>
+        <button class="folder-btn folder-btn-secondary" style="padding:4px 10px;font-size:11px" onclick="metaToggleAll(false)">Ни одного</button>
+      </div>
+      <div id="metaProposalList" style="max-height:40vh;overflow-y:auto;border:1px solid rgba(255,255,255,0.06);border-radius:8px"></div>
+      <button class="folder-btn folder-btn-primary" style="width:100%;margin-top:8px" onclick="applyMetaProposals()">Применить выбранные</button>
+    </div>
     <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px">
-      <button class="folder-btn folder-btn-primary" onclick="cancelMeta()">Отменить</button>
+      <button class="folder-btn folder-btn-primary" onclick="cancelMeta()" id="metaCancelBtn">Отменить</button>
       <button class="folder-btn folder-btn-secondary" onclick="closeMetaModal()">Закрыть</button>
     </div>
   </div>
@@ -3312,11 +3357,65 @@ function pollMeta() {
     document.getElementById('metaLog').scrollTop = document.getElementById('metaLog').scrollHeight;
     if (d.running) setTimeout(pollMeta, 800);
     else if (d.done) {
-      document.getElementById('metaProgress').textContent = 'Готово! ' + d.progress + '/' + d.total;
-      var curFolder = document.getElementById('folderSelect').value;
-      if (curFolder) loadFolder(curFolder);
+      document.getElementById('metaProgress').textContent = 'Сканирование завершено';
+      // Load proposals for review
+      loadMetaProposals();
     }
   });
+}
+
+function loadMetaProposals() {
+  fetch('/api/meta/proposals', {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'})
+  .then(function(r){return r.json()}).then(function(d) {
+    if (!d.ok || !d.proposals.length) {
+      document.getElementById('metaProposals').style.display = 'none';
+      showToast('Нет предложений для обновления');
+      return;
+    }
+    document.getElementById('metaProposals').style.display = '';
+    renderMetaProposals(d.proposals);
+  });
+}
+
+function renderMetaProposals(proposals) {
+  var html = '';
+  for (var i = 0; i < proposals.length; i++) {
+    var p = proposals[i];
+    var changes = [];
+    if (p.new_artist && p.new_artist !== p.old_artist && !p.old_artist) changes.push('артист: <b>' + esc(p.new_artist) + '</b>');
+    if (p.new_album && p.new_album !== p.old_album && !p.old_album) changes.push('альбом: <b>' + esc(p.new_album) + '</b>');
+    if (p.new_has_cover && !p.old_has_cover) changes.push('+ обложка');
+    if (!changes.length) changes.push('обновление данных');
+    html += '<label style="display:flex;align-items:flex-start;gap:8px;padding:8px 10px;border-bottom:1px solid rgba(255,255,255,0.04);cursor:pointer">'
+      + '<input type="checkbox" checked class="meta-proposal-check" data-file="' + esc(p.file) + '" style="accent-color:#e94560;margin-top:3px;flex-shrink:0">'
+      + '<div style="flex:1;min-width:0;font-size:12px">'
+      + '<div style="color:#eee;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + esc(p.file) + '</div>'
+      + '<div style="color:rgba(255,255,255,0.4);margin-top:2px">' + changes.join(' · ') + '</div>'
+      + '</div></label>';
+  }
+  document.getElementById('metaProposalList').innerHTML = html;
+}
+
+function metaToggleAll(checked) {
+  var checks = document.querySelectorAll('.meta-proposal-check');
+  for (var i = 0; i < checks.length; i++) checks[i].checked = checked;
+}
+
+function applyMetaProposals() {
+  var checks = document.querySelectorAll('.meta-proposal-check:checked');
+  if (!checks.length) { showToast('Ничего не выбрано'); return; }
+  var files = [];
+  for (var i = 0; i < checks.length; i++) files.push(checks[i].getAttribute('data-file'));
+  var folder = document.getElementById('folderSelect').value;
+  showConfirm('Применить метаданные к ' + files.length + ' трекам?', function() {
+    document.getElementById('metaProposals').style.display = 'none';
+    document.getElementById('metaLog').textContent = 'Применяю...';
+    fetch('/api/meta/apply', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({folder: folder, files: files})})
+    .then(function(r){return r.json()}).then(function(d) {
+      if (d.ok) { pollMeta(); } else { showToast(d.error); }
+    });
+  }, 'Применить');
 }
 
 function closeMetaModal() {
@@ -4583,6 +4682,34 @@ class Handler(BaseHTTPRequestHandler):
 
         elif path == "/api/meta/cancel":
             get_meta_state(user)["cancel"] = True
+            self._respond_json({"ok": True})
+
+        elif path == "/api/meta/proposals":
+            ms = get_meta_state(user)
+            # Return proposals without internal _meta
+            proposals = []
+            for p in ms.get("proposals", []):
+                proposals.append({k: v for k, v in p.items() if not k.startswith('_')})
+            self._respond_json({"ok": True, "proposals": proposals})
+
+        elif path == "/api/meta/apply":
+            if self._deny_demo(udata): return
+            ms = get_meta_state(user)
+            if ms["running"]:
+                self._respond_json({"ok": False, "error": "Процесс уже идёт."})
+                return
+            selected_files = data.get("files", [])  # list of filenames to apply
+            folder = data.get("folder", _user_music_dirs.get(user, ""))
+            if not selected_files or not folder:
+                self._respond_json({"ok": False, "error": "Нет данных."})
+                return
+            # Filter proposals to only selected
+            to_apply = [p for p in ms.get("proposals", []) if p["file"] in selected_files]
+            if not to_apply:
+                self._respond_json({"ok": False, "error": "Нет выбранных."})
+                return
+            t = threading.Thread(target=metadata_apply, args=(folder, to_apply, user), daemon=True)
+            t.start()
             self._respond_json({"ok": True})
 
         elif path == "/api/meta/single":
