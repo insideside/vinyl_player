@@ -1702,8 +1702,8 @@ body { touch-action: pan-y; }
 
 <!-- VK Download modal -->
 <div class="meta-overlay" id="vkOverlay" onclick="if(event.target===this)closeVkModal()">
-  <div class="meta-modal">
-    <h3>Загрузка из VK Music</h3>
+  <div class="meta-modal" style="width:min(480px,92vw)">
+    <h3>VK Music</h3>
     <div id="vkAuthSection">
       <div id="vkAuthStatus" style="font-size:12px;color:rgba(255,255,255,0.4);margin-bottom:8px"></div>
       <div id="vkAuthForm" style="display:none;margin-bottom:10px">
@@ -1714,25 +1714,51 @@ body { touch-action: pan-y; }
         </div>
       </div>
     </div>
-    <div id="vkFormSection">
+    <!-- VK Tabs -->
+    <div class="playlist-tabs" style="margin-bottom:10px">
+      <button class="playlist-tab active" id="vkTabPlaylist" onclick="showVkTab('playlist')">Плейлисты</button>
+      <button class="playlist-tab" id="vkTabSearch" onclick="showVkTab('search')">Поиск трека</button>
+    </div>
+    <!-- Tab 1: Playlist download -->
+    <div id="vkPlaylistTab">
       <div id="vkFolderHint" style="font-size:11px;color:rgba(255,255,255,0.35);margin-bottom:8px"></div>
-      <div style="font-size:12px;color:rgba(255,255,255,0.5);margin-bottom:4px">Ссылки на плейлисты (по одной на строку):</div>
-      <textarea id="vkUrls" style="width:100%;height:80px;padding:8px;border-radius:8px;border:1px solid rgba(255,255,255,0.12);background:rgba(255,255,255,0.06);color:#eee;font-size:12px;resize:vertical;outline:none;font-family:inherit" placeholder="https://vk.ru/music/playlist/..."></textarea>
-      <div style="display:flex;gap:8px;margin:10px 0;font-size:12px;align-items:center;flex-wrap:wrap">
-        <select id="vkMode" class="folder-select" style="flex:1;min-width:120px;padding:8px 28px 8px 10px;font-size:12px">
+      <textarea id="vkUrls" style="width:100%;height:70px;padding:8px;border-radius:8px;border:1px solid rgba(255,255,255,0.12);background:rgba(255,255,255,0.06);color:#eee;font-size:12px;resize:vertical;outline:none;font-family:inherit" placeholder="Ссылки на плейлисты (по одной на строку)"></textarea>
+      <div style="display:flex;gap:6px;margin:8px 0;font-size:12px;align-items:center;flex-wrap:wrap">
+        <select id="vkMode" class="folder-select" style="flex:1;min-width:100px;padding:7px 26px 7px 8px;font-size:12px">
           <option value="prepend">В начало</option>
           <option value="append">В конец</option>
         </select>
-        <select id="vkOrder" class="folder-select" style="flex:1;min-width:120px;padding:8px 28px 8px 10px;font-size:12px">
+        <select id="vkOrder" class="folder-select" style="flex:1;min-width:100px;padding:7px 26px 7px 8px;font-size:12px">
           <option value="normal">Как в плейлисте</option>
-          <option value="reverse">В обратном порядке</option>
+          <option value="reverse">Обратный</option>
         </select>
-        <label style="display:flex;align-items:center;gap:5px;color:rgba(255,255,255,0.6);cursor:pointer;white-space:nowrap">
-          <input type="checkbox" id="vkRunMeta" style="accent-color:#e94560"> Получить Meta-данные после загрузки
-        </label>
       </div>
-      <button class="folder-btn folder-btn-primary" style="width:100%" id="vkStartBtn" onclick="startVkDownload()">Начать загрузку</button>
+      <label style="display:flex;align-items:center;gap:5px;color:rgba(255,255,255,0.5);cursor:pointer;font-size:12px;margin-bottom:8px">
+        <input type="checkbox" id="vkRunMeta" style="accent-color:#e94560"> Получить Meta-данные после загрузки
+      </label>
+      <button class="folder-btn folder-btn-primary" style="width:100%" onclick="startVkDownload()">Загрузить плейлисты</button>
     </div>
+    <!-- Tab 2: Search & download single track -->
+    <div id="vkSearchTab" style="display:none">
+      <div style="display:flex;gap:6px;margin-bottom:8px">
+        <input type="text" id="vkSearchQuery" class="folder-path-input" style="flex:1" placeholder="Название трека или артист..." onkeydown="if(event.key==='Enter')vkSearchTracks()">
+        <button class="folder-btn folder-btn-primary" onclick="vkSearchTracks()">Найти</button>
+      </div>
+      <div id="vkSearchResults" style="max-height:250px;overflow-y:auto;border-radius:8px"></div>
+      <div id="vkSearchActions" style="display:none;margin-top:8px">
+        <div style="display:flex;gap:6px;align-items:center;margin-bottom:6px">
+          <select id="vkSearchMode" class="folder-select" style="flex:1;padding:7px 26px 7px 8px;font-size:12px">
+            <option value="prepend">В начало</option>
+            <option value="append">В конец</option>
+          </select>
+          <label style="display:flex;align-items:center;gap:5px;color:rgba(255,255,255,0.5);cursor:pointer;font-size:12px;white-space:nowrap">
+            <input type="checkbox" id="vkSearchMeta" style="accent-color:#e94560"> Meta
+          </label>
+        </div>
+        <button class="folder-btn folder-btn-primary" style="width:100%" onclick="vkDownloadSelected()">Скачать выбранные</button>
+      </div>
+    </div>
+    <!-- Progress (shared) -->
     <div id="vkProgressSection" style="display:none;margin-top:10px">
       <div class="meta-progress" id="vkProgress"></div>
       <div class="meta-bar"><div class="meta-bar-fill" id="vkBarFill" style="width:0%"></div></div>
@@ -3298,6 +3324,67 @@ function cancelVkDownload() {
   showToast('Отменяю загрузку...');
 }
 
+// ── VK Tabs & Search ──
+function showVkTab(tab) {
+  document.getElementById('vkTabPlaylist').classList.toggle('active', tab === 'playlist');
+  document.getElementById('vkTabSearch').classList.toggle('active', tab === 'search');
+  document.getElementById('vkPlaylistTab').style.display = tab === 'playlist' ? '' : 'none';
+  document.getElementById('vkSearchTab').style.display = tab === 'search' ? '' : 'none';
+}
+
+var vkSearchResults = [];
+
+function vkSearchTracks() {
+  var q = document.getElementById('vkSearchQuery').value.trim();
+  if (!q) return;
+  document.getElementById('vkSearchResults').innerHTML = '<div style="padding:12px;color:rgba(255,255,255,0.3);text-align:center">Поиск...</div>';
+  fetch('/api/vk/search', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({query: q})})
+  .then(function(r){return r.json()}).then(function(d) {
+    if (!d.ok) { showToast(d.error || 'Ошибка'); return; }
+    vkSearchResults = d.results || [];
+    var html = '';
+    if (!vkSearchResults.length) {
+      html = '<div style="padding:12px;color:rgba(255,255,255,0.3);text-align:center">Ничего не найдено</div>';
+    }
+    for (var i = 0; i < vkSearchResults.length; i++) {
+      var r = vkSearchResults[i];
+      var dur = Math.floor(r.duration/60) + ':' + ('0'+r.duration%60).slice(-2);
+      var avail = r.has_url ? '' : ' style="opacity:0.3"';
+      html += '<div class="playlist-item"' + avail + '>'
+        + '<label style="display:flex;align-items:center;gap:10px;cursor:pointer;flex:1;min-width:0">'
+        + '<input type="checkbox" value="' + r.owner_id + '_' + r.track_id + '" class="vk-search-check" style="accent-color:#e94560;flex-shrink:0"' + (r.has_url ? '' : ' disabled') + '>'
+        + '<div class="info"><div class="name">' + esc(r.title) + '</div>'
+        + '<div class="artist">' + esc(r.artist) + ' · ' + dur + '</div></div>'
+        + '</label></div>';
+    }
+    document.getElementById('vkSearchResults').innerHTML = html;
+    document.getElementById('vkSearchActions').style.display = vkSearchResults.length ? '' : 'none';
+  });
+}
+
+function vkDownloadSelected() {
+  var checks = document.querySelectorAll('.vk-search-check:checked');
+  if (!checks.length) { showToast('Выберите треки'); return; }
+  var folder = document.getElementById('folderSelect').value;
+  if (!folder) { showToast('Выберите каталог'); return; }
+  var ids = [];
+  for (var i = 0; i < checks.length; i++) ids.push(checks[i].value);
+  var mode = document.getElementById('vkSearchMode').value;
+  var runMeta = document.getElementById('vkSearchMeta').checked;
+  fetch('/api/vk/download_tracks', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({folder: folder, track_ids: ids, mode: mode, run_meta: runMeta})})
+  .then(function(r){return r.json()}).then(function(d) {
+    if (d.ok) {
+      document.getElementById('vkProgressSection').style.display = '';
+      vkPolling = true;
+      pollVk();
+    } else {
+      showToast(d.error || 'Ошибка');
+    }
+  });
+}
+
 // ── Mobile view toggle ──
 // ── Desktop sidebar toggle ──
 function toggleSidebar() {
@@ -4313,6 +4400,94 @@ class Handler(BaseHTTPRequestHandler):
 
         elif path == "/api/vk/cancel":
             get_vk_state(user)["cancel"] = True
+            self._respond_json({"ok": True})
+
+        elif path == "/api/vk/search":
+            if self._deny_demo(udata): return
+            vs = get_vk_state(user)
+            if not vs["service"]:
+                self._respond_json({"ok": False, "error": "VK не авторизован."})
+                return
+            query = data.get("query", "").strip()
+            if not query:
+                self._respond_json({"ok": False, "error": "Пустой запрос."})
+                return
+            try:
+                results = vs["service"].search_songs_by_text(query, count=20)
+                items = []
+                for s in results:
+                    items.append({
+                        "title": s.title,
+                        "artist": s.artist,
+                        "duration": s.duration,
+                        "track_id": s.track_id,
+                        "owner_id": s.owner_id,
+                        "has_url": bool(s.url and "index.m3u8" not in s.url),
+                    })
+                self._respond_json({"ok": True, "results": items})
+            except Exception:
+                self._respond_json({"ok": False, "error": "Ошибка поиска."})
+
+        elif path == "/api/vk/download_tracks":
+            if self._deny_demo(udata): return
+            vs = get_vk_state(user)
+            if not vs["service"]:
+                self._respond_json({"ok": False, "error": "VK не авторизован."})
+                return
+            folder = data.get("folder", _user_music_dirs.get(user, ""))
+            track_ids = data.get("track_ids", [])  # ["owner_id_track_id", ...]
+            mode = data.get("mode", "append")
+            run_meta = data.get("run_meta", False)
+            if not folder or not track_ids:
+                self._respond_json({"ok": False, "error": "Нет данных."})
+                return
+            user_folders = get_user_folders(user)
+            if folder not in user_folders:
+                self._respond_json({"ok": False, "error": "Нет доступа."})
+                return
+            def dl_tracks():
+                vst = get_vk_state(user)
+                vst["running"] = True
+                vst["done"] = False
+                vst["log"] = []
+                vst["progress"] = 0
+                vst["total"] = len(track_ids)
+                try:
+                    songs = vs["service"].get_songs_by_id(track_ids)
+                    save_dir = Path(folder)
+                    save_dir.mkdir(parents=True, exist_ok=True)
+                    existing = vk_get_existing_tracks(folder)
+                    if mode == "prepend" and existing:
+                        vk_renumber_tracks(folder, start_from=len(songs) + 1)
+                        start_num = 1
+                    elif mode == "append" and existing:
+                        start_num = max(t[0] for t in existing) + 1
+                    else:
+                        start_num = 1
+                    pad = len(str(start_num + len(songs) - 1))
+                    for idx, song in enumerate(songs):
+                        vst["progress"] = idx + 1
+                        num_str = str(start_num + idx).zfill(pad)
+                        artist = vk_safe_filename(song.artist)
+                        title = vk_safe_filename(song.title)
+                        filepath = save_dir / "{}. {} - {}.mp3".format(num_str, artist, title)
+                        if vk_download_song(song, filepath):
+                            vst["log"].append("OK: {} - {}".format(artist, title))
+                        else:
+                            vst["log"].append("FAIL: {} - {}".format(artist, title))
+                        time.sleep(0.3)
+                    vk_repad_tracks(folder)
+                    if run_meta:
+                        vst["log"].append("\nЗапускаю поиск мета-данных...")
+                        metadata_worker(folder, user)
+                    vst["log"].append("\nГотово!")
+                except Exception:
+                    vst["log"].append("Ошибка загрузки.")
+                finally:
+                    vst["running"] = False
+                    vst["done"] = True
+            t = threading.Thread(target=dl_tracks, daemon=True)
+            t.start()
             self._respond_json({"ok": True})
 
         elif path == "/api/reorder":
