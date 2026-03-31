@@ -1460,31 +1460,32 @@ body { touch-action: pan-y; }
 /* ── Mobile toggle ── */
 .mobile-bar {
   display: none; position: fixed; bottom: 0; left: 0; right: 0;
-  z-index: 50; background: rgba(28,28,28,0.95); backdrop-filter: blur(12px);
-  border-top: 1px solid rgba(255,255,255,0.06);
-  padding: 8px 16px; padding-bottom: max(8px, env(safe-area-inset-bottom));
+  z-index: 50;
+  padding: 10px 16px; padding-bottom: max(10px, env(safe-area-inset-bottom));
 }
 .mobile-bar-inner {
-  display: flex; align-items: center; gap: 8px; max-width: 500px; margin: 0 auto;
+  display: flex; align-items: center; justify-content: center;
 }
 .mobile-toggle {
   display: flex; border-radius: 20px; padding: 3px;
-  background: rgba(255,255,255,0.08); flex-shrink: 0;
+  background: none; flex-shrink: 0;
 }
 .mobile-toggle button {
-  padding: 8px 18px; border: none; border-radius: 18px; font-size: 12px;
-  background: none; color: rgba(255,255,255,0.4); cursor: pointer; transition: all 0.2s;
+  padding: 8px 20px; border: none; border-radius: 18px; font-size: 12px;
+  background: rgba(255,255,255,0.08); color: rgba(255,255,255,0.4); cursor: pointer; transition: all 0.2s;
+  backdrop-filter: blur(12px);
 }
 .mobile-toggle button.active { background: #e94560; color: #fff; }
-.mobile-mini-controls {
-  display: none; align-items: center; gap: 6px; margin-left: auto;
-}
 .mobile-mini-btn {
-  width: 36px; height: 36px; border-radius: 50%; border: none;
-  background: rgba(255,255,255,0.1); color: #fff; cursor: pointer;
-  display: flex; align-items: center; justify-content: center;
+  position: fixed; bottom: max(14px, env(safe-area-inset-bottom));
+  width: 40px; height: 40px; border-radius: 50%; border: none;
+  background: rgba(255,255,255,0.1); backdrop-filter: blur(12px);
+  color: #fff; cursor: pointer; display: none; align-items: center; justify-content: center;
+  z-index: 51;
 }
-.mobile-mini-btn:active { background: rgba(255,255,255,0.2); }
+.mobile-mini-btn:active { background: rgba(255,255,255,0.25); }
+.mobile-mini-btn.left { left: 24px; }
+.mobile-mini-btn.right { right: 24px; }
 
 @media (max-width: 768px) {
   .app { position: relative; }
@@ -1493,10 +1494,9 @@ body { touch-action: pan-y; }
   .vinyl-side { z-index: 1; }
   .mobile-view-vinyl .vinyl-side { display: flex; }
   .mobile-view-vinyl .playlist-side { display: none; }
-  .mobile-view-vinyl .mobile-mini-controls { display: none; }
   .mobile-view-playlist .vinyl-side { display: none; }
   .mobile-view-playlist .playlist-side { display: flex; flex-direction: column; }
-  .mobile-view-playlist .mobile-mini-controls { display: flex; }
+  .mobile-view-playlist .mobile-mini-btn { display: flex; }
   .mobile-bar { display: block; }
   .playlist-side { padding-bottom: 70px; }
   .vinyl-side { padding-bottom: 70px; }
@@ -1712,12 +1712,10 @@ body { touch-action: pan-y; }
       <button id="btnVinyl" onclick="mobileShow('vinyl')">Винил</button>
       <button class="active" id="btnPlaylist" onclick="mobileShow('playlist')">Треки</button>
     </div>
-    <div class="mobile-mini-controls" id="mobileControls">
-      <button class="mobile-mini-btn" id="mobilePlayBtn" onclick="togglePlay()"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg></button>
-      <button class="mobile-mini-btn" onclick="nextTrack()"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M16 6h2v12h-2zM6 18l8.5-6L6 6z"/></svg></button>
-    </div>
   </div>
 </div>
+<button class="mobile-mini-btn left" id="mobilePlayBtn" onclick="togglePlay()"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg></button>
+<button class="mobile-mini-btn right" onclick="nextTrack()"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M16 6h2v12h-2zM6 18l8.5-6L6 6z"/></svg></button>
 
 <div class="toast" id="toast"></div>
 <div class="tip-popup" id="tipPopup"></div>
