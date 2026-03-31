@@ -4462,7 +4462,7 @@ class Handler(BaseHTTPRequestHandler):
             self._respond_json({"active": active, "url": _tunnel_url})
 
         elif path == "/api/admin/download_catalog":
-            # Admin-only: download entire catalog as ZIP
+            # Admin-only: ZIP catalog to temp file, stream it
             if not udata or not udata.get("is_admin"):
                 self._respond(403, "text/plain", b"Forbidden")
                 return
@@ -4471,29 +4471,36 @@ class Handler(BaseHTTPRequestHandler):
             if not folder or not Path(folder).is_dir():
                 self._respond(404, "text/plain", b"Not found")
                 return
-            # Verify folder exists in system
-            if not is_path_within(folder, get_music_root()):
-                # Admin can access any folder, but double-check it's a real dir
-                if not Path(folder).is_dir():
-                    self._respond(404, "text/plain", b"Not found")
-                    return
-            import zipfile
-            import io
-            buf = io.BytesIO()
+            import zipfile, tempfile
             folder_path = Path(folder)
-            with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as zf:
-                for f in sorted(folder_path.iterdir()):
-                    if f.is_file() and f.suffix.lower() in SUPPORTED_FORMATS:
-                        zf.write(f, f.name)
-            zip_data = buf.getvalue()
             folder_name = folder_path.name or "catalog"
-            self.send_response(200)
-            self.send_header("Content-Type", "application/zip")
-            self.send_header("Content-Length", str(len(zip_data)))
-            self.send_header("Content-Disposition", 'attachment; filename="{}.zip"'.format(folder_name))
-            self.send_header("X-Content-Type-Options", "nosniff")
-            self.end_headers()
-            self.wfile.write(zip_data)
+            audio_files = sorted([f for f in folder_path.iterdir() if f.is_file() and f.suffix.lower() in SUPPORTED_FORMATS])
+            if not audio_files:
+                self._respond(404, "text/plain", b"No audio files")
+                return
+            # Write ZIP to temp file (avoids loading all into RAM)
+            tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.zip')
+            try:
+                with zipfile.ZipFile(tmp, 'w', zipfile.ZIP_STORED) as zf:
+                    for f in audio_files:
+                        zf.write(f, f.name)
+                tmp.close()
+                size = os.path.getsize(tmp.name)
+                self.send_response(200)
+                self.send_header("Content-Type", "application/zip")
+                self.send_header("Content-Length", str(size))
+                self.send_header("Content-Disposition", 'attachment; filename="{}.zip"'.format(folder_name))
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.end_headers()
+                # Stream in 1MB chunks
+                with open(tmp.name, 'rb') as zf:
+                    while True:
+                        chunk = zf.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        self.wfile.write(chunk)
+            finally:
+                os.unlink(tmp.name)
 
         elif path == "/api/browse":
             params = parse_qs(parsed.query)
