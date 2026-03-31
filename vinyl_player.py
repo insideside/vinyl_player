@@ -1748,10 +1748,13 @@ body { touch-action: pan-y; }
       <div style="display:flex;gap:6px;margin-bottom:6px">
         <input type="text" id="newUserName" class="folder-path-input" placeholder="Логин" style="flex:1">
         <input type="password" id="newUserPw" class="folder-path-input" placeholder="Пароль" style="flex:1">
-        <select id="newUserRole" class="folder-select" style="width:auto;min-width:80px;padding:7px 24px 7px 8px;font-size:12px">
-          <option value="user">user</option>
-          <option value="admin">admin</option>
-          <option value="demo">demo</option>
+      </div>
+      <div style="display:flex;gap:6px;margin-bottom:6px;align-items:center">
+        <span style="font-size:12px;color:rgba(255,255,255,0.4)">Роль:</span>
+        <select id="newUserRole" class="folder-select" style="flex:1;padding:7px 28px 7px 10px;font-size:12px">
+          <option value="user">Пользователь</option>
+          <option value="admin">Администратор</option>
+          <option value="demo">Демо</option>
         </select>
       </div>
       <button class="folder-btn folder-btn-primary" style="width:100%" onclick="adminCreateUser()">Создать</button>
