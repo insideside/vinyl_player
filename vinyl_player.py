@@ -1033,15 +1033,17 @@ body {
 .bg-canvas canvas { width: 100%; height: 100%; display: block; }
 
 /* ── Layout ── */
-.app { display: flex; height: 100vh; height: 100dvh; }
-.vinyl-side { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; position: relative; }
+.app { position: relative; height: 100vh; height: 100dvh; }
+.vinyl-side { position: absolute; inset: 0; right: 360px; display: flex; flex-direction: column; align-items: center; justify-content: center; transition: right 0.25s ease; }
 .playlist-side {
-  width: 360px; background: rgba(0,0,0,0.4); backdrop-filter: blur(20px);
+  position: absolute; top: 0; right: 0; bottom: 0; width: 360px;
+  background: rgba(0,0,0,0.4); backdrop-filter: blur(20px);
   display: flex; flex-direction: column; border-left: 1px solid rgba(255,255,255,0.06);
-  transition: width 0.2s ease, opacity 0.15s ease;
-  z-index: 15; position: relative;
-  overflow: hidden;
+  z-index: 15; overflow: hidden;
+  transition: transform 0.25s ease;
 }
+.sidebar-collapsed .playlist-side { transform: translateX(100%); }
+.sidebar-collapsed .vinyl-side { right: 0; }
 
 /* ── Vinyl Scene ── */
 .vinyl-scene {
@@ -1343,17 +1345,13 @@ body {
 
 /* ── Sidebar toggle (desktop) ── */
 .sidebar-toggle {
-  display: none; position: absolute; right: 360px; top: 88px;
+  display: none; position: fixed; right: 360px; top: 88px;
   z-index: 20; width: 30px; height: 44px; border: none; border-radius: 8px 0 0 8px;
   background: rgba(0,0,0,0.4); backdrop-filter: blur(20px); color: rgba(255,255,255,0.3); cursor: pointer;
   align-items: center; justify-content: center;
-  transition: right 0.3s ease, background 0.15s;
-  will-change: right;
+  transition: right 0.25s ease, background 0.15s;
 }
 .sidebar-toggle:hover { color: rgba(255,255,255,0.6); background: rgba(0,0,0,0.5); }
-.sidebar-collapsed .playlist-side {
-  width: 0; min-width: 0; padding: 0; border: none; overflow: hidden; pointer-events: none;
-}
 .sidebar-collapsed .sidebar-toggle { right: 0; }
 @media (min-width: 769px) {
   .sidebar-toggle { display: flex; }
