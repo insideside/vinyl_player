@@ -1028,7 +1028,7 @@ body {
 .playlist-side {
   width: 360px; background: rgba(0,0,0,0.4); backdrop-filter: blur(20px);
   display: flex; flex-direction: column; border-left: 1px solid rgba(255,255,255,0.06);
-  transition: width 0.3s ease;
+  transition: width 0.2s ease, opacity 0.15s ease;
   z-index: 15; position: relative;
   overflow: hidden;
 }
@@ -1345,7 +1345,10 @@ body {
   will-change: right;
 }
 .sidebar-toggle:hover { color: rgba(255,255,255,0.6); background: rgba(0,0,0,0.5); }
-.sidebar-collapsed .playlist-side {
+.playlist-side.collapsing {
+  overflow: hidden; pointer-events: none;
+}
+.playlist-side.collapsed {
   width: 0; min-width: 0; padding: 0; border: none; overflow: hidden; pointer-events: none;
 }
 .sidebar-collapsed .sidebar-toggle { right: 0; }
@@ -3281,13 +3284,34 @@ function cancelVkDownload() {
 
 // ── Mobile view toggle ──
 // ── Desktop sidebar toggle ──
+var sidebarOpen = true;
 function toggleSidebar() {
+  var ps = document.querySelector('.playlist-side');
   var app = document.querySelector('.app');
-  var collapsed = app.classList.toggle('sidebar-collapsed');
-  // Collapsed = arrow left (open), Visible = arrow right (close)
-  document.getElementById('sidebarIcon').innerHTML = collapsed
-    ? '<path d="M15.41 7.41L14 6l-6 6 6 6 1.41-1.41L10.83 12z"/>'
-    : '<path d="M8.59 16.59L10 18l6-6-6-6-1.41 1.41L13.17 12z"/>';
+  sidebarOpen = !sidebarOpen;
+  document.getElementById('sidebarIcon').innerHTML = sidebarOpen
+    ? '<path d="M8.59 16.59L10 18l6-6-6-6-1.41 1.41L13.17 12z"/>'
+    : '<path d="M15.41 7.41L14 6l-6 6 6 6 1.41-1.41L10.83 12z"/>';
+
+  if (!sidebarOpen) {
+    // Close: fade out content first, then collapse width
+    ps.style.opacity = '0';
+    ps.classList.add('collapsing');
+    setTimeout(function() {
+      ps.classList.add('collapsed');
+      ps.classList.remove('collapsing');
+      ps.style.opacity = '';
+      app.classList.add('sidebar-collapsed');
+    }, 150);
+  } else {
+    // Open: expand width first, then fade in content
+    app.classList.remove('sidebar-collapsed');
+    ps.classList.remove('collapsed');
+    ps.style.opacity = '0';
+    // Force reflow
+    ps.offsetHeight;
+    ps.style.opacity = '1';
+  }
 }
 
 function mobileShow(view) {
@@ -3558,8 +3582,8 @@ function dragAutoScrollTick() {
   }
   var rect = tl.getBoundingClientRect();
   var y = lastDragClientY;
-  var edge = 80; // px from edge where scroll starts
-  var maxSpeed = 40; // px per frame at edge
+  var edge = 120; // px from edge where scroll starts
+  var maxSpeed = 60; // px per frame at edge
   var speed = 0;
 
   if (y > rect.bottom - edge) {
