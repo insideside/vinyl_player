@@ -5,8 +5,18 @@ echo "Building Vinyl Player for Linux..."
 VERSION="1.0.0"
 APPNAME="vinyl-player"
 
-# Install all dependencies
+# Install Python dependencies
 pip3 install pyinstaller httpx mutagen vkpymusic musicbrainzngs 2>/dev/null
+
+# Download cloudflared if not present
+ARCH=$(uname -m)
+if [ "$ARCH" = "aarch64" ]; then CF_ARCH="linux-arm64"; else CF_ARCH="linux-amd64"; fi
+CF_BIN="build_assets/cloudflared"
+if [ ! -f "$CF_BIN" ]; then
+    echo "Downloading cloudflared ($CF_ARCH)..."
+    curl -fsSL "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-${CF_ARCH}" -o "$CF_BIN"
+    chmod +x "$CF_BIN"
+fi
 
 # Build binary
 python3 -m PyInstaller \
@@ -35,15 +45,10 @@ python3 -m PyInstaller \
     --hidden-import mutagen.oggvorbis \
     --hidden-import mutagen.ogg \
     --hidden-import vkpymusic \
-    --hidden-import vkpymusic.service \
-    --hidden-import vkpymusic.models \
-    --hidden-import vkpymusic.models.song \
-    --hidden-import vkpymusic.models.playlist \
-    --hidden-import vkpymusic.vk_api \
-    --hidden-import vkpymusic.token_receiver \
     --hidden-import musicbrainzngs \
     --collect-all vkpymusic \
     --collect-all musicbrainzngs \
+    --add-binary "${CF_BIN}:." \
     vinyl_player.py
 
 echo ""
@@ -68,12 +73,13 @@ Package: vinyl-player
 Version: $VERSION
 Section: sound
 Priority: optional
-Architecture: amd64
+Architecture: $(dpkg --print-architecture 2>/dev/null || echo amd64)
 Depends: libc6
 Maintainer: insideside
 Description: Vinyl Player - web music player with vinyl visualization
  Web-based music player with vinyl record animation, multi-user support,
  LAN/WAN access, metadata search, and VK Music integration.
+ Includes cloudflared for WAN tunnel support.
 CTRL
 
 cat > "$DEB_DIR/usr/share/applications/vinyl-player.desktop" << DESKTOP
@@ -87,11 +93,11 @@ Categories=Audio;Music;Player;
 Terminal=false
 DESKTOP
 
-dpkg-deb --build "$DEB_DIR" "dist/${APPNAME}_${VERSION}_amd64.deb"
+dpkg-deb --build "$DEB_DIR" "dist/${APPNAME}_${VERSION}_$(dpkg --print-architecture 2>/dev/null || echo amd64).deb"
 
 echo ""
-echo "Done!"
+echo "Done! (includes cloudflared)"
 echo "Binary: dist/vinyl-player"
-echo "DEB: dist/${APPNAME}_${VERSION}_amd64.deb"
+echo "DEB: dist/${APPNAME}_${VERSION}_*.deb"
 echo ""
-echo "Install: sudo dpkg -i dist/${APPNAME}_${VERSION}_amd64.deb"
+echo "Install: sudo dpkg -i dist/${APPNAME}_${VERSION}_*.deb"

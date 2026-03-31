@@ -3,6 +3,12 @@ echo Building Vinyl Player for Windows...
 
 pip install pyinstaller httpx mutagen vkpymusic musicbrainzngs Pillow 2>nul
 
+:: Download cloudflared if not present
+if not exist "build_assets\cloudflared.exe" (
+    echo Downloading cloudflared for Windows...
+    curl -fsSL "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe" -o "build_assets\cloudflared.exe"
+)
+
 python -m PyInstaller ^
     --name "VinylPlayer" ^
     --windowed ^
@@ -31,17 +37,12 @@ python -m PyInstaller ^
     --hidden-import mutagen.oggvorbis ^
     --hidden-import mutagen.ogg ^
     --hidden-import vkpymusic ^
-    --hidden-import vkpymusic.service ^
-    --hidden-import vkpymusic.models ^
-    --hidden-import vkpymusic.models.song ^
-    --hidden-import vkpymusic.models.playlist ^
-    --hidden-import vkpymusic.vk_api ^
-    --hidden-import vkpymusic.token_receiver ^
     --hidden-import musicbrainzngs ^
     --collect-all vkpymusic ^
     --collect-all musicbrainzngs ^
+    --add-binary "build_assets\cloudflared.exe;." ^
     vinyl_player.py
 
 echo.
-echo Done! EXE: dist\VinylPlayer.exe
+echo Done! EXE: dist\VinylPlayer.exe (includes cloudflared)
 pause

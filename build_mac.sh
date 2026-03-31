@@ -2,8 +2,20 @@
 set -e
 echo "Building Vinyl Player for macOS..."
 
-# Install all dependencies (including optional)
+# Install Python dependencies
 pip3 install pyinstaller httpx mutagen vkpymusic musicbrainzngs Pillow 2>/dev/null
+
+# Download cloudflared if not present
+ARCH=$(uname -m)
+if [ "$ARCH" = "arm64" ]; then CF_ARCH="darwin-arm64"; else CF_ARCH="darwin-amd64"; fi
+CF_BIN="build_assets/cloudflared"
+if [ ! -f "$CF_BIN" ]; then
+    echo "Downloading cloudflared ($CF_ARCH)..."
+    curl -fsSL "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-${CF_ARCH}.tgz" -o /tmp/cloudflared.tgz
+    tar xzf /tmp/cloudflared.tgz -C build_assets/
+    rm /tmp/cloudflared.tgz
+    chmod +x "$CF_BIN"
+fi
 
 # Build .app
 python3 -m PyInstaller \
@@ -34,16 +46,11 @@ python3 -m PyInstaller \
     --hidden-import mutagen.oggvorbis \
     --hidden-import mutagen.ogg \
     --hidden-import vkpymusic \
-    --hidden-import vkpymusic.service \
-    --hidden-import vkpymusic.models \
-    --hidden-import vkpymusic.models.song \
-    --hidden-import vkpymusic.models.playlist \
-    --hidden-import vkpymusic.vk_api \
-    --hidden-import vkpymusic.token_receiver \
     --hidden-import musicbrainzngs \
     --collect-all vkpymusic \
     --collect-all musicbrainzngs \
     --add-data "build_assets/VinylPlayer.icns:." \
+    --add-binary "${CF_BIN}:." \
     vinyl_player.py
 
 echo ""
@@ -62,5 +69,4 @@ hdiutil create -volname "Vinyl Player" -srcfolder dist/dmg -ov -format UDZO "$DM
 rm -rf dist/dmg
 
 echo ""
-echo "Done! DMG: $DMG_PATH"
-echo "App: $APP_PATH"
+echo "Done! DMG: $DMG_PATH (includes cloudflared)"

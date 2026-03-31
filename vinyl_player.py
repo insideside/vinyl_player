@@ -4063,14 +4063,35 @@ _tunnel_proc = None
 _tunnel_url = None
 
 
+def _find_cloudflared():
+    """Ищет cloudflared: сначала рядом с бинарником (PyInstaller bundle), потом в PATH."""
+    # PyInstaller bundle
+    if getattr(sys, '_MEIPASS', None):
+        bundled = os.path.join(sys._MEIPASS, 'cloudflared')
+        if os.path.isfile(bundled):
+            return bundled
+        bundled_exe = bundled + '.exe'
+        if os.path.isfile(bundled_exe):
+            return bundled_exe
+    # Same directory as script
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    for name in ['cloudflared', 'cloudflared.exe']:
+        local = os.path.join(script_dir, name)
+        if os.path.isfile(local):
+            return local
+    # System PATH
+    return 'cloudflared'
+
+
 def start_tunnel():
     """Запускает cloudflared tunnel и возвращает публичный URL."""
     global _tunnel_proc, _tunnel_url
     stop_tunnel()
     _tunnel_url = None
+    cf_bin = _find_cloudflared()
     try:
         proc = subprocess.Popen(
-            ["cloudflared", "tunnel", "--url", "http://127.0.0.1:{}".format(SERVER_PORT)],
+            [cf_bin, "tunnel", "--url", "http://127.0.0.1:{}".format(SERVER_PORT)],
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             text=True
         )
