@@ -3067,11 +3067,13 @@ function clearSearch() {
 }
 
 // ── Toast ──
+var _toastTimer = null;
 function showToast(msg) {
   var t = document.getElementById('toast');
+  if (_toastTimer) clearTimeout(_toastTimer);
   t.textContent = msg;
   t.classList.add('show');
-  setTimeout(function(){ t.classList.remove('show'); }, 2500);
+  _toastTimer = setTimeout(function(){ t.classList.remove('show'); _toastTimer = null; }, 2500);
 }
 
 // ── Meta search ──
