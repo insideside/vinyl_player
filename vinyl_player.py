@@ -1912,9 +1912,9 @@ body { touch-action: pan-y; }
     <input type="text" id="trackEditTitle" class="folder-path-input" style="margin-bottom:8px">
     <label style="font-size:12px;color:rgba(255,255,255,0.4);display:block;margin-bottom:4px">Артист</label>
     <input type="text" id="trackEditArtist" class="folder-path-input" style="margin-bottom:8px">
-    <div id="trackEditOrderRow" style="display:none;margin-bottom:8px">
-      <label style="font-size:12px;color:rgba(255,255,255,0.4);display:block;margin-bottom:4px">Порядковый номер</label>
-      <input type="number" id="trackEditOrder" class="folder-path-input" min="1" style="width:100px">
+    <div id="trackEditOrderRow" style="margin-bottom:8px">
+      <label style="font-size:12px;color:rgba(255,255,255,0.4);display:block;margin-bottom:4px">Позиция в каталоге <span id="trackEditOrderHint" style="color:rgba(255,255,255,0.2)"></span></label>
+      <input type="number" id="trackEditOrder" class="folder-path-input" min="1" style="width:120px" placeholder="—">
     </div>
     <label style="display:flex;align-items:center;gap:6px;color:rgba(255,255,255,0.5);cursor:pointer;font-size:12px;margin-bottom:12px">
       <input type="checkbox" id="trackEditMeta" style="accent-color:#e94560"> Найти Meta-данные после сохранения
@@ -4014,14 +4014,14 @@ function openTrackEdit(idx) {
   document.getElementById('trackEditTitle').value = t.title || '';
   document.getElementById('trackEditArtist').value = t.artist || '';
   document.getElementById('trackEditMeta').checked = false;
-  // Check if numbered
   var m = t.file.match(/^(\d+)\.\s/);
-  var orderRow = document.getElementById('trackEditOrderRow');
+  var hint = document.getElementById('trackEditOrderHint');
   if (m) {
-    orderRow.style.display = '';
     document.getElementById('trackEditOrder').value = parseInt(m[1]);
+    hint.textContent = '(сейчас: ' + parseInt(m[1]) + ')';
   } else {
-    orderRow.style.display = 'none';
+    document.getElementById('trackEditOrder').value = '';
+    hint.textContent = '(нет номера — введите чтобы назначить)';
   }
   document.getElementById('trackEditOverlay').classList.add('show');
   document.getElementById('trackEditTitle').focus();
