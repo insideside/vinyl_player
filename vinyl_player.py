@@ -1193,10 +1193,11 @@ body {
 .playlist-header {
   padding: 12px 12px; border-bottom: 1px solid rgba(255,255,255,0.06);
   font-size: 14px; font-weight: 600; color: rgba(255,255,255,0.6);
-  transition: height 0.25s ease, padding 0.25s ease, opacity 0.25s ease;
+  will-change: transform, opacity;
+  transition: transform 0.2s ease, opacity 0.2s ease;
 }
 .playlist-header.header-hidden {
-  height: 0; padding: 0; margin: 0; border: none; overflow: hidden; opacity: 0; pointer-events: none;
+  transform: translateY(-100%); opacity: 0; pointer-events: none; position: absolute; width: 100%;
 }
 .playlist-tabs {
   display: flex; border-bottom: 1px solid rgba(255,255,255,0.06);
@@ -3732,27 +3733,35 @@ window.addEventListener('scroll', function() {
   window.scrollTo(0, 0);
 });
 
-// ── Auto-hide playlist header on scroll ──
+// ── Auto-hide playlist header on scroll (throttled, GPU) ──
 (function() {
   var lastScroll = 0;
   var header = null;
-  function onTrackScroll(e) {
+  var ticking = false;
+  var hidden = false;
+  function checkScroll(st) {
     if (!header) header = document.querySelector('.playlist-header');
     if (!header) return;
-    var st = e.target.scrollTop;
-    if (st > lastScroll && st > 40) {
-      header.classList.add('header-hidden');
-    } else {
-      header.classList.remove('header-hidden');
+    var shouldHide = st > lastScroll && st > 40;
+    if (shouldHide !== hidden) {
+      hidden = shouldHide;
+      if (hidden) header.classList.add('header-hidden');
+      else header.classList.remove('header-hidden');
     }
     lastScroll = st;
+    ticking = false;
   }
-  // Attach after DOM ready
+  function onTrackScroll(e) {
+    if (ticking) return;
+    ticking = true;
+    var st = e.target.scrollTop;
+    requestAnimationFrame(function() { checkScroll(st); });
+  }
   setTimeout(function() {
     var tl = document.getElementById('trackList');
-    if (tl) tl.addEventListener('scroll', onTrackScroll);
+    if (tl) tl.addEventListener('scroll', onTrackScroll, {passive: true});
     var al = document.getElementById('albumList');
-    if (al) al.addEventListener('scroll', onTrackScroll);
+    if (al) al.addEventListener('scroll', onTrackScroll, {passive: true});
   }, 500);
 })();
 
