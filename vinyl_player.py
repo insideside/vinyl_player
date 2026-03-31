@@ -1028,7 +1028,7 @@ body {
 .playlist-side {
   width: 360px; background: rgba(0,0,0,0.4); backdrop-filter: blur(20px);
   display: flex; flex-direction: column; border-left: 1px solid rgba(255,255,255,0.06);
-  transition: transform 0.3s ease;
+  transition: width 0.3s ease;
   z-index: 15; position: relative;
   overflow: hidden;
 }
@@ -1345,11 +1345,8 @@ body {
   will-change: right;
 }
 .sidebar-toggle:hover { color: rgba(255,255,255,0.6); background: rgba(0,0,0,0.5); }
-.playlist-side {
-  will-change: transform;
-}
 .sidebar-collapsed .playlist-side {
-  transform: translateX(100%); pointer-events: none;
+  width: 0; min-width: 0; padding: 0; border: none; overflow: hidden; pointer-events: none;
 }
 .sidebar-collapsed .sidebar-toggle { right: 0; }
 @media (min-width: 769px) {
