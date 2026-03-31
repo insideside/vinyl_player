@@ -3534,6 +3534,8 @@ function onDragStart(e, idx) {
   dragIdx = idx;
   e.dataTransfer.effectAllowed = 'move';
   e.target.closest('.playlist-item').classList.add('dragging');
+  lastDragClientY = e.clientY;
+  startDragAutoScroll();
 }
 
 function onDragEnd(e) {
@@ -3546,48 +3548,48 @@ function onDragEnd(e) {
 }
 
 // ── Auto-scroll during drag ──
-var dragAutoScroll = null;
-var dragScrollSpeed = 0;
+var dragAutoScrollId = null;
+var lastDragClientY = 0;
 
-function startDragAutoScroll(clientY) {
+function dragAutoScrollTick() {
   var tl = document.getElementById('trackList');
-  if (!tl) return;
+  if (!tl || (dragIdx === null && touchDragIdx === null)) {
+    dragAutoScrollId = null;
+    return;
+  }
   var rect = tl.getBoundingClientRect();
-  var edgeZone = 60;
-  var distFromBottom = rect.bottom - clientY;
-  var distFromTop = clientY - rect.top;
+  var y = lastDragClientY;
+  var edge = 80; // px from edge where scroll starts
+  var maxSpeed = 20; // px per frame at edge
+  var speed = 0;
 
-  if (distFromBottom < edgeZone && distFromBottom > 0) {
-    dragScrollSpeed += ((edgeZone - distFromBottom) / edgeZone * 12 - dragScrollSpeed) * 0.1;
-  } else if (distFromTop < edgeZone && distFromTop > 0) {
-    dragScrollSpeed += (-(edgeZone - distFromTop) / edgeZone * 12 - dragScrollSpeed) * 0.1;
-  } else {
-    dragScrollSpeed *= 0.8;
+  if (y > rect.bottom - edge) {
+    // Near bottom — scroll down
+    var ratio = Math.min(1, (y - (rect.bottom - edge)) / edge);
+    speed = ratio * ratio * maxSpeed; // quadratic acceleration
+  } else if (y < rect.top + edge) {
+    // Near top — scroll up
+    var ratio = Math.min(1, ((rect.top + edge) - y) / edge);
+    speed = -(ratio * ratio * maxSpeed);
   }
 
-  if (Math.abs(dragScrollSpeed) > 0.3) {
-    tl.scrollTop += dragScrollSpeed;
-  }
+  if (speed !== 0) tl.scrollTop += speed;
+  dragAutoScrollId = requestAnimationFrame(dragAutoScrollTick);
+}
 
-  if (dragIdx !== null || touchDragIdx !== null) {
-    dragAutoScroll = requestAnimationFrame(function() { startDragAutoScroll(lastDragClientY); });
-  } else {
-    dragScrollSpeed = 0;
-  }
+function startDragAutoScroll() {
+  if (!dragAutoScrollId) dragAutoScrollId = requestAnimationFrame(dragAutoScrollTick);
 }
 
 function stopDragAutoScroll() {
-  if (dragAutoScroll) { cancelAnimationFrame(dragAutoScroll); dragAutoScroll = null; }
-  dragScrollSpeed = 0;
+  if (dragAutoScrollId) { cancelAnimationFrame(dragAutoScrollId); dragAutoScrollId = null; }
 }
-
-var lastDragClientY = 0;
 
 function onDragOver(e, idx) {
   e.preventDefault();
   e.dataTransfer.dropEffect = 'move';
   lastDragClientY = e.clientY;
-  if (!dragAutoScroll) startDragAutoScroll(e.clientY);
+  startDragAutoScroll();
   var items = document.querySelectorAll('.playlist-item');
   for (var i = 0; i < items.length; i++) items[i].classList.remove('drag-over');
   e.target.closest('.playlist-item').classList.add('drag-over');
@@ -3616,6 +3618,8 @@ var touchClone = null;
 function onTouchDragStart(e, idx) {
   touchDragIdx = idx;
   touchStartY = e.touches[0].clientY;
+  lastDragClientY = touchStartY;
+  startDragAutoScroll();
   touchDragEl = e.target.closest('.playlist-item');
   // Create visual clone
   touchClone = touchDragEl.cloneNode(true);
@@ -3635,7 +3639,7 @@ function onTouchDragMove(e) {
   if (touchDragIdx === null) return;
   var y = e.touches[0].clientY;
   lastDragClientY = y;
-  if (!dragAutoScroll) startDragAutoScroll(y);
+  startDragAutoScroll();
   if (touchClone) {
     touchClone.style.top = (y - 25) + 'px';
     touchClone.style.left = touchDragEl.getBoundingClientRect().left + 'px';
