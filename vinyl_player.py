@@ -1701,8 +1701,8 @@ body { touch-action: pan-y; }
 </div>
 
 <!-- VK Download modal -->
-<div class="meta-overlay" id="vkOverlay" onclick="if(event.target===this)closeVkModal()">
-  <div class="meta-modal" style="width:min(480px,92vw)">
+<div class="meta-overlay" id="vkOverlay">
+  <div class="meta-modal" style="width:min(480px,92vw);max-height:90vh;overflow-y:auto">
     <h3>VK Music</h3>
     <div id="vkAuthSection">
       <div id="vkAuthStatus" style="font-size:12px;color:rgba(255,255,255,0.4);margin-bottom:8px"></div>
@@ -1748,7 +1748,7 @@ body { touch-action: pan-y; }
       <!-- Selected queue -->
       <div id="vkQueueSection" style="display:none;margin-top:8px">
         <div style="font-size:11px;color:rgba(255,255,255,0.4);margin-bottom:4px">Очередь загрузки (перетащите для изменения порядка):</div>
-        <div id="vkQueue" style="max-height:150px;overflow-y:auto;border:1px solid rgba(255,255,255,0.06);border-radius:8px;background:rgba(255,255,255,0.02)"></div>
+        <div id="vkQueue" style="max-height:40vh;overflow-y:auto;border:1px solid rgba(255,255,255,0.06);border-radius:8px;background:rgba(255,255,255,0.02)"></div>
         <div style="display:flex;gap:6px;align-items:center;margin-top:6px">
           <select id="vkSearchMode" class="folder-select" style="flex:1;padding:7px 26px 7px 8px;font-size:12px">
             <option value="prepend">В начало</option>
@@ -1765,7 +1765,7 @@ body { touch-action: pan-y; }
     <div id="vkProgressSection" style="display:none;margin-top:10px">
       <div class="meta-progress" id="vkProgress"></div>
       <div class="meta-bar"><div class="meta-bar-fill" id="vkBarFill" style="width:0%"></div></div>
-      <div class="meta-log" id="vkLog"></div>
+      <div class="meta-log" id="vkLog" style="max-height:200px;overflow-y:auto"></div>
     </div>
     <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px">
       <button onclick="cancelVkDownload()" style="background:#e94560;color:#fff" class="folder-btn">Отменить</button>
