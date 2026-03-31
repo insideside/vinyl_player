@@ -1527,6 +1527,17 @@ body { touch-action: pan-y; }
   .vinyl-scene { width: min(80vw, 50vh); height: min(80vw, 50vh); }
   .track-title { max-width: 80vw; }
 }
+/* Force portrait on narrow screens */
+@media (max-width: 768px) and (orientation: landscape) {
+  body::before {
+    content: 'Поверните устройство в портретный режим';
+    position: fixed; inset: 0; z-index: 9999;
+    background: #111; color: rgba(255,255,255,0.5);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 18px; text-align: center; padding: 40px;
+  }
+}
+.playlist-header span { cursor: pointer; }
 </style>
 </head>
 <body>
@@ -3685,6 +3696,10 @@ function onTouchDragEnd(e) {
 }
 
 // Fix viewport on iOS rotation
+// Lock to portrait on mobile
+if (window.innerWidth <= 768 && screen.orientation && screen.orientation.lock) {
+  screen.orientation.lock('portrait').catch(function(){});
+}
 window.addEventListener('orientationchange', function() {
   setTimeout(function() { window.scrollTo(0,0); document.body.style.height = window.innerHeight + 'px'; }, 300);
 });
@@ -3716,6 +3731,14 @@ document.addEventListener('touchend', function(e) {
   if (touchDragIdx !== null) onTouchDragEnd(e);
 });
 
+
+// ── Header tap → scroll to top ──
+document.getElementById('playlistHeader').addEventListener('click', function() {
+  var tl = document.getElementById('trackList');
+  if (tl) tl.scrollTo({top: 0, behavior: 'smooth'});
+  var al = document.getElementById('albumList');
+  if (al) al.scrollTo({top: 0, behavior: 'smooth'});
+});
 
 // ── Tooltips (JS, position:fixed) ──
 (function() {
