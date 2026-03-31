@@ -1716,9 +1716,9 @@ body { touch-action: pan-y; }
       <span id="playlistHeader" style="flex:1">0 треков</span>
       <button class="shuffle-btn" id="shuffleListBtn" onclick="toggleShuffleFromList()" data-tip="Перемешать"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M10.59 9.17L5.41 4 4 5.41l5.17 5.17 1.42-1.41zM14.5 4l2.04 2.04L4 18.59 5.41 20 17.96 7.46 20 9.5V4h-5.5zm.33 9.41l-1.41 1.41 3.13 3.13L14.5 20H20v-5.5l-2.04 2.04-3.13-3.13z"/></svg></button>
       <button class="shuffle-btn" id="editBtn" onclick="startEdit()" data-tip="Редактировать порядок" style="display:none"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 000-1.41l-2.34-2.34a1 1 0 00-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg></button>
-      <div id="editControls" style="display:none;gap:6px">
-        <button class="folder-btn folder-btn-primary" style="padding:4px 12px;font-size:11px" onclick="saveEdit()">Сохранить</button>
-        <button class="folder-btn folder-btn-secondary" style="padding:4px 12px;font-size:11px" onclick="cancelEdit()">Отмена</button>
+      <div id="editControls" style="display:none;gap:4px">
+        <button class="shuffle-btn" onclick="saveEdit()" data-tip="Сохранить" style="color:#52b788"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg></button>
+        <button class="shuffle-btn" onclick="cancelEdit()" data-tip="Отмена" style="color:#e94560"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg></button>
       </div>
     </div>
 
@@ -3496,6 +3496,7 @@ function startEdit() {
   isEditMode = true;
   editOrder = tracks.map(function(t) { return t.file; });
   document.getElementById('editBtn').style.display = 'none';
+  document.getElementById('shuffleListBtn').style.display = 'none';
   document.getElementById('editControls').style.display = 'flex';
   renderTracks();
 }
@@ -3503,6 +3504,7 @@ function startEdit() {
 function cancelEdit() {
   isEditMode = false;
   document.getElementById('editBtn').style.display = isNumberedCatalog ? '' : 'none';
+  document.getElementById('shuffleListBtn').style.display = '';
   document.getElementById('editControls').style.display = 'none';
   renderTracks();
 }
@@ -3560,7 +3562,7 @@ function dragAutoScrollTick() {
   var rect = tl.getBoundingClientRect();
   var y = lastDragClientY;
   var edge = 80; // px from edge where scroll starts
-  var maxSpeed = 20; // px per frame at edge
+  var maxSpeed = 40; // px per frame at edge
   var speed = 0;
 
   if (y > rect.bottom - edge) {
