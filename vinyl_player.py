@@ -1941,6 +1941,10 @@ var currentArmAngle = ARM_REST;
 var isDragging = false;
 var dragStartAngle = 0;
 var dragStartTime = 0;
+var dragVelocity = 0;
+var lastDragDelta = 0;
+var lastDragTime = 0;
+var inertiaActive = false;
 
 audio.volume = 0.8;
 
@@ -2006,6 +2010,9 @@ vinylRec.addEventListener('mousedown', function(e) {
   if (!audio.duration) return;
   e.preventDefault();
   isDragging = true;
+  inertiaActive = false;
+  dragVelocity = 0;
+  lastDragTime = performance.now();
   vinylRec.classList.add('grabbing');
   dragStartAngle = getAngleFromCenter(vinylRec, e.clientX, e.clientY);
   dragStartTime = audio.currentTime;
@@ -2021,6 +2028,13 @@ document.addEventListener('mousemove', function(e) {
 
   vinylAngle += delta;
   dragStartAngle = angle;
+
+  // Track velocity for inertia
+  var now = performance.now();
+  var dt = now - lastDragTime;
+  if (dt > 0) dragVelocity = delta / dt * 16; // deg per frame
+  lastDragDelta = delta;
+  lastDragTime = now;
 
   var secPerRevolution = 60 / 33;
   var timeDelta = (delta / 360) * secPerRevolution;
@@ -2040,7 +2054,13 @@ document.addEventListener('mouseup', function() {
   if (!isDragging) return;
   isDragging = false;
   vinylRec.classList.remove('grabbing');
-  stopScratch();
+  // Apply inertia if velocity is significant
+  if (Math.abs(dragVelocity) > 0.3 && audio.duration) {
+    inertiaActive = true;
+    applyInertia();
+  } else {
+    stopScratch();
+  }
 });
 
 // Touch support for vinyl drag
@@ -2048,6 +2068,9 @@ vinylRec.addEventListener('touchstart', function(e) {
   if (!audio.duration || e.touches.length !== 1) return;
   e.preventDefault();
   isDragging = true;
+  inertiaActive = false;
+  dragVelocity = 0;
+  lastDragTime = performance.now();
   var t = e.touches[0];
   dragStartAngle = getAngleFromCenter(vinylRec, t.clientX, t.clientY);
   dragStartTime = audio.currentTime;
@@ -2063,6 +2086,11 @@ document.addEventListener('touchmove', function(e) {
   if (delta < -180) delta += 360;
   vinylAngle += delta;
   dragStartAngle = angle;
+  var now = performance.now();
+  var dt = now - lastDragTime;
+  if (dt > 0) dragVelocity = delta / dt * 16;
+  lastDragDelta = delta;
+  lastDragTime = now;
   var secPerRevolution = 60 / 33;
   var timeDelta = (delta / 360) * secPerRevolution;
   var newTime = Math.max(0, Math.min(audio.currentTime + timeDelta, audio.duration - 0.1));
@@ -2075,7 +2103,39 @@ document.addEventListener('touchmove', function(e) {
   startScratch(delta);
 }, {passive: false});
 
-document.addEventListener('touchend', function() { isDragging = false; stopScratch(); });
+document.addEventListener('touchend', function() {
+  if (!isDragging) return;
+  isDragging = false;
+  if (Math.abs(dragVelocity) > 0.3 && audio.duration) {
+    inertiaActive = true;
+    applyInertia();
+  } else {
+    stopScratch();
+  }
+});
+
+function applyInertia() {
+  if (!inertiaActive || isDragging) { inertiaActive = false; stopScratch(); return; }
+  dragVelocity *= 0.92; // friction
+  if (Math.abs(dragVelocity) < 0.1) { inertiaActive = false; stopScratch(); return; }
+
+  vinylAngle += dragVelocity;
+
+  var secPerRevolution = 60 / 33;
+  var timeDelta = (dragVelocity / 360) * secPerRevolution;
+  var newTime = audio.currentTime + timeDelta;
+  newTime = Math.max(0, Math.min(newTime, audio.duration - 0.1));
+  audio.currentTime = newTime;
+
+  var pct = newTime / audio.duration;
+  currentArmAngle = ARM_START + (ARM_END - ARM_START) * pct;
+  tonearmEl.style.transform = 'rotate(' + currentArmAngle + 'deg)';
+  document.getElementById('progressFill').style.width = (pct * 100) + '%';
+  document.getElementById('timeCurrent').textContent = formatTime(newTime);
+
+  startScratch(dragVelocity);
+  requestAnimationFrame(applyInertia);
+}
 
 function formatTime(s) {
   var m = Math.floor(s / 60);
