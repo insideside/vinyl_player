@@ -1801,9 +1801,8 @@ var activeTab = 'tracks';
 var expandedAlbum = null;
 var savedFolders = [];
 
-// ── Prefetch next track ──
-var prefetchAudio = new Audio();
-var prefetchedFile = null;
+// ── Prefetch next track (cache warm, no swap) ──
+var prefetchLink = null;
 
 function prefetchNext() {
   if (playQueue.length < 2) return;
@@ -1811,11 +1810,14 @@ function prefetchNext() {
   var nextIdx = playQueue[nextPos];
   if (nextIdx < 0 || nextIdx >= tracks.length) return;
   var nextFile = tracks[nextIdx].file;
-  if (nextFile === prefetchedFile) return; // already cached
-  prefetchedFile = nextFile;
-  prefetchAudio.src = '/api/stream/' + encodeURIComponent(nextFile);
-  prefetchAudio.preload = 'auto';
-  prefetchAudio.load();
+  var url = '/api/stream/' + encodeURIComponent(nextFile);
+  // Use <link rel=prefetch> to warm browser cache without creating audio conflicts
+  if (prefetchLink) prefetchLink.remove();
+  prefetchLink = document.createElement('link');
+  prefetchLink.rel = 'prefetch';
+  prefetchLink.href = url;
+  prefetchLink.as = 'fetch';
+  document.head.appendChild(prefetchLink);
 }
 
 // ── Scratch sound via Web Audio API ──
@@ -2140,27 +2142,7 @@ function selectTrack(i, autoplay) {
   vinylAngle = 0;
   vinylSpeed = 0;
 
-  // Use prefetched audio if it matches, otherwise load normally
-  if (prefetchedFile === t.file && prefetchAudio.src) {
-    var oldAudio = audio;
-    audio = prefetchAudio;
-    audio.volume = oldAudio.volume;
-    audio.id = 'audioEl';
-    // Rebind events
-    audio.addEventListener('loadedmetadata', function() {
-      document.getElementById('timeDuration').textContent = formatTime(audio.duration);
-    });
-    audio.addEventListener('ended', function() { nextTrack(); });
-    audio.addEventListener('timeupdate', onTimeUpdate);
-    // Reset prefetch
-    prefetchAudio = oldAudio;
-    prefetchAudio.pause();
-    prefetchAudio.removeAttribute('src');
-    prefetchedFile = null;
-  } else {
-    audio.src = '/api/stream/' + encodeURIComponent(t.file);
-    prefetchedFile = null;
-  }
+  audio.src = '/api/stream/' + encodeURIComponent(t.file);
   var titleEl = document.getElementById('trackTitle');
   var artistEl = document.getElementById('trackArtist');
   // Fade out, swap text, fade in
