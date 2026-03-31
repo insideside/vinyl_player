@@ -5,28 +5,50 @@ echo "Building Vinyl Player for Linux..."
 VERSION="1.0.0"
 APPNAME="vinyl-player"
 
-# Install dependencies
-pip3 install pyinstaller httpx mutagen 2>/dev/null
+# Install all dependencies
+pip3 install pyinstaller httpx mutagen vkpymusic musicbrainzngs 2>/dev/null
 
 # Build binary
-pyinstaller \
+python3 -m PyInstaller \
     --name "vinyl-player" \
     --onefile \
     --noconfirm \
     --clean \
     --hidden-import httpx \
+    --hidden-import httpx._transports \
+    --hidden-import httpx._transports.default \
+    --hidden-import httpcore \
+    --hidden-import httpcore._async \
+    --hidden-import httpcore._sync \
+    --hidden-import h11 \
+    --hidden-import anyio \
+    --hidden-import anyio._backends \
+    --hidden-import anyio._backends._asyncio \
+    --hidden-import certifi \
     --hidden-import mutagen \
     --hidden-import mutagen.mp3 \
     --hidden-import mutagen.id3 \
+    --hidden-import mutagen.id3._frames \
+    --hidden-import mutagen.id3._specs \
     --hidden-import mutagen.flac \
     --hidden-import mutagen.mp4 \
     --hidden-import mutagen.oggvorbis \
+    --hidden-import mutagen.ogg \
+    --hidden-import vkpymusic \
+    --hidden-import vkpymusic.service \
+    --hidden-import vkpymusic.models \
+    --hidden-import vkpymusic.models.song \
+    --hidden-import vkpymusic.models.playlist \
+    --hidden-import vkpymusic.vk_api \
+    --hidden-import vkpymusic.token_receiver \
+    --hidden-import musicbrainzngs \
+    --collect-all vkpymusic \
+    --collect-all musicbrainzngs \
     vinyl_player.py
 
 echo ""
 echo "Creating .deb package..."
 
-# Build .deb
 DEB_DIR="dist/deb"
 rm -rf "$DEB_DIR"
 mkdir -p "$DEB_DIR/DEBIAN"
@@ -37,12 +59,10 @@ mkdir -p "$DEB_DIR/usr/share/icons/hicolor/256x256/apps"
 cp dist/vinyl-player "$DEB_DIR/usr/local/bin/"
 chmod 755 "$DEB_DIR/usr/local/bin/vinyl-player"
 
-# Copy icon if exists
 if [ -f "build_assets/icon_256.png" ]; then
     cp build_assets/icon_256.png "$DEB_DIR/usr/share/icons/hicolor/256x256/apps/vinyl-player.png"
 fi
 
-# Control file
 cat > "$DEB_DIR/DEBIAN/control" << CTRL
 Package: vinyl-player
 Version: $VERSION
@@ -56,7 +76,6 @@ Description: Vinyl Player - web music player with vinyl visualization
  LAN/WAN access, metadata search, and VK Music integration.
 CTRL
 
-# Desktop entry
 cat > "$DEB_DIR/usr/share/applications/vinyl-player.desktop" << DESKTOP
 [Desktop Entry]
 Name=Vinyl Player
