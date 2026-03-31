@@ -4793,68 +4793,61 @@ class Handler(BaseHTTPRequestHandler):
             if not old_path or not old_path.exists():
                 self._respond_json({"ok": False, "error": "Файл не найден."})
                 return
-            ext = old_path.suffix
-            # Determine if numbered catalog
-            old_match = re.match(r'^(\d+)\.\s+(.+)$', old_path.stem)
-            if old_match:
-                old_num = int(old_match.group(1))
-                target_num = int(new_order) if new_order else old_num
-                pad = len(old_match.group(1))
-                new_name = "{}. {} - {}{}".format(str(target_num).zfill(pad), vk_safe_filename(new_artist) if new_artist else vk_safe_filename(new_title), vk_safe_filename(new_title), ext)
-                if new_artist:
-                    new_name = "{}. {} - {}{}".format(str(target_num).zfill(pad), vk_safe_filename(new_artist), vk_safe_filename(new_title), ext)
-                else:
-                    new_name = "{}. {}{}".format(str(target_num).zfill(pad), vk_safe_filename(new_title), ext)
-                # Handle order change
-                if target_num != old_num:
-                    # Renumber: shift tracks to make room
+            try:
+                ext = old_path.suffix
+                name_part = (vk_safe_filename(new_artist) + " - " + vk_safe_filename(new_title)) if new_artist else vk_safe_filename(new_title)
+                old_match = re.match(r'^(\d+)\.\s+(.+)$', old_path.stem)
+                if old_match:
+                    old_num = int(old_match.group(1))
+                    target_num = int(new_order) if new_order else old_num
+                    # Get all tracks, build ordered list
                     all_tracks = vk_get_existing_tracks(folder)
-                    # Remove old from list
-                    all_tracks = [(n, name, p) for n, name, p in all_tracks if p != old_path]
-                    # Insert at new position
-                    all_tracks.insert(max(0, target_num - 1), (target_num, "", old_path))
-                    # Rename old file to temp
-                    tmp = old_path.parent / ("__tmp_edit_" + old_path.name)
-                    old_path.rename(tmp)
-                    # Renumber remaining
-                    pad = len(str(len(all_tracks)))
-                    for i, (_, name, p) in enumerate(all_tracks):
-                        if p == old_path:
-                            # This is our track
-                            final_name = "{}. {}{}".format(str(i+1).zfill(pad),
-                                (vk_safe_filename(new_artist) + " - " + vk_safe_filename(new_title)) if new_artist else vk_safe_filename(new_title), ext)
-                            tmp.rename(old_path.parent / final_name)
-                            new_name = final_name
+                    # Step 1: rename all to temp to avoid collisions
+                    temp_list = []
+                    for num, tname, tpath in all_tracks:
+                        tmp = tpath.parent / ("__tmp_te_{}_{}".format(num, tpath.name))
+                        tpath.rename(tmp)
+                        if tpath == old_path:
+                            temp_list.append((num, name_part, tmp, True))
                         else:
-                            if p.exists():
-                                nm = re.match(r'^\d+\.\s+(.+)$', p.stem)
-                                name_part = nm.group(1) if nm else p.stem
-                                rn = "{}. {}{}".format(str(i+1).zfill(pad), name_part, p.suffix)
-                                rp = p.parent / rn
-                                if p != rp:
-                                    p.rename(rp)
+                            temp_list.append((num, tname, tmp, False))
+                    # Step 2: reorder — remove edited track, insert at target position
+                    edited = None
+                    others = []
+                    for num, tname, tmp, is_edited in temp_list:
+                        if is_edited:
+                            edited = (tname, tmp)
+                        else:
+                            others.append((tname, tmp))
+                    insert_pos = max(0, min(target_num - 1, len(others)))
+                    others.insert(insert_pos, edited)
+                    # Step 3: rename all with new numbers
+                    pad = len(str(len(others)))
+                    new_name = ""
+                    for i, (tname, tmp) in enumerate(others):
+                        final = "{}. {}{}".format(str(i + 1).zfill(pad), tname, ext if tmp == edited[1] else tmp.suffix)
+                        final_path = Path(folder) / final
+                        tmp.rename(final_path)
+                        if tmp == edited[1]:
+                            new_name = final
                 else:
+                    # Non-numbered: just rename
+                    new_name = name_part + ext
                     new_path = old_path.parent / new_name
                     if new_path != old_path:
                         old_path.rename(new_path)
-            else:
-                # Non-numbered: just rename
-                if new_artist:
-                    new_name = "{} - {}{}".format(vk_safe_filename(new_artist), vk_safe_filename(new_title), ext)
-                else:
-                    new_name = "{}{}".format(vk_safe_filename(new_title), ext)
-                new_path = old_path.parent / new_name
-                if new_path != old_path:
-                    old_path.rename(new_path)
-            # Run meta if requested
-            if run_meta:
-                threading.Thread(target=lambda: (
-                    search_metadata(new_artist or '', new_title) and
-                    write_metadata_to_file(str(Path(folder) / new_name),
-                        search_metadata(new_artist or '', new_title),
-                        fetch_cover_art(search_metadata(new_artist or '', new_title) or {}))
-                ), daemon=True).start()
-            self._respond_json({"ok": True, "new_file": new_name})
+                # Run meta if requested
+                if run_meta and new_name:
+                    def do_meta():
+                        fp = str(Path(folder) / new_name)
+                        found = search_metadata(new_artist or '', new_title)
+                        if found:
+                            cover = fetch_cover_art(found)
+                            write_metadata_to_file(fp, found, cover)
+                    threading.Thread(target=do_meta, daemon=True).start()
+                self._respond_json({"ok": True, "new_file": new_name})
+            except Exception:
+                self._respond_json({"ok": False, "error": "Ошибка переименования."})
 
         elif path == "/api/reorder":
             if self._deny_demo(udata): return
