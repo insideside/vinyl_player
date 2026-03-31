@@ -1209,7 +1209,6 @@ body {
 }
 .playlist-item:hover { background: rgba(255,255,255,0.05); }
 .playlist-item.active { background: rgba(233,69,96,0.15); transition: background 0.3s ease; }
-.playlist-item .num { min-width: 32px; text-align: right; font-size: 11px; color: rgba(255,255,255,0.3); flex-shrink: 0; font-variant-numeric: tabular-nums; }
 .playlist-item .cover-thumb {
   width: 40px; height: 40px; border-radius: 4px; background: #333;
   display: flex; align-items: center; justify-content: center; overflow: hidden; flex-shrink: 0;
@@ -2102,13 +2101,11 @@ function renderTracks() {
         + ' ondragover="onDragOver(event,' + i + ')" ondrop="onDrop(event,' + i + ')"'
         + ' ontouchstart="onTouchDragStart(event,' + i + ')">'
         + '<span class="drag-handle">&#9776;</span>'
-        + '<span class="num">' + (i+1) + '</span>'
         + '<div class="cover-thumb">' + coverHtml + '</div>'
         + '<div class="info"><div class="name">' + esc(t.title) + '</div>'
         + '<div class="artist">' + esc(t.artist) + '</div></div></div>';
     } else {
       html += '<div class="playlist-item' + (i === currentIdx ? ' active' : '') + '" onclick="playFromList(' + i + ')">'
-        + '<span class="num">' + (i+1) + '</span>'
         + '<div class="cover-thumb">' + coverHtml + '</div>'
         + '<div class="info"><div class="name">' + esc(t.title) + '</div>'
         + '<div class="artist">' + esc(t.artist) + '</div></div></div>';
@@ -2142,7 +2139,6 @@ function renderAlbums() {
       var idx = alb.tracks[ti];
       var t = tracks[idx];
       html += '<div class="playlist-item' + (idx === currentIdx ? ' active' : '') + '" onclick="event.stopPropagation();playFromAlbum(' + a + ',' + idx + ')" style="padding-left:36px">'
-        + '<span class="num">' + (ti+1) + '</span>'
         + '<div class="info"><div class="name">' + esc(t.title) + '</div></div></div>';
     }
     html += '</div>';
