@@ -2255,6 +2255,16 @@ function showTab(tab) {
   activeTab = tab;
   document.getElementById('tabTracks').className = 'playlist-tab' + (tab === 'tracks' ? ' active' : '');
   document.getElementById('tabAlbums').className = 'playlist-tab' + (tab === 'albums' ? ' active' : '');
+  // Hide scrollbar on leaving panel, show on entering
+  var tl = document.getElementById('trackList');
+  var al = document.getElementById('albumList');
+  if (tab === 'albums') {
+    tl.style.overflowY = 'hidden';
+    al.style.overflowY = '';
+  } else {
+    al.style.overflowY = 'hidden';
+    tl.style.overflowY = '';
+  }
   document.getElementById('tabSlider').classList.toggle('show-albums', tab === 'albums');
   if (tab === 'albums') {
     document.getElementById('playlistHeader').textContent = (filteredAlbums ? filteredAlbums.length + ' / ' : '') + albums.length + ' альбомов';
