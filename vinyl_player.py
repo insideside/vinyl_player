@@ -1155,7 +1155,7 @@ body {
 
 /* ── Layout ── */
 .app { position: relative; height: 100vh; height: 100dvh; }
-.vinyl-side { position: absolute; inset: 0; right: 360px; display: flex; flex-direction: column; align-items: center; justify-content: center; transition: right 0.25s ease; }
+.vinyl-side { position: absolute; inset: 0; right: 360px; display: flex; flex-direction: column; align-items: center; justify-content: center; transition: right 0.25s ease; overflow: hidden; touch-action: none; }
 .playlist-side {
   position: absolute; top: 0; right: 0; bottom: 0; width: 360px;
   background: rgba(0,0,0,0.4); backdrop-filter: blur(20px);
@@ -1596,8 +1596,9 @@ body {
 .search-clear.show { display: flex; }
 
 /* ── iOS safe areas ── */
-html { touch-action: pan-y; overflow: hidden; }
-body { touch-action: pan-y; }
+html { overflow: hidden; touch-action: none; position: fixed; width: 100%; height: 100%; }
+body { overflow: hidden; touch-action: none; position: fixed; width: 100%; height: 100%; }
+.playlist-list, .coverflow-wrap, .meta-log, .meta-modal, #vkQueue, #vkSearchResults, #browseList, #adminUserList { touch-action: pan-y; -webkit-overflow-scrolling: touch; }
 .playlist-side { padding-top: env(safe-area-inset-top); }
 .vinyl-side { padding-top: env(safe-area-inset-top); padding-bottom: env(safe-area-inset-bottom); }
 
