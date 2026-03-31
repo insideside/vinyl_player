@@ -1331,7 +1331,7 @@ body {
 .pw-field input::placeholder { color: rgba(255,255,255,0.25); }
 .pw-field:focus-within { border-color: #e94560; }
 .pw-eye {
-  width: 36px; height: 36px; flex-shrink: 0;
+  width: 36px; flex-shrink: 0; align-self: stretch;
   background: none; border: none; cursor: pointer;
   display: flex; align-items: center; justify-content: center;
   opacity: 0.35; transition: opacity 0.15s;
@@ -1670,29 +1670,27 @@ body { touch-action: pan-y; }
 
 <!-- WAN mode modal -->
 <div class="meta-overlay" id="wanModeOverlay" onclick="if(event.target===this){this.classList.remove('show');setToggle('wanToggle','wanDot',false)}">
-  <div class="meta-modal" style="width:380px">
+  <div class="meta-modal" style="width:min(400px,90vw)">
     <h3>Внешний доступ (WAN)</h3>
-    <div style="display:flex;flex-direction:column;gap:8px;margin:12px 0">
-      <button class="folder-btn folder-btn-secondary" style="padding:14px;text-align:left" onclick="startWanMode('tunnel')">
-        <div style="font-weight:600;margin-bottom:4px">Cloudflare Tunnel</div>
-        <div style="font-size:11px;color:rgba(255,255,255,0.4)">Автоматический HTTPS-туннель. Не нужен статический IP. URL меняется при каждом запуске.</div>
+    <div style="display:flex;flex-direction:column;gap:6px;margin:12px 0">
+      <button class="folder-btn folder-btn-secondary" style="padding:12px;text-align:left;white-space:normal" onclick="startWanMode('tunnel')">
+        <div style="font-weight:600;font-size:13px">Cloudflare Tunnel</div>
+        <div style="font-size:11px;color:rgba(255,255,255,0.35);margin-top:2px">Автоматический HTTPS-туннель, не нужен статический IP</div>
       </button>
-      <button class="folder-btn folder-btn-secondary" style="padding:14px;text-align:left" onclick="document.getElementById('wanStaticForm').style.display=''">
-        <div style="font-weight:600;margin-bottom:4px">Статический IP / VPS</div>
-        <div style="font-size:11px;color:rgba(255,255,255,0.4)">Сервер доступен напрямую по IP. Для VPS, выделенных серверов, проброшенных портов.</div>
+      <button class="folder-btn folder-btn-secondary" style="padding:12px;text-align:left;white-space:normal" onclick="document.getElementById('wanStaticForm').style.display=''">
+        <div style="font-weight:600;font-size:13px">Статический IP / VPS</div>
+        <div style="font-size:11px;color:rgba(255,255,255,0.35);margin-top:2px">Прямой доступ по IP для VPS и выделенных серверов</div>
       </button>
     </div>
     <div id="wanStaticForm" style="display:none;margin-top:8px">
       <div style="font-size:12px;color:rgba(255,255,255,0.4);margin-bottom:6px">Настройки прямого доступа</div>
-      <div class="fp-row" style="margin-bottom:6px">
-        <input type="text" id="wanStaticIp" class="folder-path-input" style="flex:2" placeholder="IP-адрес (напр. 85.192.12.34)">
-        <input type="text" id="wanStaticPort" class="folder-path-input" style="flex:1" placeholder="Порт (7656)">
+      <div style="display:flex;gap:6px;margin-bottom:6px">
+        <input type="text" id="wanStaticIp" class="folder-path-input" style="flex:2" placeholder="IP (напр. 85.192.12.34)">
+        <input type="text" id="wanStaticPort" class="folder-path-input" style="flex:1" placeholder="7656">
       </div>
       <button class="folder-btn folder-btn-primary" style="width:100%" onclick="startWanMode('static')">Подключить</button>
     </div>
-    <div style="display:flex;justify-content:flex-end;margin-top:12px">
-      <button class="folder-btn folder-btn-secondary" onclick="document.getElementById('wanModeOverlay').classList.remove('show');setToggle('wanToggle','wanDot',false)">Отмена</button>
-    </div>
+    <button class="folder-btn folder-btn-secondary" style="width:100%;margin-top:10px" onclick="document.getElementById('wanModeOverlay').classList.remove('show');setToggle('wanToggle','wanDot',false)">Отмена</button>
   </div>
 </div>
 
@@ -4277,6 +4275,12 @@ def set_wan_static(ip, port):
     stop_tunnel()
     wan_url = "http://{}:{}".format(ip, port)
     _tunnel_url = wan_url
+    # Persist to settings for auto-restore
+    s = load_settings()
+    s["wan_mode"] = "static"
+    s["wan_ip"] = ip
+    s["wan_port"] = port
+    save_settings(s)
     if not IS_PUBLIC:
         IS_PUBLIC = True
         _restart_server("0.0.0.0")
@@ -4287,6 +4291,12 @@ def set_wan_static(ip, port):
 
 def stop_tunnel():
     global _tunnel_proc, _tunnel_url
+    # Clear saved WAN config
+    s = load_settings()
+    s.pop("wan_mode", None)
+    s.pop("wan_ip", None)
+    s.pop("wan_port", None)
+    save_settings(s)
     if _tunnel_proc:
         try:
             _tunnel_proc.terminate()
@@ -4385,11 +4395,22 @@ def main():
     IS_PUBLIC = public
     bind_addr = "0.0.0.0" if public else "127.0.0.1"
 
+    # Auto-restore saved WAN static IP config
+    s = load_settings()
+    if s.get("wan_mode") == "static" and s.get("wan_ip"):
+        IS_PUBLIC = True
+        bind_addr = "0.0.0.0"
+        print("Restoring WAN static: http://{}:{}".format(s["wan_ip"], s.get("wan_port", SERVER_PORT)))
+
     _start_server(bind_addr)
+
+    # Apply saved WAN after server starts
+    if s.get("wan_mode") == "static" and s.get("wan_ip"):
+        set_wan_static(s["wan_ip"], s.get("wan_port", str(SERVER_PORT)))
 
     url = "http://127.0.0.1:{}".format(SERVER_PORT)
     print("Vinyl Player: " + url)
-    if public:
+    if public or IS_PUBLIC:
         local_ip = get_local_ip()
         print("LAN: http://{}:{}".format(local_ip, SERVER_PORT))
     print("Ctrl+C для остановки")
