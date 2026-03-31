@@ -12,6 +12,7 @@ Music/
 
 # User data — never commit
 .vinyl_users.json
+.vinyl_settings.json
 .vinyl_app_secret
 .vinyl_player_config.json
 .vk_music_token.json

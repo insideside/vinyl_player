@@ -52,6 +52,7 @@ import http.cookies
 SERVER_PORT = 7656
 MUSIC_DIR = ""
 USERS_FILE = Path.home() / ".vinyl_users.json"
+SETTINGS_FILE = Path.home() / ".vinyl_settings.json"
 VK_APP_ID = 2685278
 VK_USER_AGENT = "KateMobileAndroid/56 lite-460 (Android 4.4.2; SDK 19; x86; unknown Android SDK built for x86; en)"
 IS_PUBLIC = False
@@ -87,6 +88,34 @@ def _check_pw(password, stored):
     return hmac.compare_digest(actual, expected_hash)
 
 
+def load_settings():
+    if SETTINGS_FILE.exists():
+        try:
+            return json.loads(SETTINGS_FILE.read_text())
+        except Exception:
+            pass
+    return {}
+
+
+def save_settings(settings):
+    SETTINGS_FILE.write_text(json.dumps(settings, ensure_ascii=False, indent=2))
+
+
+def get_music_root():
+    s = load_settings()
+    root = s.get("music_root", "")
+    if not root:
+        root = str(Path.home() / "VinylMusic")
+    return root
+
+
+def set_music_root(path):
+    s = load_settings()
+    s["music_root"] = path
+    save_settings(s)
+    Path(path).mkdir(parents=True, exist_ok=True)
+
+
 def load_users():
     if USERS_FILE.exists():
         try:
@@ -108,10 +137,14 @@ def create_user(username, password, is_admin=False):
     users = load_users()
     if username in users:
         return False
+    # Create default folder inside MUSIC_ROOT
+    music_root = get_music_root()
+    user_folder = str(Path(music_root) / username)
+    Path(user_folder).mkdir(parents=True, exist_ok=True)
     users[username] = {
         "password": _hash_pw(password),
         "is_admin": is_admin,
-        "folders": [],
+        "folders": [user_folder],
     }
     save_users(users)
     return True
@@ -158,12 +191,28 @@ def get_user_folders(username):
     return u.get("folders", [])
 
 
+def is_path_within(path, root):
+    """Check if path is inside root directory."""
+    try:
+        return str(Path(path).resolve()).startswith(str(Path(root).resolve()))
+    except Exception:
+        return False
+
+
 def add_user_folder(username, folder):
     users = load_users()
     u = users.get(username)
-    if u and folder not in u["folders"]:
+    if not u:
+        return False
+    # Non-admins can only add folders inside MUSIC_ROOT
+    if not u.get("is_admin"):
+        music_root = get_music_root()
+        if not is_path_within(folder, music_root):
+            return False
+    if folder not in u["folders"]:
         u["folders"].append(folder)
         save_users(users)
+    return True
 
 
 def remove_user_folder(username, folder):
@@ -1693,6 +1742,13 @@ body { touch-action: pan-y; }
     <h3>Управление пользователями</h3>
     <div id="adminUserList" style="flex:1;overflow-y:auto;margin:10px 0;min-height:0"></div>
     <div style="border-top:1px solid rgba(255,255,255,0.08);padding-top:12px;margin-top:8px">
+      <div style="font-size:12px;color:rgba(255,255,255,0.5);margin-bottom:4px">Корневая папка музыки</div>
+      <div class="fp-row" style="margin-bottom:10px">
+        <input type="text" id="adminMusicRoot" class="folder-path-input" style="flex:1" placeholder="/path/to/music">
+        <button class="folder-btn folder-btn-primary" style="padding:7px 12px" onclick="saveMusicRoot()">Сохранить</button>
+      </div>
+    </div>
+    <div style="border-top:1px solid rgba(255,255,255,0.08);padding-top:12px;margin-top:8px">
       <div style="font-size:12px;color:rgba(255,255,255,0.5);margin-bottom:6px">Создать пользователя</div>
       <div style="display:flex;gap:6px;margin-bottom:6px">
         <input type="text" id="newUserName" class="folder-path-input" placeholder="Логин" style="flex:1">
@@ -3135,6 +3191,20 @@ function openAdmin() {
   if (!isAdmin) return;
   document.getElementById('adminOverlay').classList.add('show');
   loadAdminUsers();
+  // Load current music root
+  fetch('/api/config').then(function(r){return r.json()}).then(function(cfg) {
+    document.getElementById('adminMusicRoot').value = cfg.music_root || '';
+  });
+}
+
+function saveMusicRoot() {
+  var root = document.getElementById('adminMusicRoot').value.trim();
+  if (!root) { showToast('Введите путь'); return; }
+  fetch('/api/admin/set_music_root', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({music_root: root})})
+  .then(function(r){return r.json()}).then(function(d) {
+    if (d.ok) showToast('Корневая папка сохранена'); else showToast(d.error || 'Ошибка');
+  });
 }
 
 function loadAdminUsers() {
@@ -3489,16 +3559,21 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
 <form onsubmit="return doLogin()" id="loginForm">
 <label>Логин</label><input type="text" id="lu" autocomplete="username" required>
 <label>Пароль</label><input type="password" id="lp" autocomplete="current-password" required>
+<div id="musicRootField" style="display:none">
+<label>Корневая папка музыки</label><input type="text" id="mr" placeholder="~/VinylMusic">
+<div style="font-size:10px;color:rgba(255,255,255,0.3);margin-top:2px">Папка для хранения музыки всех пользователей. Для каждого пользователя будет создана подпапка.</div>
+</div>
 <button type="submit" id="lbtn">Войти</button>
 <div class="error" id="lerr"></div>
 </form>
 </div>
 <script>
-// Check if setup needed
 fetch('/api/auth/check').then(function(r){return r.json()}).then(function(d){
   if(d.needs_setup){
     document.getElementById('subtitle').textContent='Создайте аккаунт администратора';
     document.getElementById('lbtn').textContent='Создать';
+    document.getElementById('musicRootField').style.display='';
+    document.getElementById('mr').value=d.default_music_root||'';
     document.getElementById('loginForm').onsubmit=function(){return doSetup()};
   }
 });
@@ -3510,8 +3585,8 @@ function doLogin(){
   });return false;
 }
 function doSetup(){
-  var u=document.getElementById('lu').value,p=document.getElementById('lp').value;
-  fetch('/api/auth/setup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u,password:p})})
+  var u=document.getElementById('lu').value,p=document.getElementById('lp').value,mr=document.getElementById('mr').value;
+  fetch('/api/auth/setup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u,password:p,music_root:mr})})
   .then(function(r){return r.json()}).then(function(d){
     if(d.ok) window.location.reload(); else document.getElementById('lerr').textContent=d.error||'Ошибка';
   });return false;
@@ -3576,6 +3651,7 @@ class Handler(BaseHTTPRequestHandler):
                 "all_urls": all_urls,
                 "username": user,
                 "is_admin": udata.get("is_admin", False) if udata else False,
+                "music_root": get_music_root(),
             })
 
         elif path == "/api/scan":
@@ -3583,6 +3659,11 @@ class Handler(BaseHTTPRequestHandler):
             folder = params.get("path", [""])[0]
             if not folder or not Path(folder).is_dir():
                 self._respond_json({"error": "Папка не найдена: " + folder})
+                return
+            # Non-admins restricted to MUSIC_ROOT
+            is_admin_user = udata.get("is_admin", False) if udata else False
+            if not is_admin_user and not is_path_within(folder, get_music_root()):
+                self._respond_json({"error": "Доступ запрещён. Каталог вне корневой папки музыки."})
                 return
             global MUSIC_DIR
             MUSIC_DIR = folder
@@ -3642,14 +3723,24 @@ class Handler(BaseHTTPRequestHandler):
 
         elif path == "/api/browse":
             params = parse_qs(parsed.query)
-            browse_path = params.get("path", [""])[0] or str(Path.home())
+            music_root = get_music_root()
+            is_admin_user = udata.get("is_admin", False) if udata else False
+            # Non-admins restricted to MUSIC_ROOT
+            default_path = music_root if not is_admin_user else str(Path.home())
+            browse_path = params.get("path", [""])[0] or default_path
             p = Path(browse_path)
             if not p.is_dir():
-                p = Path.home()
+                p = Path(default_path)
+            # Enforce boundary for non-admins
+            if not is_admin_user and not is_path_within(str(p), music_root):
+                p = Path(music_root)
             items = []
-            # Parent
             parent = str(p.parent)
-            if parent != str(p):
+            # Allow going up only within allowed boundary
+            can_go_up = parent != str(p)
+            if not is_admin_user:
+                can_go_up = can_go_up and is_path_within(parent, music_root)
+            if can_go_up:
                 items.append({"name": "..", "path": parent, "is_dir": True})
             try:
                 for child in sorted(p.iterdir(), key=lambda x: (not x.is_dir(), x.name.lower())):
@@ -3715,7 +3806,11 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/auth/check":
             users = load_users()
             user = self._get_user()
-            self._respond_json({"needs_setup": len(users) == 0, "logged_in": user is not None})
+            self._respond_json({
+                "needs_setup": len(users) == 0,
+                "logged_in": user is not None,
+                "default_music_root": str(Path.home() / "VinylMusic"),
+            })
         else:
             self._respond(404, "text/plain", b"Not found")
 
@@ -3736,9 +3831,15 @@ class Handler(BaseHTTPRequestHandler):
                 self._respond_json({"ok": False, "error": "Пользователи уже существуют."})
                 return
             u, p = data.get("username", "").strip(), data.get("password", "")
+            mr = data.get("music_root", "").strip()
             if not u or not p:
                 self._respond_json({"ok": False, "error": "Заполните все поля."})
                 return
+            # Set MUSIC_ROOT before creating user (create_user uses it)
+            if mr:
+                set_music_root(mr)
+            else:
+                set_music_root(str(Path.home() / "VinylMusic"))
             create_user(u, p, is_admin=True)
             token = create_session(u)
             self.send_response(200)
@@ -4024,6 +4125,17 @@ class Handler(BaseHTTPRequestHandler):
             if target in users_db:
                 users_db[target]["folders"] = folders
                 save_users(users_db)
+            self._respond_json({"ok": True})
+
+        elif path == "/api/admin/set_music_root":
+            if not udata or not udata.get("is_admin"):
+                self._respond_json({"ok": False, "error": "Нет доступа."})
+                return
+            mr = data.get("music_root", "").strip()
+            if not mr:
+                self._respond_json({"ok": False, "error": "Путь не указан."})
+                return
+            set_music_root(mr)
             self._respond_json({"ok": True})
 
         elif path == "/api/profile/change_password":
