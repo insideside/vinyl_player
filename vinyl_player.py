@@ -3722,16 +3722,24 @@ document.addEventListener('touchend', function(e) {
 });
 
 // iOS status bar tap → scroll track list to top
-window.addEventListener('scroll', function() {
-  if (window.scrollY === 0) {
-    var el = document.getElementById('trackList');
-    if (el) el.scrollTop = 0;
-    var el2 = document.getElementById('albumList');
-    if (el2) el2.scrollTop = 0;
-  }
-  // Prevent body scroll
-  window.scrollTo(0, 0);
-});
+// Use a 1px-taller-than-viewport invisible div to make window scrollable
+// iOS status bar tap triggers window scroll to top
+(function() {
+  var sentinel = document.createElement('div');
+  sentinel.style.cssText = 'height:calc(100vh + 1px);width:1px;position:fixed;top:0;left:0;pointer-events:none;opacity:0;z-index:-1';
+  document.body.appendChild(sentinel);
+  window.addEventListener('scroll', function() {
+    if (window.scrollY <= 0) {
+      var tl = document.getElementById('trackList');
+      if (tl) tl.scrollTo({top: 0, behavior: 'smooth'});
+      var al = document.getElementById('albumList');
+      if (al) al.scrollTo({top: 0, behavior: 'smooth'});
+    }
+    window.scrollTo(0, 1);
+  });
+  // Keep window at 1px scroll so tap-to-top works
+  setTimeout(function() { window.scrollTo(0, 1); }, 100);
+})();
 
 // ── Auto-hide playlist header on scroll (throttled, GPU) ──
 (function() {
