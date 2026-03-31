@@ -3700,6 +3700,11 @@ class Handler(BaseHTTPRequestHandler):
 
         elif path.startswith("/api/cover/"):
             filename = unquote(path[len("/api/cover/"):])
+            # Verify user access to current MUSIC_DIR
+            user_folders = get_user_folders(user)
+            if MUSIC_DIR and MUSIC_DIR not in user_folders:
+                self._respond(403, "text/plain", b"Forbidden")
+                return
             filepath = _safe_path(MUSIC_DIR, filename)
             if not filepath or not filepath.is_file():
                 self._respond(404, "text/plain", b"Not found")
@@ -3768,6 +3773,10 @@ class Handler(BaseHTTPRequestHandler):
 
         elif path.startswith("/api/stream/"):
             filename = unquote(path[len("/api/stream/"):])
+            user_folders = get_user_folders(user)
+            if MUSIC_DIR and MUSIC_DIR not in user_folders:
+                self._respond(403, "text/plain", b"Forbidden")
+                return
             filepath = _safe_path(MUSIC_DIR, filename)
             if not filepath or not filepath.is_file():
                 self._respond(404, "text/plain", b"Not found")
@@ -3929,6 +3938,10 @@ class Handler(BaseHTTPRequestHandler):
             if not folder or not Path(folder).is_dir():
                 self._respond_json({"ok": False, "error": "Папка не найдена."})
                 return
+            user_folders = get_user_folders(user)
+            if folder not in user_folders:
+                self._respond_json({"ok": False, "error": "Нет доступа к каталогу."})
+                return
             t = threading.Thread(target=metadata_worker, args=(folder,), daemon=True)
             t.start()
             self._respond_json({"ok": True})
@@ -3942,6 +3955,10 @@ class Handler(BaseHTTPRequestHandler):
             filename = data.get("file", "")
             if not folder or not filename:
                 self._respond_json({"ok": False})
+                return
+            user_folders = get_user_folders(user)
+            if folder not in user_folders:
+                self._respond_json({"ok": False, "error": "Нет доступа."})
                 return
             filepath = _safe_path(folder, filename)
             if not filepath or not filepath.is_file():
@@ -3964,6 +3981,9 @@ class Handler(BaseHTTPRequestHandler):
             self._respond_json({"ok": True, "updated": True, "artist": found.get("artist", ""), "album": found.get("album", ""), "has_cover": cover_data is not None})
 
         elif path == "/api/public":
+            if not udata or not udata.get("is_admin"):
+                self._respond_json({"ok": False, "error": "Нет доступа."})
+                return
             enabled = data.get("enabled", False)
             global IS_PUBLIC
             IS_PUBLIC = enabled
@@ -4010,6 +4030,13 @@ class Handler(BaseHTTPRequestHandler):
                 return
             urls = data.get("urls", [])
             folder = data.get("folder", MUSIC_DIR)
+            # Verify folder access
+            user_folders = get_user_folders(user)
+            if folder not in user_folders:
+                is_admin_user = udata.get("is_admin", False) if udata else False
+                if not is_admin_user:
+                    self._respond_json({"ok": False, "error": "Нет доступа к каталогу."})
+                    return
             order = data.get("order", "normal")
             mode = data.get("mode", "new")
             run_meta = data.get("run_meta", False)
@@ -4029,6 +4056,11 @@ class Handler(BaseHTTPRequestHandler):
             new_order = data.get("order", [])
             if not folder or not new_order:
                 self._respond_json({"ok": False, "error": "Нет данных"})
+                return
+            # Check user has access to this folder
+            user_folders = get_user_folders(user)
+            if folder not in user_folders:
+                self._respond_json({"ok": False, "error": "Нет доступа к каталогу."})
                 return
             try:
                 p = Path(folder)
@@ -4052,6 +4084,9 @@ class Handler(BaseHTTPRequestHandler):
                 self._respond_json({"ok": False, "error": str(e)})
 
         elif path == "/api/wan/start":
+            if not udata or not udata.get("is_admin"):
+                self._respond_json({"ok": False, "error": "Нет доступа."})
+                return
             mode = data.get("mode", "tunnel")
             if mode == "static":
                 ip = data.get("ip", "")
@@ -4067,6 +4102,9 @@ class Handler(BaseHTTPRequestHandler):
                 t.start()
 
         elif path == "/api/wan/stop":
+            if not udata or not udata.get("is_admin"):
+                self._respond_json({"ok": False, "error": "Нет доступа."})
+                return
             stop_tunnel()
             self._respond_json({"ok": True})
 
