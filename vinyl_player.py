@@ -3935,7 +3935,7 @@ LOGIN_PAGE = r"""<!DOCTYPE html>
 <title>insideside music — Вход</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
-body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#111;color:#eee;display:flex;align-items:center;justify-content:center;min-height:100vh}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#111;color:#eee;display:flex;align-items:flex-start;justify-content:center;min-height:100vh;padding-top:15vh}
 .login-card{background:#1c1c1c;border-radius:16px;padding:32px;width:340px;box-shadow:0 20px 60px rgba(0,0,0,0.5)}
 .login-card h2{color:#e94560;margin-bottom:20px;text-align:center}
 .login-card label{display:block;font-size:12px;color:rgba(255,255,255,0.5);margin-bottom:4px;margin-top:12px}
