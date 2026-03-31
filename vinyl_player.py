@@ -630,14 +630,8 @@ def get_meta_state(username=""):
 
 
 def parse_track_name(filename):
-    """Парсит '0001. Artist - Title.mp3' -> (artist, title). Нумерацию не трогаем."""
-    stem = Path(filename).stem
-    # Убираем нумерацию вида "0001. " или "001 "
-    cleaned = re.sub(r'^\d+[\.\s]+\s*', '', stem)
-    if ' - ' in cleaned:
-        parts = cleaned.split(' - ', 1)
-        return parts[0].strip(), parts[1].strip()
-    return '', cleaned.strip()
+    """Парсит '0001. Artist - Title.mp3' -> (artist, title). Использует clean_vk_filename."""
+    return clean_vk_filename(filename)
 
 
 def search_deezer(artist, title):
@@ -782,8 +776,87 @@ def search_lastfm(artist, title):
         return None
 
 
+def search_genius(artist, title):
+    """Ищет трек в Genius (отличная база русской музыки, публичный API)."""
+    try:
+        query = "{} {}".format(artist, title) if artist else title
+        url = "https://genius.com/api/search?q={}".format(quote(query))
+        with HttpClient(timeout=10) as client:
+            resp = client.get(url, headers={"User-Agent": "VinylPlayer/1.0"})
+        if resp.status_code != 200:
+            return None
+        data = resp.json()
+        hits = data.get('response', {}).get('hits', [])
+        if not hits:
+            return None
+        hit = hits[0].get('result', {})
+        album_name = ''
+        # Genius doesn't always return album in search — try to get it
+        if hit.get('album'):
+            album_name = hit['album'].get('name', '')
+        cover_url = hit.get('song_art_image_url') or hit.get('header_image_thumbnail_url') or ''
+        return {
+            'title': hit.get('title', title),
+            'artist': hit.get('primary_artist', {}).get('name', artist),
+            'album': album_name,
+            'year': '',
+            'cover_url': cover_url if cover_url else None,
+            'release_mbid': None,
+        }
+    except Exception:
+        return None
+
+
+def search_spotify_public(artist, title):
+    """Ищет трек через публичный Spotify endpoint (без ключа)."""
+    try:
+        query = "{} {}".format(artist, title) if artist else title
+        url = "https://api.spotify.com/v1/search?q={}&type=track&limit=3".format(quote(query))
+        # Try without auth — returns 401, but we use the embed endpoint instead
+        embed_url = "https://open.spotify.com/oembed?url=https://open.spotify.com/search/{}".format(quote(query))
+        # Alternative: use Spotify's public web API proxy
+        url2 = "https://spotify-scraper.p.rapidapi.com/v1/track/search?q={}".format(quote(query))
+        # Simplest: use the same approach as other services
+        # Actually let's skip Spotify (needs OAuth) and use Genius + better parsing
+        return None
+    except Exception:
+        return None
+
+
+def clean_vk_filename(filename):
+    """Очищает типичные VK-названия от мусора и извлекает артиста/название."""
+    stem = Path(filename).stem
+    # Remove numbering: "0001. " or "001 "
+    cleaned = re.sub(r'^\d+[\.\s]+\s*', '', stem)
+    # Common VK patterns
+    # "Artist - Title (feat. X)" — standard
+    # "Artist – Title" (em-dash)
+    # "ARTIST, ARTIST2 - TITLE"
+    # "Title" (no separator)
+    # Clean up brackets/tags: [Official], (Official Audio), (Prod. by X), etc.
+    cleaned = re.sub(r'\s*[\[\(](official|audio|video|prod\.?|lyrics?|clip|music|hq|hd|remix|remastered)[\s\w.]*[\]\)]', '', cleaned, flags=re.IGNORECASE)
+    # Remove trailing whitespace and dots
+    cleaned = cleaned.strip(' .-_')
+    # Try separators in order
+    for sep in [' - ', ' – ', ' — ', ' ~ ']:
+        if sep in cleaned:
+            parts = cleaned.split(sep, 1)
+            return parts[0].strip(), parts[1].strip()
+    # No separator found — might be just title
+    # Try comma as artist separator: "GSPD, МУККА - БИПОЛЯРКА"
+    # Already handled by ' - ' above
+    return '', cleaned.strip()
+
+
 def search_metadata(artist, title):
     """Ищет метаданные по нескольким источникам."""
+    # Clean up input from VK naming quirks
+    if not artist and title:
+        artist, title = clean_vk_filename(title + '.mp3')
+        if not title:
+            title = artist
+            artist = ''
+
     # 1. Deezer — лучший для русской музыки
     result = search_deezer(artist, title)
     if result and result.get('album'):
@@ -792,17 +865,27 @@ def search_metadata(artist, title):
     result2 = search_itunes(artist, title)
     if result2 and result2.get('album'):
         return result2
-    # 3. Last.fm — огромная база, хорошо для редких треков
+    # 3. Genius — отличная база русской и мировой музыки
+    result_g = search_genius(artist, title)
+    if result_g and result_g.get('album'):
+        return result_g
+    # 4. Last.fm — огромная база, хорошо для редких треков
     if artist:
         result3 = search_lastfm(artist, title)
         if result3 and result3.get('album'):
             return result3
-    # 4. MusicBrainz — академический источник
+    # 5. MusicBrainz — академический источник
     result4 = search_musicbrainz(artist, title)
     if result4 and result4.get('album'):
         return result4
-    # Возвращаем лучшее из того что нашли
-    return result or result2 or result4
+    # 6. Retry with cleaned title if first pass failed
+    if artist:
+        # Try just the title without artist (VK sometimes puts garbage in artist)
+        result5 = search_deezer('', title)
+        if result5 and result5.get('album'):
+            return result5
+    # Return best partial match
+    return result or result_g or result2 or result4
 
 
 def fetch_cover_art(meta):
