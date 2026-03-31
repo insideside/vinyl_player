@@ -1671,6 +1671,7 @@ body { overflow: hidden; touch-action: none; position: fixed; width: 100%; heigh
 <div class="app">
   <!-- Left: Vinyl -->
   <div class="vinyl-side">
+    <button onclick="showAppInfo()" style="position:absolute;top:16px;left:16px;z-index:5;width:36px;height:36px;border:none;border-radius:50%;background:rgba(255,255,255,0.06);color:rgba(255,255,255,0.2);cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:18px;font-style:italic;font-weight:700;transition:color 0.15s" onmouseover="this.style.color='rgba(255,255,255,0.5)'" onmouseout="this.style.color='rgba(255,255,255,0.2)'">i</button>
     <div class="vinyl-scene">
       <div class="tonearm-pivot">
         <div class="tonearm-base"></div>
@@ -1715,7 +1716,6 @@ body { overflow: hidden; touch-action: none; position: fixed; width: 100%; heigh
       <span style="font-size:14px;opacity:0.5">&#128264;</span>
       <input type="range" min="0" max="1" step="0.01" value="0.8" oninput="setVolume(this.value)">
       <button class="shuffle-btn" id="shufflePlayerBtn" onclick="toggleShuffle()" style="width:32px;height:32px" data-tip="Перемешать"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M10.59 9.17L5.41 4 4 5.41l5.17 5.17 1.42-1.41zM14.5 4l2.04 2.04L4 18.59 5.41 20 17.96 7.46 20 9.5V4h-5.5zm.33 9.41l-1.41 1.41 3.13 3.13L14.5 20H20v-5.5l-2.04 2.04-3.13-3.13z"/></svg></button>
-      <button onclick="showAppInfo()" style="width:24px;height:24px;border:none;border-radius:50%;background:rgba(255,255,255,0.06);color:rgba(255,255,255,0.2);cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:12px;font-style:italic;font-weight:700;margin-left:4px">i</button>
     </div>
   </div>
 
