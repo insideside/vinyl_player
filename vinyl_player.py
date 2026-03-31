@@ -1467,32 +1467,31 @@ body { touch-action: pan-y; }
 /* ── Mobile toggle ── */
 .mobile-bar {
   display: none; position: fixed; bottom: 0; left: 0; right: 0;
-  z-index: 50;
+  z-index: 50; pointer-events: none;
   padding: 10px 16px; padding-bottom: max(10px, env(safe-area-inset-bottom));
 }
 .mobile-bar-inner {
-  display: flex; align-items: center; justify-content: center;
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  pointer-events: auto; width: fit-content; margin: 0 auto;
 }
 .mobile-toggle {
-  display: flex; border-radius: 20px; padding: 3px;
-  background: none; flex-shrink: 0;
+  display: flex; border-radius: 22px; padding: 3px; gap: 3px;
+  background: rgba(255,255,255,0.08); backdrop-filter: blur(16px);
+  flex-shrink: 0;
 }
 .mobile-toggle button {
-  padding: 8px 20px; border: none; border-radius: 18px; font-size: 12px;
-  background: rgba(255,255,255,0.08); color: rgba(255,255,255,0.4); cursor: pointer; transition: all 0.2s;
-  backdrop-filter: blur(12px);
+  padding: 0; width: 40px; height: 40px; border: none; border-radius: 20px; font-size: 11px;
+  background: none; color: rgba(255,255,255,0.4); cursor: pointer; transition: all 0.2s;
+  display: flex; align-items: center; justify-content: center;
 }
 .mobile-toggle button.active { background: #e94560; color: #fff; }
 .mobile-mini-btn {
-  position: fixed; bottom: max(14px, env(safe-area-inset-bottom));
-  width: 40px; height: 40px; border-radius: 50%; border: none;
-  background: rgba(255,255,255,0.1); backdrop-filter: blur(12px);
-  color: #fff; cursor: pointer; display: none; align-items: center; justify-content: center;
-  z-index: 51;
+  padding: 0; width: 40px; height: 40px; border-radius: 50%; border: none;
+  background: rgba(255,255,255,0.08); backdrop-filter: blur(16px);
+  color: rgba(255,255,255,0.5); cursor: pointer; display: none; align-items: center; justify-content: center;
 }
-.mobile-mini-btn:active { background: rgba(255,255,255,0.25); }
-.mobile-mini-btn.left { left: 24px; }
-.mobile-mini-btn.right { right: 24px; }
+.mobile-mini-btn:active { background: rgba(255,255,255,0.2); }
+.mobile-mini-btn.show { display: flex; }
 
 @media (max-width: 768px) {
   .app { position: relative; }
@@ -1503,9 +1502,8 @@ body { touch-action: pan-y; }
   .mobile-view-vinyl .playlist-side { display: none; }
   .mobile-view-playlist .vinyl-side { display: none; }
   .mobile-view-playlist .playlist-side { display: flex; flex-direction: column; }
-  .mobile-view-playlist .mobile-mini-btn { display: flex; }
   .mobile-bar { display: block; }
-  .playlist-side { padding-bottom: 70px; }
+  .playlist-side { padding-bottom: 0; }
   .vinyl-side { padding-bottom: 70px; }
   .vinyl-scene { width: min(80vw, 50vh); height: min(80vw, 50vh); }
   .track-title { max-width: 80vw; }
@@ -1715,14 +1713,14 @@ body { touch-action: pan-y; }
 
 <div class="mobile-bar">
   <div class="mobile-bar-inner">
+    <button class="mobile-mini-btn" id="mobilePlayBtn" onclick="togglePlay()"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg></button>
     <div class="mobile-toggle" id="mobileToggle">
-      <button id="btnVinyl" onclick="mobileShow('vinyl')">Винил</button>
-      <button class="active" id="btnPlaylist" onclick="mobileShow('playlist')">Треки</button>
+      <button id="btnVinyl" onclick="mobileShow('vinyl')"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="1.5"/><circle cx="12" cy="12" r="4" fill="currentColor"/></svg></button>
+      <button class="active" id="btnPlaylist" onclick="mobileShow('playlist')"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M3 13h2v-2H3v2zm0 4h2v-2H3v2zm0-8h2V7H3v2zm4 4h14v-2H7v2zm0 4h14v-2H7v2zM7 7v2h14V7H7z"/></svg></button>
     </div>
+    <button class="mobile-mini-btn" id="mobileNextBtn" onclick="nextTrack()"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M16 6h2v12h-2zM6 18l8.5-6L6 6z"/></svg></button>
   </div>
 </div>
-<button class="mobile-mini-btn left" id="mobilePlayBtn" onclick="togglePlay()"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg></button>
-<button class="mobile-mini-btn right" onclick="nextTrack()"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M16 6h2v12h-2zM6 18l8.5-6L6 6z"/></svg></button>
 
 <div class="toast" id="toast"></div>
 <div class="tip-popup" id="tipPopup"></div>
@@ -2225,6 +2223,7 @@ function selectTrack(i, autoplay) {
   scrollToActive();
   updateMediaSession(t);
   autoMetaForTrack(t);
+  showMobileControls();
 
   if (autoplay) {
     audio.play();
@@ -2253,11 +2252,18 @@ function setPlayState(playing) {
   document.getElementById('playIcon').innerHTML = playing
     ? '<path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/>'
     : '<path d="M8 5v14l11-7z"/>';
-  // Sync mobile play button
+  // Sync mobile buttons
   var mb = document.getElementById('mobilePlayBtn');
   if (mb) mb.innerHTML = playing
     ? '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>'
     : '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>';
+}
+
+function showMobileControls() {
+  var pb = document.getElementById('mobilePlayBtn');
+  var nb = document.getElementById('mobileNextBtn');
+  if (pb) pb.classList.add('show');
+  if (nb) nb.classList.add('show');
 }
 
 var isShuffled = false;
