@@ -1124,12 +1124,12 @@ HTML_PAGE = r"""<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="insideside music">
+<meta name="apple-mobile-web-app-title" content="">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="theme-color" content="#1a1a1a">
 <link rel="apple-touch-icon" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxODAgMTgwIj4KPHJlY3Qgd2lkdGg9IjE4MCIgaGVpZ2h0PSIxODAiIHJ4PSI0MCIgZmlsbD0iIzFhMWEyZSIvPgo8Y2lyY2xlIGN4PSI5MCIgY3k9IjkwIiByPSI2OCIgZmlsbD0iIzExMSIgc3Ryb2tlPSIjMzMzIiBzdHJva2Utd2lkdGg9IjEuNSIvPgo8Y2lyY2xlIGN4PSI5MCIgY3k9IjkwIiByPSI1NSIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjMjIyIiBzdHJva2Utd2lkdGg9IjAuNSIvPgo8Y2lyY2xlIGN4PSI5MCIgY3k9IjkwIiByPSI0MiIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjMjIyIiBzdHJva2Utd2lkdGg9IjAuNSIvPgo8Y2lyY2xlIGN4PSI5MCIgY3k9IjkwIiByPSIyMiIgZmlsbD0iI2U5NDU2MCIvPgo8Y2lyY2xlIGN4PSI5MCIgY3k9IjkwIiByPSI0IiBmaWxsPSIjMWExYTJlIi8+Cjwvc3ZnPg==">
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxODAgMTgwIj4KPHJlY3Qgd2lkdGg9IjE4MCIgaGVpZ2h0PSIxODAiIHJ4PSI0MCIgZmlsbD0iIzFhMWEyZSIvPgo8Y2lyY2xlIGN4PSI5MCIgY3k9IjkwIiByPSI2OCIgZmlsbD0iIzExMSIgc3Ryb2tlPSIjMzMzIiBzdHJva2Utd2lkdGg9IjEuNSIvPgo8Y2lyY2xlIGN4PSI5MCIgY3k9IjkwIiByPSI1NSIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjMjIyIiBzdHJva2Utd2lkdGg9IjAuNSIvPgo8Y2lyY2xlIGN4PSI5MCIgY3k9IjkwIiByPSI0MiIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjMjIyIiBzdHJva2Utd2lkdGg9IjAuNSIvPgo8Y2lyY2xlIGN4PSI5MCIgY3k9IjkwIiByPSIyMiIgZmlsbD0iI2U5NDU2MCIvPgo8Y2lyY2xlIGN4PSI5MCIgY3k9IjkwIiByPSI0IiBmaWxsPSIjMWExYTJlIi8+Cjwvc3ZnPg==">
-<title>insideside music</title>
+<title></title>
 <style>
 * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; -webkit-user-select: none; }
 input, textarea { user-select: text; -webkit-user-select: text; }
@@ -1691,7 +1691,7 @@ body { overflow: hidden; touch-action: none; position: fixed; width: 100%; heigh
     </div>
 
     <div class="track-info">
-      <div class="track-title" id="trackTitle" style="opacity:0.3">insideside music</div>
+      <div class="track-title" id="trackTitle" style="opacity:0.3" data-idle="1"></div>
       <div class="track-artist" id="trackArtist" style="opacity:0.3">Выберите трек</div>
     </div>
 
@@ -1715,6 +1715,7 @@ body { overflow: hidden; touch-action: none; position: fixed; width: 100%; heigh
       <span style="font-size:14px;opacity:0.5">&#128264;</span>
       <input type="range" min="0" max="1" step="0.01" value="0.8" oninput="setVolume(this.value)">
       <button class="shuffle-btn" id="shufflePlayerBtn" onclick="toggleShuffle()" style="width:32px;height:32px" data-tip="Перемешать"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M10.59 9.17L5.41 4 4 5.41l5.17 5.17 1.42-1.41zM14.5 4l2.04 2.04L4 18.59 5.41 20 17.96 7.46 20 9.5V4h-5.5zm.33 9.41l-1.41 1.41 3.13 3.13L14.5 20H20v-5.5l-2.04 2.04-3.13-3.13z"/></svg></button>
+      <button onclick="showAppInfo()" style="width:24px;height:24px;border:none;border-radius:50%;background:rgba(255,255,255,0.06);color:rgba(255,255,255,0.2);cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:12px;font-style:italic;font-weight:700;margin-left:4px">i</button>
     </div>
   </div>
 
@@ -2055,6 +2056,14 @@ body { overflow: hidden; touch-action: none; position: fixed; width: 100%; heigh
   </div>
 </div>
 
+<!-- App info -->
+<div class="meta-overlay" id="appInfoOverlay" onclick="if(event.target===this)this.classList.remove('show')">
+  <div class="meta-modal" style="width:min(360px,88vw);text-align:center">
+    <div id="appInfoContent" style="padding:12px 0"></div>
+    <button class="folder-btn folder-btn-secondary" style="margin-top:12px" onclick="document.getElementById('appInfoOverlay').classList.remove('show')">Закрыть</button>
+  </div>
+</div>
+
 <!-- Confirm dialog -->
 <div class="meta-overlay" id="confirmOverlay">
   <div class="meta-modal" style="width:360px;text-align:center">
@@ -2068,6 +2077,19 @@ body { overflow: hidden; touch-action: none; position: fixed; width: 100%; heigh
 <audio id="audioEl"></audio>
 
 <script>
+function _d(s){return decodeURIComponent(escape(atob(s.split('').reverse().join(''))));}
+var _n=_d("==wYpNXdtBSZkl2clRWaz5Wa");
+// iOS doesn't support audio.volume — hide slider
+var _isIOS=/iPad|iPhone|iPod/.test(navigator.userAgent)||(/Mac/.test(navigator.userAgent)&&navigator.maxTouchPoints>1);
+var _p=_d("lRWazVGZpNnbpBSeiBCZlJXZ39Gc");
+var _l=_d("usY09CdtQnY01CNgR/L0wC9tQDCsQDY0+CtgRLL0wCNIPGNuQHY0wC9uQPL0+CdgRDytQXL0xCNI1CNuQ3L0wCtsQ7L03CNjRvL0+C9vQHY04CNI1CtvQrL0BGdtQfY0AGdtQzL08CtvQrL0ggL0g8Y04CthRDL06CNuQTY04CNtQ7L08CNIsUL04CdvQXL09CNsQDY0CGdgR7L0AG9vQHY0wCNoQDiLPGNuQ3L0wCtsQ7L03CNjRvL0+C9vQHY04CNI+C9sQ7L06CdgRXL0HGNgRXL08CNvQ7L06CdtQ3L0g4L0zCtvQ3L0HGNuQvL0g8Y07CNtQDivQ3L0MG9uQXL0CGNuQfY0OG9uQrL0BGNuQDivQ3L01C9hRDL09C9tQDL09CNtQXL0AG9vQDCuQDCvQ7L0CGtuQXL0+CNgR/L0gU2YyV3bzBiblB3bg8Y0BGtgRXL0PG9uQLL0PGNI1CNuQ3L01CttQ7L07CNuQDY0/CNI+CtgR3K0");
+// Set titles
+document.title=_n;
+(function(){
+  var m=document.querySelector('meta[name=apple-mobile-web-app-title]');if(m)m.content=_n;
+  var ti=document.getElementById('trackTitle');if(ti&&ti.dataset.idle)ti.textContent=_n;
+})();
+
 var tracks = [];
 var filteredTracks = null; // null = show all
 var albums = [];
@@ -4175,6 +4197,14 @@ function saveTrackEdit() {
   });
 }
 
+function showAppInfo() {
+  var el = document.getElementById('appInfoContent');
+  el.innerHTML = '<div style="font-size:20px;font-weight:700;color:#e94560;margin-bottom:8px">' + _n + '</div>'
+    + '<div style="font-size:13px;color:rgba(255,255,255,0.5);margin-bottom:12px">' + _p + '</div>'
+    + '<div style="font-size:12px;color:rgba(255,255,255,0.35);line-height:1.5">' + _l + '</div>';
+  document.getElementById('appInfoOverlay').classList.add('show');
+}
+
 function scrollTracklistTop() {
   var tl = document.getElementById('trackList');
   if (tl) tl.scrollTo({top: 0, behavior: 'smooth'});
@@ -4205,6 +4235,8 @@ function scrollTracklistTop() {
 
 // Init background, media session, and load config
 initBgCanvas();
+// Hide volume slider on iOS (audio.volume is read-only)
+if(_isIOS){var vw=document.querySelector('.volume-wrap input[type=range]');if(vw)vw.style.display='none';var vs=document.querySelector('.volume-wrap span');if(vs)vs.style.display='none';}
 initMediaSession();
 loadConfig();
 </script>
@@ -4218,7 +4250,7 @@ LOGIN_PAGE = r"""<!DOCTYPE html>
 <html lang="ru"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<title>insideside music — Вход</title>
+<title></title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#111;color:#eee;display:flex;align-items:flex-start;justify-content:center;min-height:100vh;padding-top:15vh}
@@ -4233,7 +4265,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
 .login-card .subtitle{font-size:12px;color:rgba(255,255,255,0.4);text-align:center;margin-bottom:4px}
 </style></head><body>
 <div class="login-card">
-<h2>insideside music</h2>
+<h2 id="loginTitle"></h2>
 <div class="subtitle" id="subtitle">Вход</div>
 <form onsubmit="return doLogin()" id="loginForm">
 <label>Логин</label><input type="text" id="lu" autocomplete="username" required>
@@ -4247,6 +4279,11 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
 </form>
 </div>
 <script>
+function _d(s){return decodeURIComponent(escape(atob(s.split('').reverse().join(''))));}
+var _ln=_d("=QL0+CdhRLJ0gQJgiDyYpNXdtBSZkl2clRWaz5Wa");
+var _n2=_d("==wYpNXdtBSZkl2clRWaz5Wa");
+document.title=_ln;
+document.getElementById('loginTitle').textContent=_n2;
 fetch('/api/auth/check').then(function(r){return r.json()}).then(function(d){
   if(d.needs_setup){
     document.getElementById('subtitle').textContent='Создайте аккаунт администратора';
@@ -5380,7 +5417,9 @@ def main():
         set_wan_static(s["wan_ip"], s.get("wan_port", str(SERVER_PORT)))
 
     url = "http://127.0.0.1:{}".format(SERVER_PORT)
-    print("insideside music: " + url)
+    import base64 as _b64
+    _an = _b64.b64decode("aW5zaWRlc2lkZSBtdXNpYw==").decode()
+    print(_an + ": " + url)
     if public or IS_PUBLIC:
         local_ip = get_local_ip()
         print("LAN: http://{}:{}".format(local_ip, SERVER_PORT))
