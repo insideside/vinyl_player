@@ -17,3 +17,10 @@ Music/
 .vk_music_token.json
 .vinyl_meta_done.json
 config_vk.ini
+
+# Build artifacts
+dist/
+build/
+*.spec
+build_assets/VinylPlayer.iconset/
+build_assets/icon_*.png
