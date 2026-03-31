@@ -4927,41 +4927,60 @@ class Handler(BaseHTTPRequestHandler):
                 ext = old_path.suffix
                 name_part = (vk_safe_filename(new_artist) + " - " + vk_safe_filename(new_title)) if new_artist else vk_safe_filename(new_title)
                 old_match = re.match(r'^(\d+)\.\s+(.+)$', old_path.stem)
-                if old_match:
-                    old_num = int(old_match.group(1))
+                has_numbering = old_match is not None
+                wants_number = bool(new_order and int(new_order) > 0)
+
+                if has_numbering or wants_number:
+                    # Numbered catalog — reorder all tracks
+                    old_num = int(old_match.group(1)) if old_match else 0
                     target_num = int(new_order) if new_order else old_num
-                    # Get all tracks, build ordered list
+                    if target_num < 1:
+                        target_num = 1
+
                     all_tracks = vk_get_existing_tracks(folder)
-                    # Step 1: rename all to temp to avoid collisions
+
+                    # Step 1: rename all numbered tracks + our file to temp
                     temp_list = []
+                    our_tmp = None
                     for num, tname, tpath in all_tracks:
                         tmp = tpath.parent / ("__tmp_te_{}_{}".format(num, tpath.name))
                         tpath.rename(tmp)
                         if tpath == old_path:
                             temp_list.append((num, name_part, tmp, True))
+                            our_tmp = tmp
                         else:
                             temp_list.append((num, tname, tmp, False))
-                    # Step 2: reorder — remove edited track, insert at target position
+
+                    # If our file wasn't in numbered list (it was unnumbered), add it
+                    if our_tmp is None:
+                        our_tmp = old_path.parent / ("__tmp_te_new_" + old_path.name)
+                        old_path.rename(our_tmp)
+                        temp_list.append((0, name_part, our_tmp, True))
+
+                    # Step 2: separate edited from others
                     edited = None
                     others = []
                     for num, tname, tmp, is_edited in temp_list:
                         if is_edited:
-                            edited = (tname, tmp)
+                            edited = (name_part, tmp)
                         else:
                             others.append((tname, tmp))
+
+                    # Step 3: insert at target position
                     insert_pos = max(0, min(target_num - 1, len(others)))
                     others.insert(insert_pos, edited)
-                    # Step 3: rename all with new numbers
+
+                    # Step 4: rename all with sequential numbers
                     pad = len(str(len(others)))
                     new_name = ""
                     for i, (tname, tmp) in enumerate(others):
-                        final = "{}. {}{}".format(str(i + 1).zfill(pad), tname, ext if tmp == edited[1] else tmp.suffix)
+                        final = "{}. {}{}".format(str(i + 1).zfill(pad), tname, tmp.suffix)
                         final_path = Path(folder) / final
                         tmp.rename(final_path)
                         if tmp == edited[1]:
                             new_name = final
                 else:
-                    # Non-numbered: just rename
+                    # Non-numbered, no order requested: just rename
                     new_name = name_part + ext
                     new_path = old_path.parent / new_name
                     if new_path != old_path:
