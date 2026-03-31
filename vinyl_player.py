@@ -3538,15 +3538,56 @@ function onDragStart(e, idx) {
 
 function onDragEnd(e) {
   dragIdx = null;
+  stopDragAutoScroll();
   var items = document.querySelectorAll('.playlist-item');
   for (var i = 0; i < items.length; i++) {
     items[i].classList.remove('dragging', 'drag-over');
   }
 }
 
+// ── Auto-scroll during drag ──
+var dragAutoScroll = null;
+var dragScrollSpeed = 0;
+
+function startDragAutoScroll(clientY) {
+  var tl = document.getElementById('trackList');
+  if (!tl) return;
+  var rect = tl.getBoundingClientRect();
+  var edgeZone = 60;
+  var distFromBottom = rect.bottom - clientY;
+  var distFromTop = clientY - rect.top;
+
+  if (distFromBottom < edgeZone && distFromBottom > 0) {
+    dragScrollSpeed += ((edgeZone - distFromBottom) / edgeZone * 12 - dragScrollSpeed) * 0.1;
+  } else if (distFromTop < edgeZone && distFromTop > 0) {
+    dragScrollSpeed += (-(edgeZone - distFromTop) / edgeZone * 12 - dragScrollSpeed) * 0.1;
+  } else {
+    dragScrollSpeed *= 0.8;
+  }
+
+  if (Math.abs(dragScrollSpeed) > 0.3) {
+    tl.scrollTop += dragScrollSpeed;
+  }
+
+  if (dragIdx !== null || touchDragIdx !== null) {
+    dragAutoScroll = requestAnimationFrame(function() { startDragAutoScroll(lastDragClientY); });
+  } else {
+    dragScrollSpeed = 0;
+  }
+}
+
+function stopDragAutoScroll() {
+  if (dragAutoScroll) { cancelAnimationFrame(dragAutoScroll); dragAutoScroll = null; }
+  dragScrollSpeed = 0;
+}
+
+var lastDragClientY = 0;
+
 function onDragOver(e, idx) {
   e.preventDefault();
   e.dataTransfer.dropEffect = 'move';
+  lastDragClientY = e.clientY;
+  if (!dragAutoScroll) startDragAutoScroll(e.clientY);
   var items = document.querySelectorAll('.playlist-item');
   for (var i = 0; i < items.length; i++) items[i].classList.remove('drag-over');
   e.target.closest('.playlist-item').classList.add('drag-over');
@@ -3593,11 +3634,12 @@ function onTouchDragStart(e, idx) {
 function onTouchDragMove(e) {
   if (touchDragIdx === null) return;
   var y = e.touches[0].clientY;
+  lastDragClientY = y;
+  if (!dragAutoScroll) startDragAutoScroll(y);
   if (touchClone) {
     touchClone.style.top = (y - 25) + 'px';
     touchClone.style.left = touchDragEl.getBoundingClientRect().left + 'px';
   }
-  // Find target
   var items = document.querySelectorAll('.playlist-item[data-idx]');
   for (var i = 0; i < items.length; i++) {
     var rect = items[i].getBoundingClientRect();
@@ -3610,6 +3652,7 @@ function onTouchDragMove(e) {
 
 function onTouchDragEnd(e) {
   if (touchDragIdx === null) return;
+  stopDragAutoScroll();
   if (touchClone) { touchClone.remove(); touchClone = null; }
   if (touchDragEl) { touchDragEl.style.opacity = ''; }
   // Find drop target
