@@ -1,0 +1,4248 @@
+#!/usr/bin/env python3
+"""
+Vinyl Record Music Player
+Веб-плеер с визуализацией виниловой пластинки.
+Запускается как localhost в браузере.
+"""
+
+import base64
+import json
+import mimetypes
+import os
+import re
+import sys
+import threading
+import time
+import webbrowser
+from collections import OrderedDict
+from http.server import HTTPServer, BaseHTTPRequestHandler
+from pathlib import Path
+from urllib.parse import parse_qs, urlparse, unquote, quote
+
+try:
+    from mutagen.mp3 import MP3
+    from mutagen.id3 import ID3, TIT2, TPE1, TALB, TDRC, APIC, ID3NoHeaderError
+    from mutagen.flac import FLAC, Picture
+    from mutagen.mp4 import MP4, MP4Cover
+    from mutagen.oggvorbis import OggVorbis
+    HAS_MUTAGEN = True
+except ImportError:
+    HAS_MUTAGEN = False
+
+try:
+    import musicbrainzngs
+    musicbrainzngs.set_useragent("VinylPlayer", "1.0", "https://github.com/vinyl-player")
+    HAS_MB = True
+except ImportError:
+    HAS_MB = False
+
+from httpx import Client as HttpClient
+
+try:
+    from vkpymusic import Service as VkService
+    HAS_VK = True
+except ImportError:
+    HAS_VK = False
+
+import hashlib
+import hmac
+import secrets
+import http.cookies
+
+SERVER_PORT = 7656
+MUSIC_DIR = ""
+USERS_FILE = Path.home() / ".vinyl_users.json"
+VK_APP_ID = 2685278
+VK_USER_AGENT = "KateMobileAndroid/56 lite-460 (Android 4.4.2; SDK 19; x86; unknown Android SDK built for x86; en)"
+IS_PUBLIC = False
+
+SUPPORTED_FORMATS = {'.mp3', '.flac', '.m4a', '.ogg', '.wav', '.aac', '.opus'}
+
+# ──────────────────── User system ────────────────────
+
+_sessions = {}  # token -> username
+_login_attempts_ip = {}    # ip -> (count, last_time)
+_login_attempts_user = {}  # username -> (count, last_time)
+_LOGIN_MAX_IP = 5
+_LOGIN_MAX_USER = 5
+_LOGIN_WINDOW = 300  # 5 minutes
+_GLOBAL_FAIL_COUNT = 0
+_GLOBAL_FAIL_TIME = 0
+_GLOBAL_MAX = 20  # max 20 failures total across all IPs/users in window
+
+
+def _hash_pw(password, salt=None):
+    """PBKDF2-SHA256, 260k iterations (OWASP 2024 recommendation)."""
+    if not salt:
+        salt = secrets.token_hex(16)
+    h = hashlib.pbkdf2_hmac('sha256', password.encode(), salt.encode(), 260000).hex()
+    return salt + ":" + h
+
+
+def _check_pw(password, stored):
+    if ":" not in stored:
+        return False
+    salt, expected_hash = stored.split(":", 1)
+    actual = hashlib.pbkdf2_hmac('sha256', password.encode(), salt.encode(), 260000).hex()
+    return hmac.compare_digest(actual, expected_hash)
+
+
+def load_users():
+    if USERS_FILE.exists():
+        try:
+            return json.loads(USERS_FILE.read_text())
+        except Exception:
+            pass
+    return {}
+
+
+def save_users(users):
+    USERS_FILE.write_text(json.dumps(users, ensure_ascii=False, indent=2))
+    try:
+        USERS_FILE.chmod(0o600)
+    except Exception:
+        pass
+
+
+def create_user(username, password, is_admin=False):
+    users = load_users()
+    if username in users:
+        return False
+    users[username] = {
+        "password": _hash_pw(password),
+        "is_admin": is_admin,
+        "folders": [],
+    }
+    save_users(users)
+    return True
+
+
+def authenticate_user(username, password):
+    users = load_users()
+    u = users.get(username)
+    if not u:
+        return False
+    return _check_pw(password, u["password"])
+
+
+def create_session(username):
+    token = secrets.token_hex(32)
+    _sessions[token] = username
+    return token
+
+
+def get_session_user(token):
+    return _sessions.get(token)
+
+
+def get_user_data(username):
+    users = load_users()
+    return users.get(username)
+
+
+def get_user_folders(username):
+    users = load_users()
+    u = users.get(username)
+    if not u:
+        return []
+    if u.get("is_admin"):
+        # Admin sees all folders from all users
+        all_folders = []
+        seen = set()
+        for uname, udata in users.items():
+            for f in udata.get("folders", []):
+                if f not in seen:
+                    all_folders.append(f)
+                    seen.add(f)
+        return all_folders
+    return u.get("folders", [])
+
+
+def add_user_folder(username, folder):
+    users = load_users()
+    u = users.get(username)
+    if u and folder not in u["folders"]:
+        u["folders"].append(folder)
+        save_users(users)
+
+
+def remove_user_folder(username, folder):
+    users = load_users()
+    u = users.get(username)
+    if u and folder in u["folders"]:
+        u["folders"].remove(folder)
+        save_users(users)
+
+
+# VK tokens stored only in memory, per-user, never persisted to disk
+_vk_tokens = {}  # username -> token
+
+
+def get_user_vk_token(username):
+    return _vk_tokens.get(username)
+
+
+def set_user_vk_token(username, token):
+    if token:
+        _vk_tokens[username] = token
+    else:
+        _vk_tokens.pop(username, None)
+
+
+def _safe_path(base_dir, filename):
+    """Prevents path traversal — returns resolved path only if within base_dir."""
+    base = Path(base_dir).resolve()
+    target = (base / filename).resolve()
+    if not str(target).startswith(str(base) + os.sep) and target != base:
+        return None
+    return target
+
+
+def get_user_last_folder(username):
+    users = load_users()
+    u = users.get(username)
+    return u.get("last_folder", "") if u else ""
+
+
+def set_user_last_folder(username, folder):
+    users = load_users()
+    u = users.get(username)
+    if u:
+        u["last_folder"] = folder
+        save_users(users)
+
+# ──────────────────── VK Download ────────────────────
+
+vk_state = {
+    "service": None,
+    "running": False,
+    "cancel": False,
+    "progress": 0,
+    "total": 0,
+    "log": [],
+    "done": False,
+}
+
+
+def vk_load_token():
+    return None  # Now per-user, loaded via get_user_vk_token
+
+
+def vk_save_token(token):
+    pass  # Now per-user, saved via set_user_vk_token
+
+
+def vk_validate_token(token):
+    try:
+        svc = VkService(VK_USER_AGENT, token)
+        svc.get_popular(count=1)
+        return True
+    except Exception:
+        return False
+
+
+def vk_parse_playlist_url(url):
+    m = re.search(r"music/playlist/(-?\d+)_(\d+)_([a-f0-9]+)", url)
+    if not m:
+        return None
+    return m.group(1), int(m.group(2)), m.group(3)
+
+
+def vk_get_all_songs(service, owner_id, playlist_id, access_key):
+    all_songs = []
+    offset = 0
+    while True:
+        songs = service.get_songs_by_playlist_id(
+            user_id=owner_id, playlist_id=playlist_id,
+            access_key=access_key, count=100, offset=offset)
+        if not songs:
+            break
+        all_songs.extend(songs)
+        if len(songs) < 100:
+            break
+        offset += 100
+        time.sleep(0.3)
+    return all_songs
+
+
+def vk_safe_filename(s):
+    s = re.sub(r'[<>:"/\\|?*]', '', s)
+    s = s.strip('. ')
+    return s if s else 'unknown'
+
+
+def vk_download_song(song, filepath):
+    url = song.url
+    if not url or "index.m3u8" in url:
+        return False
+    try:
+        with HttpClient(timeout=60) as client:
+            resp = client.get(url)
+        if resp.status_code != 200:
+            return False
+        filepath.parent.mkdir(parents=True, exist_ok=True)
+        filepath.write_bytes(resp.content)
+        return True
+    except Exception:
+        return False
+
+
+def vk_search_fallback(service, artist, title, filepath):
+    try:
+        results = service.search_songs_by_text(artist + " " + title, count=5)
+    except Exception:
+        return False
+    for r in results:
+        if r.url and "index.m3u8" not in r.url:
+            if vk_download_song(r, filepath):
+                return True
+    return False
+
+
+def vk_get_existing_tracks(folder):
+    tracks = []
+    for f in Path(folder).glob("*.mp3"):
+        m = re.match(r'^(\d+)\.\s+(.+)$', f.stem)
+        if m:
+            tracks.append((int(m.group(1)), m.group(2), f))
+    tracks.sort(key=lambda x: x[0])
+    return tracks
+
+
+def vk_renumber_tracks(folder, start_from):
+    tracks = vk_get_existing_tracks(folder)
+    if not tracks:
+        return
+    total_n = start_from + len(tracks) - 1
+    pad = len(str(total_n))
+    for i in reversed(range(len(tracks))):
+        _, name, old_path = tracks[i]
+        new_num = str(start_from + i).zfill(pad)
+        new_path = old_path.parent / (new_num + ". " + name + ".mp3")
+        if old_path != new_path:
+            old_path.rename(new_path)
+
+
+def vk_repad_tracks(folder):
+    tracks = vk_get_existing_tracks(folder)
+    if not tracks:
+        return
+    mx = max(t[0] for t in tracks)
+    pad = len(str(mx))
+    for num, name, old_path in tracks:
+        new_path = old_path.parent / (str(num).zfill(pad) + ". " + name + ".mp3")
+        if old_path != new_path:
+            old_path.rename(new_path)
+
+
+def vk_download_worker(urls, folder, order, mode, run_meta_after):
+    vk_state["running"] = True
+    vk_state["done"] = False
+    vk_state["cancel"] = False
+    vk_state["log"] = []
+    vk_state["progress"] = 0
+    vk_state["total"] = 0
+
+    try:
+        service = vk_state["service"]
+        save_dir = Path(folder)
+        save_dir.mkdir(parents=True, exist_ok=True)
+
+        all_tracks = []
+        total_pl = len(urls)
+
+        for i, url in enumerate(reversed(urls)):
+            if vk_state["cancel"]:
+                break
+            pl_num = total_pl - i
+            parsed = vk_parse_playlist_url(url)
+            if not parsed:
+                vk_state["log"].append("Ошибка URL: " + url)
+                continue
+            owner_id, playlist_id, access_key = parsed
+            vk_state["log"].append("[{}/{}] Загружаю список треков...".format(pl_num, total_pl))
+            songs = vk_get_all_songs(service, owner_id, playlist_id, access_key)
+            vk_state["log"].append("  Найдено: {} треков".format(len(songs)))
+            if order == "reverse":
+                songs = list(reversed(songs))
+            all_tracks.extend(songs)
+
+        new_count = len(all_tracks)
+        if new_count == 0:
+            vk_state["log"].append("Треков не найдено.")
+            return
+
+        existing = vk_get_existing_tracks(save_dir)
+        if mode == "prepend" and existing:
+            vk_state["log"].append("Сдвигаю {} существующих треков...".format(len(existing)))
+            vk_renumber_tracks(save_dir, start_from=new_count + 1)
+            start_num = 1
+        elif mode == "append" and existing:
+            start_num = max(t[0] for t in existing) + 1
+        else:
+            start_num = 1
+
+        total = new_count
+        vk_state["total"] = total
+        max_num = start_num + total - 1
+        if mode in ("prepend", "append") and existing:
+            refreshed = vk_get_existing_tracks(save_dir)
+            if refreshed:
+                max_num = max(max_num, max(t[0] for t in refreshed))
+        pad = len(str(max_num))
+
+        vk_state["log"].append("\nСкачиваю {} треков...".format(total))
+        downloaded = 0
+        failed = []
+
+        for idx, song in enumerate(all_tracks):
+            if vk_state["cancel"]:
+                vk_state["log"].append("\nОтменено.")
+                break
+            track_num = start_num + idx
+            num_str = str(track_num).zfill(pad)
+            artist = vk_safe_filename(song.artist)
+            title = vk_safe_filename(song.title)
+            filename = "{}. {} - {}.mp3".format(num_str, artist, title)
+            filepath = save_dir / filename
+            display = "{} - {}".format(artist, title)
+            vk_state["progress"] = idx + 1
+
+            if filepath.exists():
+                downloaded += 1
+                continue
+
+            ok = vk_download_song(song, filepath)
+            if not ok:
+                ok = vk_search_fallback(service, song.artist, song.title, filepath)
+
+            if ok:
+                downloaded += 1
+                vk_state["log"].append("  OK: " + display)
+            else:
+                failed.append(display)
+                vk_state["log"].append("  НЕ НАЙДЕН: " + display)
+            time.sleep(0.3)
+
+        vk_repad_tracks(save_dir)
+
+        vk_state["log"].append("\n========================================")
+        vk_state["log"].append("Скачано: {}/{}".format(downloaded, total))
+        if failed:
+            vk_state["log"].append("Не найдено ({}):" .format(len(failed)))
+            for f in failed:
+                vk_state["log"].append("  - " + f)
+
+        if run_meta_after and not vk_state["cancel"]:
+            vk_state["log"].append("\nЗапускаю поиск мета-данных...")
+            metadata_worker(folder)
+
+    except Exception as e:
+        vk_state["log"].append("ОШИБКА: " + str(e))
+    finally:
+        vk_state["running"] = False
+        vk_state["done"] = True
+
+
+def load_config():
+    # Backward compat — now per-user
+    return {"folders": [], "last_folder": ""}
+
+
+def save_config(config):
+    pass
+
+
+def add_folder_to_config(folder):
+    pass
+
+
+def get_metadata(filepath):
+    """Извлекает метаданные трека: title, artist, album, cover (base64)."""
+    p = Path(filepath)
+    meta = {
+        "title": p.stem,
+        "artist": "",
+        "album": "",
+        "cover": None,
+        "cover_mime": None,
+    }
+    if not HAS_MUTAGEN:
+        return meta
+
+    try:
+        ext = p.suffix.lower()
+        if ext == '.mp3':
+            audio = MP3(filepath)
+            tags = audio.tags
+            if tags:
+                meta["title"] = str(tags.get("TIT2", p.stem))
+                meta["artist"] = str(tags.get("TPE1", ""))
+                meta["album"] = str(tags.get("TALB", ""))
+                for key in tags:
+                    if key.startswith("APIC"):
+                        apic = tags[key]
+                        meta["cover"] = base64.b64encode(apic.data).decode()
+                        meta["cover_mime"] = apic.mime
+                        break
+        elif ext == '.flac':
+            audio = FLAC(filepath)
+            meta["title"] = audio.get("title", [p.stem])[0]
+            meta["artist"] = audio.get("artist", [""])[0]
+            meta["album"] = audio.get("album", [""])[0]
+            if audio.pictures:
+                pic = audio.pictures[0]
+                meta["cover"] = base64.b64encode(pic.data).decode()
+                meta["cover_mime"] = pic.mime
+        elif ext == '.m4a':
+            audio = MP4(filepath)
+            tags = audio.tags or {}
+            meta["title"] = (tags.get("\xa9nam") or [p.stem])[0]
+            meta["artist"] = (tags.get("\xa9ART") or [""])[0]
+            meta["album"] = (tags.get("\xa9alb") or [""])[0]
+            covr = tags.get("covr")
+            if covr:
+                meta["cover"] = base64.b64encode(bytes(covr[0])).decode()
+                meta["cover_mime"] = "image/jpeg"
+        elif ext == '.ogg':
+            audio = OggVorbis(filepath)
+            meta["title"] = audio.get("title", [p.stem])[0]
+            meta["artist"] = audio.get("artist", [""])[0]
+            meta["album"] = audio.get("album", [""])[0]
+    except Exception:
+        pass
+    return meta
+
+
+def scan_library(music_dir):
+    """Сканирует директорию и возвращает список треков с метаданными (без обложек)."""
+    tracks = []
+    music_path = Path(music_dir)
+    if not music_path.exists():
+        return tracks
+
+    files = sorted(music_path.iterdir(), key=lambda f: f.name)
+    for f in files:
+        if f.suffix.lower() in SUPPORTED_FORMATS and f.is_file():
+            meta = get_metadata(str(f))
+            tracks.append({
+                "id": len(tracks),
+                "file": f.name,
+                "title": meta["title"],
+                "artist": meta["artist"],
+                "album": meta["album"],
+                "has_cover": meta["cover"] is not None,
+            })
+    return tracks
+
+
+def group_by_album(tracks):
+    """Группирует треки по альбомам для cover flow."""
+    albums = OrderedDict()
+    for t in tracks:
+        key = t["album"] or "Unknown"
+        if key not in albums:
+            albums[key] = {
+                "name": key,
+                "artist": t["artist"],
+                "cover_file": t["file"] if t.get("has_cover") else None,
+                "tracks": [],
+            }
+        albums[key]["tracks"].append(t["id"])
+        if not albums[key]["cover_file"] and t.get("has_cover"):
+            albums[key]["cover_file"] = t["file"]
+    return list(albums.values())
+
+
+# ──────────────────── Metadata lookup ────────────────────
+
+meta_state = {
+    "running": False,
+    "cancel": False,
+    "progress": 0,
+    "total": 0,
+    "log": [],
+    "done": False,
+}
+
+
+def parse_track_name(filename):
+    """Парсит '0001. Artist - Title.mp3' -> (artist, title). Нумерацию не трогаем."""
+    stem = Path(filename).stem
+    # Убираем нумерацию вида "0001. " или "001 "
+    cleaned = re.sub(r'^\d+[\.\s]+\s*', '', stem)
+    if ' - ' in cleaned:
+        parts = cleaned.split(' - ', 1)
+        return parts[0].strip(), parts[1].strip()
+    return '', cleaned.strip()
+
+
+def search_deezer(artist, title):
+    """Ищет трек в Deezer API (отличная база русской музыки, без ключа)."""
+    try:
+        query = "{} {}".format(artist, title) if artist else title
+        url = "https://api.deezer.com/search?q={}&limit=5".format(quote(query))
+        with HttpClient(timeout=10) as client:
+            resp = client.get(url)
+        if resp.status_code != 200:
+            return None
+        data = resp.json()
+        items = data.get('data', [])
+        if not items:
+            return None
+        item = items[0]
+        album = item.get('album', {})
+        return {
+            'title': item.get('title', title),
+            'artist': item.get('artist', {}).get('name', artist),
+            'album': album.get('title', ''),
+            'year': '',
+            'cover_url': album.get('cover_big') or album.get('cover_medium') or album.get('cover'),
+            'release_mbid': None,
+        }
+    except Exception:
+        return None
+
+
+def search_musicbrainz(artist, title):
+    """Ищет трек в MusicBrainz."""
+    if not HAS_MB:
+        return None
+    try:
+        if artist:
+            query = 'recording:"{}" AND artist:"{}"'.format(
+                title.replace('"', ''), artist.replace('"', ''))
+            result = musicbrainzngs.search_recordings(query=query, limit=5)
+        else:
+            result = musicbrainzngs.search_recordings(recording=title, limit=5)
+
+        recordings = result.get('recording-list', [])
+        if not recordings:
+            return None
+
+        rec = recordings[0]
+        meta = {
+            'title': rec.get('title', title),
+            'artist': '',
+            'album': '',
+            'year': '',
+            'cover_url': None,
+            'release_mbid': None,
+        }
+
+        credits = rec.get('artist-credit', [])
+        if credits:
+            names = []
+            for c in credits:
+                if isinstance(c, dict) and 'artist' in c:
+                    names.append(c['artist'].get('name', ''))
+            meta['artist'] = ', '.join(names)
+
+        releases = rec.get('release-list', [])
+        if releases:
+            rel = releases[0]
+            meta['album'] = rel.get('title', '')
+            meta['year'] = rel.get('date', '')[:4] if rel.get('date') else ''
+            meta['release_mbid'] = rel.get('id')
+
+        return meta
+    except Exception:
+        return None
+
+
+def search_itunes(artist, title):
+    """Ищет трек в iTunes Search API (хорошая база, без ключа)."""
+    try:
+        query = "{} {}".format(artist, title) if artist else title
+        url = "https://itunes.apple.com/search?term={}&media=music&limit=5".format(quote(query))
+        with HttpClient(timeout=10) as client:
+            resp = client.get(url)
+        if resp.status_code != 200:
+            return None
+        data = resp.json()
+        items = data.get('results', [])
+        if not items:
+            return None
+        item = items[0]
+        cover = item.get('artworkUrl100', '')
+        if cover:
+            cover = cover.replace('100x100', '600x600')
+        year = ''
+        release_date = item.get('releaseDate', '')
+        if release_date:
+            year = release_date[:4]
+        return {
+            'title': item.get('trackName', title),
+            'artist': item.get('artistName', artist),
+            'album': item.get('collectionName', ''),
+            'year': year,
+            'cover_url': cover,
+            'release_mbid': None,
+        }
+    except Exception:
+        return None
+
+
+def search_lastfm(artist, title):
+    """Ищет трек в Last.fm API (бесплатный ключ, огромная база)."""
+    try:
+        # Last.fm public API key (shared/demo)
+        api_key = "b25b959554ed76058ac220b7b2e0a026"
+        url = "https://ws.audioscrobbler.com/2.0/?method=track.getInfo&api_key={}&artist={}&track={}&format=json".format(
+            api_key, quote(artist), quote(title))
+        with HttpClient(timeout=10) as client:
+            resp = client.get(url)
+        if resp.status_code != 200:
+            return None
+        data = resp.json()
+        track_info = data.get('track')
+        if not track_info:
+            return None
+        album_info = track_info.get('album', {})
+        album_name = album_info.get('title', '') if isinstance(album_info, dict) else ''
+        cover_url = ''
+        if isinstance(album_info, dict):
+            images = album_info.get('image', [])
+            for img in reversed(images):
+                if isinstance(img, dict) and img.get('#text'):
+                    cover_url = img['#text']
+                    break
+        return {
+            'title': track_info.get('name', title),
+            'artist': track_info.get('artist', {}).get('name', artist) if isinstance(track_info.get('artist'), dict) else artist,
+            'album': album_name,
+            'year': '',
+            'cover_url': cover_url if cover_url and 'noimage' not in cover_url else None,
+            'release_mbid': None,
+        }
+    except Exception:
+        return None
+
+
+def search_metadata(artist, title):
+    """Ищет метаданные по нескольким источникам."""
+    # 1. Deezer — лучший для русской музыки
+    result = search_deezer(artist, title)
+    if result and result.get('album'):
+        return result
+    # 2. iTunes — большая международная база
+    result2 = search_itunes(artist, title)
+    if result2 and result2.get('album'):
+        return result2
+    # 3. Last.fm — огромная база, хорошо для редких треков
+    if artist:
+        result3 = search_lastfm(artist, title)
+        if result3 and result3.get('album'):
+            return result3
+    # 4. MusicBrainz — академический источник
+    result4 = search_musicbrainz(artist, title)
+    if result4 and result4.get('album'):
+        return result4
+    # Возвращаем лучшее из того что нашли
+    return result or result2 or result4
+
+
+def fetch_cover_art(meta):
+    """Скачивает обложку: из Deezer URL или Cover Art Archive."""
+    # Deezer cover
+    cover_url = meta.get('cover_url')
+    if cover_url:
+        try:
+            with HttpClient(timeout=15, follow_redirects=True) as client:
+                resp = client.get(cover_url)
+            if resp.status_code == 200:
+                return resp.content
+        except Exception:
+            pass
+
+    # Cover Art Archive fallback
+    release_mbid = meta.get('release_mbid')
+    if release_mbid:
+        try:
+            url = "https://coverartarchive.org/release/{}/front-500".format(release_mbid)
+            with HttpClient(timeout=15, follow_redirects=True) as client:
+                resp = client.get(url)
+            if resp.status_code == 200:
+                return resp.content
+        except Exception:
+            pass
+    return None
+
+
+def write_metadata_to_file(filepath, meta, cover_data):
+    """Записывает метаданные в файл. Имя файла НЕ меняется."""
+    if not HAS_MUTAGEN:
+        return False
+    p = Path(filepath)
+    ext = p.suffix.lower()
+
+    try:
+        if ext == '.mp3':
+            try:
+                tags = ID3(filepath)
+            except ID3NoHeaderError:
+                from mutagen.id3 import ID3 as ID3Class
+                tags = ID3Class()
+
+            if meta.get('title'):
+                tags.setall('TIT2', [TIT2(encoding=3, text=meta['title'])])
+            if meta.get('artist'):
+                tags.setall('TPE1', [TPE1(encoding=3, text=meta['artist'])])
+            if meta.get('album'):
+                tags.setall('TALB', [TALB(encoding=3, text=meta['album'])])
+            if meta.get('year'):
+                tags.setall('TDRC', [TDRC(encoding=3, text=meta['year'])])
+            if cover_data:
+                tags.setall('APIC', [APIC(
+                    encoding=3, mime='image/jpeg', type=3,
+                    desc='Cover', data=cover_data
+                )])
+            tags.save(filepath, v2_version=3)
+            return True
+
+        elif ext == '.flac':
+            audio = FLAC(filepath)
+            if meta.get('title'):
+                audio['title'] = meta['title']
+            if meta.get('artist'):
+                audio['artist'] = meta['artist']
+            if meta.get('album'):
+                audio['album'] = meta['album']
+            if meta.get('year'):
+                audio['date'] = meta['year']
+            if cover_data:
+                pic = Picture()
+                pic.type = 3
+                pic.mime = 'image/jpeg'
+                pic.data = cover_data
+                audio.clear_pictures()
+                audio.add_picture(pic)
+            audio.save()
+            return True
+
+        elif ext == '.m4a':
+            audio = MP4(filepath)
+            if audio.tags is None:
+                audio.add_tags()
+            if meta.get('title'):
+                audio.tags['\xa9nam'] = [meta['title']]
+            if meta.get('artist'):
+                audio.tags['\xa9ART'] = [meta['artist']]
+            if meta.get('album'):
+                audio.tags['\xa9alb'] = [meta['album']]
+            if meta.get('year'):
+                audio.tags['\xa9day'] = [meta['year']]
+            if cover_data:
+                audio.tags['covr'] = [MP4Cover(cover_data, imageformat=MP4Cover.FORMAT_JPEG)]
+            audio.save()
+            return True
+
+    except Exception:
+        pass
+    return False
+
+
+def _meta_done_path(music_dir):
+    return Path(music_dir) / ".vinyl_meta_done.json"
+
+
+def _load_meta_done(music_dir):
+    p = _meta_done_path(music_dir)
+    if p.exists():
+        try:
+            return set(json.loads(p.read_text()))
+        except Exception:
+            pass
+    return set()
+
+
+def _save_meta_done(music_dir, done_set):
+    p = _meta_done_path(music_dir)
+    p.write_text(json.dumps(sorted(done_set), ensure_ascii=False))
+
+
+def metadata_worker(music_dir):
+    """Фоновый процесс поиска и записи метаданных."""
+    meta_state["running"] = True
+    meta_state["done"] = False
+    meta_state["cancel"] = False
+    meta_state["log"] = []
+    meta_state["progress"] = 0
+
+    files = sorted(Path(music_dir).iterdir(), key=lambda f: f.name)
+    tracks = [f for f in files if f.suffix.lower() in SUPPORTED_FORMATS and f.is_file()]
+    meta_state["total"] = len(tracks)
+
+    done_set = _load_meta_done(music_dir)
+    updated = 0
+    skipped = 0
+    failed = 0
+
+    for i, f in enumerate(tracks):
+        if meta_state["cancel"]:
+            meta_state["log"].append("\n  Отменено пользователем.")
+            break
+
+        meta_state["progress"] = i + 1
+
+        if f.name in done_set:
+            skipped += 1
+            continue
+
+        existing = get_metadata(str(f))
+        if existing.get("artist") and existing.get("album"):
+            done_set.add(f.name)
+            skipped += 1
+            continue
+
+        artist, title = parse_track_name(f.name)
+        meta_state["log"].append("  Ищу: {} - {}...".format(artist or '?', title))
+
+        found_meta = search_metadata(artist, title)
+        if not found_meta:
+            meta_state["log"].append("    Не найдено")
+            failed += 1
+            time.sleep(0.3)
+            continue
+
+        cover_data = fetch_cover_art(found_meta)
+
+        info = "{} - {} ({} {})".format(
+            found_meta.get('artist', '?'), found_meta.get('title', '?'),
+            found_meta.get('album', ''), found_meta.get('year', ''))
+
+        if write_metadata_to_file(str(f), found_meta, cover_data):
+            cover_status = " +cover" if cover_data else ""
+            meta_state["log"].append("    OK: " + info + cover_status)
+            updated += 1
+            done_set.add(f.name)
+            _save_meta_done(music_dir, done_set)
+        else:
+            meta_state["log"].append("    Ошибка записи тегов")
+            failed += 1
+
+        time.sleep(0.3)
+
+    meta_state["log"].append("\n========================================")
+    meta_state["log"].append("Готово! Обновлено: {}, пропущено: {}, не найдено: {}".format(
+        updated, skipped, failed))
+    meta_state["running"] = False
+    meta_state["done"] = True
+
+
+# ──────────────────── HTML ────────────────────
+
+HTML_PAGE = r"""<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Vinyl Player">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#1a1a1a">
+<link rel="apple-touch-icon" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxODAgMTgwIj4KPHJlY3Qgd2lkdGg9IjE4MCIgaGVpZ2h0PSIxODAiIHJ4PSI0MCIgZmlsbD0iIzFhMWEyZSIvPgo8Y2lyY2xlIGN4PSI5MCIgY3k9IjkwIiByPSI2OCIgZmlsbD0iIzExMSIgc3Ryb2tlPSIjMzMzIiBzdHJva2Utd2lkdGg9IjEuNSIvPgo8Y2lyY2xlIGN4PSI5MCIgY3k9IjkwIiByPSI1NSIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjMjIyIiBzdHJva2Utd2lkdGg9IjAuNSIvPgo8Y2lyY2xlIGN4PSI5MCIgY3k9IjkwIiByPSI0MiIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjMjIyIiBzdHJva2Utd2lkdGg9IjAuNSIvPgo8Y2lyY2xlIGN4PSI5MCIgY3k9IjkwIiByPSIyMiIgZmlsbD0iI2U5NDU2MCIvPgo8Y2lyY2xlIGN4PSI5MCIgY3k9IjkwIiByPSI0IiBmaWxsPSIjMWExYTJlIi8+Cjwvc3ZnPg==">
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxODAgMTgwIj4KPHJlY3Qgd2lkdGg9IjE4MCIgaGVpZ2h0PSIxODAiIHJ4PSI0MCIgZmlsbD0iIzFhMWEyZSIvPgo8Y2lyY2xlIGN4PSI5MCIgY3k9IjkwIiByPSI2OCIgZmlsbD0iIzExMSIgc3Ryb2tlPSIjMzMzIiBzdHJva2Utd2lkdGg9IjEuNSIvPgo8Y2lyY2xlIGN4PSI5MCIgY3k9IjkwIiByPSI1NSIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjMjIyIiBzdHJva2Utd2lkdGg9IjAuNSIvPgo8Y2lyY2xlIGN4PSI5MCIgY3k9IjkwIiByPSI0MiIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjMjIyIiBzdHJva2Utd2lkdGg9IjAuNSIvPgo8Y2lyY2xlIGN4PSI5MCIgY3k9IjkwIiByPSIyMiIgZmlsbD0iI2U5NDU2MCIvPgo8Y2lyY2xlIGN4PSI5MCIgY3k9IjkwIiByPSI0IiBmaWxsPSIjMWExYTJlIi8+Cjwvc3ZnPg==">
+<title>Vinyl Player</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; user-select: none; -webkit-user-select: none; }
+input, textarea { user-select: text; -webkit-user-select: text; }
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background: #111;
+  color: #eee;
+  overflow: hidden;
+  height: 100vh; height: 100dvh;
+}
+
+/* ── Animated background layer ── */
+.bg-canvas {
+  position: fixed; inset: 0; z-index: -1;
+}
+.bg-canvas::after {
+  content: ''; position: absolute; inset: 0; opacity: 0.35;
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Cfilter id='n'%3E%3CfeTurbulence baseFrequency='0.9' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='200' height='200' filter='url(%23n)' opacity='0.08'/%3E%3C/svg%3E");
+  pointer-events: none; z-index: 1;
+}
+.bg-canvas canvas { width: 100%; height: 100%; display: block; }
+
+/* ── Layout ── */
+.app { display: flex; height: 100vh; height: 100dvh; }
+.vinyl-side { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; position: relative; }
+.playlist-side {
+  width: 360px; background: rgba(0,0,0,0.4); backdrop-filter: blur(20px);
+  display: flex; flex-direction: column; border-left: 1px solid rgba(255,255,255,0.06);
+  overflow: hidden;
+}
+
+/* ── Vinyl Scene ── */
+.vinyl-scene {
+  position: relative;
+  width: min(55vw, 55vh);
+  height: min(55vw, 55vh);
+  container-type: inline-size;
+}
+
+/* ── Vinyl Record ── */
+.vinyl-record {
+  width: 100%; height: 100%; border-radius: 50%;
+  background: radial-gradient(circle,
+    #1a1a1a 0%, #111 18%, #1a1a1a 19%, #0d0d0d 20%,
+    #1a1a1a 38%, #111 39%, #1a1a1a 40%, #0d0d0d 58%,
+    #1a1a1a 59%, #111 60%, #1a1a1a 78%, #111 79%, #0d0d0d 100%
+  );
+  position: relative;
+  box-shadow: 0 0 0 6px #222, 0 0 60px rgba(0,0,0,0.6), inset 0 0 80px rgba(0,0,0,0.3);
+  transition: box-shadow 0.3s;
+}
+
+.vinyl-grooves {
+  position: absolute; inset: 10px; border-radius: 50%;
+  background: repeating-radial-gradient(circle at center,
+    transparent 0px, transparent 2px, rgba(255,255,255,0.025) 2.5px, transparent 3px);
+  pointer-events: none;
+}
+
+.vinyl-label {
+  position: absolute; top: 50%; left: 50%;
+  width: 38%; height: 38%; margin: -19% 0 0 -19%;
+  border-radius: 50%; overflow: hidden; background: #222;
+  box-shadow: 0 0 0 4px #333, 0 0 20px rgba(0,0,0,0.4);
+}
+
+.vinyl-cover-placeholder {
+  width: 100%; height: 100%; display: flex; align-items: center; justify-content: center;
+  background: linear-gradient(135deg, #333, #1a1a1a);
+  color: rgba(255,255,255,0.3); font-size: 48px;
+}
+
+.vinyl-hole {
+  position: absolute; top: 50%; left: 50%; width: 14px; height: 14px;
+  margin: -7px 0 0 -7px; border-radius: 50%;
+  background: #0a0a0a; box-shadow: inset 0 0 4px rgba(0,0,0,0.8), 0 0 0 2px #1a1a1a;
+  z-index: 5;
+}
+
+/* Vinyl rotation is now controlled by JS */
+
+/* ── Tonearm ── */
+.tonearm-pivot {
+  position: absolute; top: -2%; right: 4%; z-index: 10;
+}
+.tonearm-base {
+  width: 28px; height: 28px; border-radius: 50%;
+  background: radial-gradient(circle, #666, #333);
+  box-shadow: 0 2px 12px rgba(0,0,0,0.6);
+  position: relative; z-index: 2;
+}
+.tonearm {
+  position: absolute; top: 50%; left: 50%;
+  transform-origin: 0 0; transform: rotate(53deg);
+}
+
+.vinyl-record { cursor: grab; }
+.vinyl-record.grabbing { cursor: grabbing; }
+.tonearm-arm {
+  width: 52cqi; height: 0.8cqi;
+  background: linear-gradient(to right, #999, #777);
+  border-radius: 2px; box-shadow: 0 2px 6px rgba(0,0,0,0.4);
+}
+.tonearm-head {
+  position: absolute; right: -2.2cqi; top: -0.8cqi;
+  width: 2.2cqi; height: 2.2cqi; min-width: 8px; min-height: 8px;
+  background: linear-gradient(to bottom, #aaa, #888);
+  border-radius: 1px 1px 2px 2px; box-shadow: 0 2px 4px rgba(0,0,0,0.3);
+}
+.tonearm-head::after {
+  content: ''; position: absolute; bottom: -0.5cqi; left: 50%; margin-left: -0.15cqi;
+  width: 0.3cqi; height: 0.6cqi; background: #ccc;
+}
+.tonearm-counterweight {
+  position: absolute; left: -3.5cqi; top: -1.5cqi;
+  width: 3.8cqi; height: 3.8cqi; min-width: 14px; min-height: 14px;
+  border-radius: 50%;
+  background: radial-gradient(circle, #888, #555);
+  box-shadow: 0 2px 6px rgba(0,0,0,0.4);
+}
+
+/* ── Track info ── */
+.track-info {
+  text-align: center; margin-top: 28px;
+}
+.track-title {
+  font-size: 22px; font-weight: 600; color: #fff;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 50vw;
+  transition: opacity 0.3s ease;
+}
+.track-artist {
+  font-size: 15px; color: rgba(255,255,255,0.5); margin-top: 4px;
+  transition: opacity 0.3s ease;
+}
+.vinyl-cover-img { width: 100%; height: 100%; object-fit: cover; transition: opacity 0.4s ease; }
+
+/* ── Controls ── */
+.controls {
+  display: flex; align-items: center; gap: 20px; margin-top: 24px;
+}
+.ctrl-btn {
+  width: 48px; height: 48px; border-radius: 50%; border: none;
+  background: rgba(255,255,255,0.1); color: #fff; font-size: 20px;
+  cursor: pointer; display: flex; align-items: center; justify-content: center;
+  transition: background 0.2s;
+}
+.ctrl-btn:hover { background: rgba(255,255,255,0.2); }
+.ctrl-btn.play-btn {
+  width: 60px; height: 60px; font-size: 24px;
+  background: rgba(255,255,255,0.15);
+}
+
+/* ── Progress bar ── */
+.progress-wrap {
+  width: min(50vw, 400px); margin-top: 16px; cursor: pointer;
+}
+.progress-bg {
+  width: 100%; height: 4px; background: rgba(255,255,255,0.15);
+  border-radius: 2px; position: relative;
+}
+.progress-fill {
+  height: 100%; background: #e94560; border-radius: 2px; width: 0%;
+  transition: width 0.3s linear;
+}
+.time-display {
+  display: flex; justify-content: space-between; font-size: 11px;
+  color: rgba(255,255,255,0.4); margin-top: 4px;
+}
+
+/* ── Volume ── */
+.volume-wrap {
+  display: flex; align-items: center; gap: 8px; margin-top: 8px;
+}
+.volume-wrap input[type=range] {
+  width: 100px; accent-color: #e94560;
+}
+
+/* ── Playlist ── */
+.playlist-header {
+  padding: 16px 20px; border-bottom: 1px solid rgba(255,255,255,0.06);
+  font-size: 14px; font-weight: 600; color: rgba(255,255,255,0.6);
+}
+.playlist-tabs {
+  display: flex; border-bottom: 1px solid rgba(255,255,255,0.06);
+}
+.playlist-tab {
+  flex: 1; padding: 10px; text-align: center; font-size: 13px;
+  color: rgba(255,255,255,0.4); cursor: pointer; border: none; background: none;
+  transition: color 0.2s;
+}
+.playlist-tab.active { color: #e94560; border-bottom: 2px solid #e94560; }
+.playlist-list {
+  flex: 1; overflow-y: auto; padding: 4px 0; scroll-behavior: smooth;
+}
+.playlist-list.tab-hidden, .coverflow-wrap.tab-hidden {
+  display: none;
+}
+.playlist-item {
+  display: flex; align-items: center; gap: 10px; padding: 8px 12px;
+  cursor: pointer; transition: background 0.15s;
+}
+.playlist-item:hover { background: rgba(255,255,255,0.05); }
+.playlist-item.active { background: rgba(233,69,96,0.15); transition: background 0.3s ease; }
+.playlist-item .num { min-width: 32px; text-align: right; font-size: 11px; color: rgba(255,255,255,0.3); flex-shrink: 0; font-variant-numeric: tabular-nums; }
+.playlist-item .cover-thumb {
+  width: 40px; height: 40px; border-radius: 4px; background: #333;
+  display: flex; align-items: center; justify-content: center; overflow: hidden; flex-shrink: 0;
+}
+.playlist-item .cover-thumb img { width: 100%; height: 100%; object-fit: cover; }
+.playlist-item .info { flex: 1; overflow: hidden; }
+.playlist-item .info .name { font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.playlist-item .info .artist { font-size: 12px; color: rgba(255,255,255,0.4); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* ── Cover Flow ── */
+.coverflow-wrap {
+  flex: 1; overflow-y: auto; padding: 12px; scroll-behavior: smooth;
+}
+.album-card {
+  display: flex; gap: 12px; padding: 10px; border-radius: 10px;
+  cursor: pointer; transition: background 0.15s; margin-bottom: 0;
+}
+.album-card:hover { background: rgba(255,255,255,0.05); }
+.album-card.active { background: rgba(233,69,96,0.12); }
+.album-tracks {
+  overflow: hidden; max-height: 0;
+  transition: max-height 0.35s ease-out, opacity 0.25s ease;
+  opacity: 0;
+}
+.album-tracks.open {
+  max-height: 2000px;
+  opacity: 1;
+  transition: max-height 0.45s ease-in, opacity 0.3s ease 0.05s;
+}
+.album-cover {
+  width: 56px; height: 56px; border-radius: 6px; background: #333;
+  overflow: hidden; flex-shrink: 0;
+}
+.album-cover img { width: 100%; height: 100%; object-fit: cover; }
+.album-info { flex: 1; display: flex; flex-direction: column; justify-content: center; overflow: hidden; }
+.album-name { font-size: 14px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.album-artist { font-size: 12px; color: rgba(255,255,255,0.4); }
+.album-count { font-size: 11px; color: rgba(255,255,255,0.25); }
+
+/* ── Folder panel ── */
+.folder-panel {
+  padding: 10px 12px; border-bottom: 1px solid rgba(255,255,255,0.06);
+  display: flex; flex-direction: column; gap: 6px;
+}
+.fp-row { display: flex; gap: 6px; align-items: center; }
+.folder-panel > .fp-meta-row { grid-column: 1 / -1; display: flex; gap: 6px; align-items: center; }
+.folder-row { display: flex; gap: 6px; align-items: center; }
+.folder-select {
+  flex: 1; padding: 8px 10px; border-radius: 8px;
+  border: 1px solid rgba(255,255,255,0.12); background: rgba(255,255,255,0.06);
+  color: #eee; font-size: 13px; outline: none; appearance: none;
+  -webkit-appearance: none; -moz-appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='rgba(255,255,255,0.4)'/%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: right 10px center;
+  padding-right: 28px; cursor: pointer;
+}
+.folder-select:focus { border-color: #e94560; }
+.folder-select option { background: #1c1c1c; color: #eee; }
+.folder-btn {
+  padding: 8px 14px; border-radius: 8px; border: none; font-size: 12px;
+  cursor: pointer; white-space: nowrap; transition: background 0.15s;
+}
+.folder-btn-primary { background: #e94560; color: #fff; }
+.folder-btn-primary:hover { background: #d13a54; }
+.folder-btn-secondary {
+  background: rgba(255,255,255,0.07); color: rgba(255,255,255,0.7);
+  border: 1px solid rgba(255,255,255,0.12);
+}
+.folder-btn-secondary:hover { background: rgba(255,255,255,0.14); color: #fff; }
+.folder-btn-icon {
+  width: 34px; height: 34px; padding: 0; display: flex; align-items: center; justify-content: center;
+  font-size: 16px; border-radius: 8px; background: rgba(255,255,255,0.07);
+  color: rgba(255,255,255,0.6); border: 1px solid rgba(255,255,255,0.12); cursor: pointer;
+}
+.folder-btn-icon:hover { background: rgba(255,255,255,0.14); color: #fff; }
+.folder-path-input {
+  flex: 1; padding: 8px 10px; border-radius: 8px;
+  border: 1px solid rgba(255,255,255,0.12); background: rgba(255,255,255,0.06);
+  color: #eee; font-size: 13px; outline: none;
+}
+.folder-path-input:focus { border-color: #e94560; }
+.folder-path-input::placeholder { color: rgba(255,255,255,0.25); }
+.folder-add-row {
+  display: none; flex-direction: column; gap: 6px;
+  padding: 8px; background: rgba(255,255,255,0.03); border-radius: 8px;
+  border: 1px solid rgba(255,255,255,0.06);
+}
+.folder-add-row.show { display: flex; }
+
+/* ── Meta modal ── */
+.meta-overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,0);
+  z-index: 100; display: flex; align-items: center; justify-content: center;
+  pointer-events: none; transition: background 0.25s ease;
+}
+.meta-overlay .meta-modal {
+  transform: scale(0.95); opacity: 0; transition: transform 0.25s ease, opacity 0.25s ease;
+}
+.meta-overlay.show { background: rgba(0,0,0,0.7); pointer-events: auto; }
+.meta-overlay.show .meta-modal { transform: scale(1); opacity: 1; }
+.meta-modal {
+  background: #1c1c1c; border-radius: 16px; padding: 24px; width: 500px; max-height: 80vh;
+  display: flex; flex-direction: column; box-shadow: 0 20px 60px rgba(0,0,0,0.6);
+  border: 1px solid rgba(255,255,255,0.06);
+}
+.meta-modal h3 { margin-bottom: 12px; color: #e94560; }
+.meta-modal .meta-progress { font-size: 13px; color: rgba(255,255,255,0.5); margin-bottom: 8px; }
+.meta-modal .meta-log {
+  flex: 1; background: #111; border-radius: 8px; padding: 12px;
+  font-family: 'SF Mono', Menlo, monospace; font-size: 11px; color: #aaa;
+  overflow-y: auto; max-height: 50vh; white-space: pre-wrap; min-height: 100px;
+  border: 1px solid rgba(255,255,255,0.06);
+}
+.meta-modal .meta-bar { width: 100%; height: 6px; background: #333; border-radius: 3px; margin-bottom: 8px; }
+.meta-modal .meta-bar-fill { height: 100%; background: #e94560; border-radius: 3px; transition: width 0.3s; }
+.meta-modal button {
+  margin-top: 12px; align-self: flex-end; padding: 8px 20px; border-radius: 8px;
+  border: none; background: rgba(255,255,255,0.1); color: #eee; cursor: pointer;
+}
+
+/* ── Password field with eye ── */
+.pw-field {
+  display: flex; align-items: center; border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 8px; background: rgba(255,255,255,0.06); overflow: hidden;
+}
+.pw-field input {
+  flex: 1; border: none; background: none; color: #eee; padding: 8px 10px;
+  font-size: 13px; outline: none;
+}
+.pw-field input::placeholder { color: rgba(255,255,255,0.25); }
+.pw-field:focus-within { border-color: #e94560; }
+.pw-eye {
+  width: 36px; height: 36px; flex-shrink: 0;
+  background: none; border: none; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+}
+.pw-eye::after {
+  content: ''; width: 16px; height: 16px; display: block;
+  background: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIGZpbGw9IiM2NjYiIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZD0iTTEyIDQuNUM3IDQuNSAyLjczIDcuNjEgMSAxMmMxLjczIDQuMzkgNiA3LjUgMTEgNy41czkuMjctMy4xMSAxMS03LjVjLTEuNzMtNC4zOS02LTcuNS0xMS03LjV6TTEyIDE3Yy0yLjc2IDAtNS0yLjI0LTUtNXMyLjI0LTUgNS01IDUgMi4yNCA1IDUtMi4yNCA1LTUgNXptMC04Yy0xLjY2IDAtMyAxLjM0LTMgM3MxLjM0IDMgMyAzIDMtMS4zNCAzLTMtMS4zNC0zLTMtM3oiLz48L3N2Zz4=") center/contain no-repeat;
+}
+.pw-eye:hover::after {
+  background-image: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIGZpbGw9IiNhYWEiIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZD0iTTEyIDQuNUM3IDQuNSAyLjczIDcuNjEgMSAxMmMxLjczIDQuMzkgNiA3LjUgMTEgNy41czkuMjctMy4xMSAxMS03LjVjLTEuNzMtNC4zOS02LTcuNS0xMS03LjV6TTEyIDE3Yy0yLjc2IDAtNS0yLjI0LTUtNXMyLjI0LTUgNS01IDUgMi4yNCA1IDUtMi4yNCA1LTUgNXptMC04Yy0xLjY2IDAtMyAxLjM0LTMgM3MxLjM0IDMgMyAzIDMtMS4zNCAzLTMtMS4zNC0zLTMtM3oiLz48L3N2Zz4=");
+}
+.pw-eye.visible::after {
+  background-image: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIGZpbGw9IiNlOTQ1NjAiIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZD0iTTEyIDQuNUM3IDQuNSAyLjczIDcuNjEgMSAxMmMxLjczIDQuMzkgNiA3LjUgMTEgNy41czkuMjctMy4xMSAxMS03LjVjLTEuNzMtNC4zOS02LTcuNS0xMS03LjV6TTEyIDE3Yy0yLjc2IDAtNS0yLjI0LTUtNXMyLjI0LTUgNS01IDUgMi4yNCA1IDUtMi4yNCA1LTUgNXptMC04Yy0xLjY2IDAtMyAxLjM0LTMgM3MxLjM0IDMgMyAzIDMtMS4zNCAzLTMtMS4zNC0zLTMtM3oiLz48L3N2Zz4=");
+}
+
+/* Admin key icon */
+.admin-pw-btn { width: 26px; height: 26px; }
+.admin-pw-btn::after {
+  content: ''; width: 14px; height: 14px; display: block;
+  background: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIGZpbGw9IiM5OTkiIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZD0iTTEyLjY1IDEwYTYgNiAwIDEgMCAwIDRIMTd2M2gzdi0zaDJ2LTRoLTkuMzV6TTcgMTRhMiAyIDAgMSAxIDAtNCAyIDIgMCAwIDEgMCA0eiIvPjwvc3ZnPg==") center/contain no-repeat;
+}
+
+/* ── Tooltips ── */
+[data-tip] { position: relative; }
+[data-tip]:hover::after {
+  content: attr(data-tip); position: absolute;
+  padding: 5px 10px; border-radius: 6px; background: #222; color: #ccc; font-size: 11px;
+  white-space: nowrap; pointer-events: none; z-index: 999;
+  border: 1px solid rgba(255,255,255,0.1); box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+  top: 100%; left: 50%; transform: translateX(-50%); margin-top: 6px;
+}
+
+/* ── LAN/WAN links ── */
+.net-link {
+  color: #eee; text-decoration: none; font-weight: 600; font-size: 12px;
+  background: rgba(255,255,255,0.06); padding: 2px 8px; border-radius: 4px;
+  transition: background 0.15s; user-select: all; display: inline-block; margin: 1px 0;
+}
+.net-link:hover { background: rgba(255,255,255,0.14); }
+
+/* ── Shuffle button ── */
+.shuffle-btn {
+  width: 36px; height: 36px; border-radius: 50%; border: none;
+  background: rgba(255,255,255,0.08); color: rgba(255,255,255,0.4);
+  cursor: pointer; display: flex; align-items: center; justify-content: center;
+  transition: background 0.15s, color 0.15s; font-size: 16px;
+}
+.shuffle-btn:hover { background: rgba(255,255,255,0.15); }
+.shuffle-btn.active { color: #e94560; background: rgba(233,69,96,0.15); }
+.shuffle-bar {
+  display: flex; align-items: center; gap: 8px; padding: 8px 20px;
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+}
+.shuffle-bar button { font-size: 12px; }
+
+/* ── Browse ── */
+.browse-item {
+  display: flex; align-items: center; gap: 8px; padding: 8px 12px;
+  cursor: pointer; transition: background 0.12s; font-size: 13px;
+  border-bottom: 1px solid rgba(255,255,255,0.03);
+}
+.browse-item:hover { background: rgba(255,255,255,0.06); }
+.browse-item .bi-icon { font-size: 16px; width: 20px; text-align: center; flex-shrink: 0; }
+.browse-item .bi-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.browse-item.is-dir .bi-name { color: #eee; }
+.browse-item.is-file .bi-name { color: rgba(255,255,255,0.35); font-size: 12px; }
+.browse-info { padding: 6px 12px; font-size: 11px; color: rgba(255,255,255,0.3); border-top: 1px solid rgba(255,255,255,0.06); }
+
+/* ── Edit mode ── */
+.playlist-item.dragging { opacity: 0.4; }
+.playlist-item.drag-over { border-top: 2px solid #e94560; }
+.drag-handle {
+  cursor: grab; color: rgba(255,255,255,0.2); font-size: 16px; padding: 0 4px;
+  user-select: none; -webkit-user-select: none; flex-shrink: 0;
+}
+.drag-handle:active { cursor: grabbing; }
+
+/* ── Toast ── */
+.toast {
+  position: fixed; top: 20px; left: 50%; transform: translateX(-50%) translateY(-80px);
+  background: rgba(30,30,50,0.95); color: #eee; padding: 12px 24px; border-radius: 12px;
+  font-size: 14px; z-index: 200; transition: transform 0.3s ease; pointer-events: none;
+  backdrop-filter: blur(10px); border: 1px solid rgba(255,255,255,0.1);
+}
+.toast.show { transform: translateX(-50%) translateY(0); }
+
+/* ── Scrollbar ── */
+::-webkit-scrollbar { width: 16px; }
+::-webkit-scrollbar-track { background: rgba(255,255,255,0.04); border-radius: 8px; }
+::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.22); border-radius: 8px; border: 3px solid transparent; background-clip: padding-box; min-height: 40px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.35); border: 3px solid transparent; background-clip: padding-box; }
+::-webkit-scrollbar-thumb:active { background: rgba(255,255,255,0.45); }
+
+/* ── Search field with clear button ── */
+.search-wrap {
+  position: relative;
+}
+.search-wrap input { padding-right: 30px; }
+.search-clear {
+  position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
+  width: 22px; height: 22px; border: none; border-radius: 50%;
+  background: rgba(255,255,255,0.12); color: rgba(255,255,255,0.5);
+  font-size: 14px; cursor: pointer; display: none;
+  align-items: center; justify-content: center; line-height: 1; padding: 0;
+}
+.search-clear:hover { background: rgba(255,255,255,0.25); color: #fff; }
+.search-clear.show { display: flex; }
+
+/* ── iOS safe areas ── */
+html { touch-action: pan-y; overflow: hidden; }
+body { touch-action: pan-y; }
+.playlist-side { padding-top: env(safe-area-inset-top); }
+.vinyl-side { padding-top: env(safe-area-inset-top); padding-bottom: env(safe-area-inset-bottom); }
+
+/* ── Mobile toggle ── */
+.mobile-toggle {
+  display: none; position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%);
+  z-index: 50; background: rgba(30,30,50,0.9); backdrop-filter: blur(12px);
+  border-radius: 24px; padding: 4px; border: 1px solid rgba(255,255,255,0.1);
+}
+.mobile-toggle button {
+  padding: 10px 24px; border: none; border-radius: 20px; font-size: 13px;
+  background: none; color: rgba(255,255,255,0.5); cursor: pointer;
+}
+.mobile-toggle button.active { background: #e94560; color: #fff; }
+
+@media (max-width: 768px) {
+  .app { position: relative; }
+  .vinyl-side, .playlist-side { position: absolute; inset: 0; width: 100%; height: 100vh; height: 100dvh; }
+  .playlist-side { z-index: 2; }
+  .vinyl-side { z-index: 1; }
+  .mobile-view-vinyl .vinyl-side { display: flex; }
+  .mobile-view-vinyl .playlist-side { display: none; }
+  .mobile-view-playlist .vinyl-side { display: none; }
+  .mobile-view-playlist .playlist-side { display: flex; flex-direction: column; }
+  .mobile-toggle { display: flex; z-index: 10; }
+  .vinyl-scene { width: min(80vw, 50vh); height: min(80vw, 50vh); }
+  .track-title { max-width: 80vw; }
+}
+</style>
+</head>
+<body>
+<div class="bg-canvas" id="bgCanvas"><canvas id="bgC"></canvas></div>
+<div class="app">
+  <!-- Left: Vinyl -->
+  <div class="vinyl-side">
+    <div class="vinyl-scene">
+      <div class="tonearm-pivot">
+        <div class="tonearm-base"></div>
+        <div class="tonearm" id="tonearm">
+          <div class="tonearm-counterweight"></div>
+          <div class="tonearm-arm"></div>
+          <div class="tonearm-head"></div>
+        </div>
+      </div>
+      <div class="vinyl-record" id="vinylRecord">
+        <div class="vinyl-grooves"></div>
+        <div class="vinyl-label">
+          <img id="vinylCover" class="vinyl-cover-img" style="display:none">
+          <div id="vinylPlaceholder" class="vinyl-cover-placeholder">&#9835;</div>
+        </div>
+        <div class="vinyl-hole"></div>
+      </div>
+    </div>
+
+    <div class="track-info">
+      <div class="track-title" id="trackTitle" style="opacity:0.3">Vinyl Player</div>
+      <div class="track-artist" id="trackArtist" style="opacity:0.3">Выберите трек</div>
+    </div>
+
+    <div class="controls">
+      <button class="ctrl-btn" onclick="prevTrack()"><svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h2v12H6zm12 0v12l-8.5-6z"/></svg></button>
+      <button class="ctrl-btn play-btn" id="playBtn" onclick="togglePlay()"><svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor" id="playIcon"><path d="M8 5v14l11-7z"/></svg></button>
+      <button class="ctrl-btn" onclick="nextTrack()"><svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M16 6h2v12h-2zM6 18l8.5-6L6 6z"/></svg></button>
+    </div>
+
+    <div class="progress-wrap" onclick="seek(event)">
+      <div class="progress-bg">
+        <div class="progress-fill" id="progressFill"></div>
+      </div>
+      <div class="time-display">
+        <span id="timeCurrent">0:00</span>
+        <span id="timeDuration">0:00</span>
+      </div>
+    </div>
+
+    <div class="volume-wrap">
+      <span style="font-size:14px;opacity:0.5">&#128264;</span>
+      <input type="range" min="0" max="1" step="0.01" value="0.8" oninput="setVolume(this.value)">
+      <button class="shuffle-btn" id="shufflePlayerBtn" onclick="toggleShuffle()" style="width:32px;height:32px" data-tip="Перемешать"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M10.59 9.17L5.41 4 4 5.41l5.17 5.17 1.42-1.41zM14.5 4l2.04 2.04L4 18.59 5.41 20 17.96 7.46 20 9.5V4h-5.5zm.33 9.41l-1.41 1.41 3.13 3.13L14.5 20H20v-5.5l-2.04 2.04-3.13-3.13z"/></svg></button>
+    </div>
+  </div>
+
+  <!-- Right: Playlist -->
+  <div class="playlist-side">
+    <!-- Folder panel -->
+    <div class="folder-panel">
+      <div class="fp-row">
+        <select id="folderSelect" class="folder-select" style="flex:1" onchange="onFolderSelect(this.value)">
+          <option value="">Выберите каталог</option>
+        </select>
+        <button class="folder-btn-icon" onclick="toggleAddFolder()" data-tip="Добавить каталог">+</button>
+        <button class="folder-btn-icon" onclick="removeCurrentFolder()" data-tip="Удалить каталог">&times;</button>
+        <button class="folder-btn-icon" onclick="openProfile()" data-tip="Профиль" id="profileBtn"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 12c2.7 0 4.8-2.1 4.8-4.8S14.7 2.4 12 2.4 7.2 4.5 7.2 7.2 9.3 12 12 12zm0 2.4c-3.2 0-9.6 1.6-9.6 4.8v2.4h19.2v-2.4c0-3.2-6.4-4.8-9.6-4.8z"/></svg></button>
+        <button class="folder-btn-icon" onclick="openAdmin()" data-tip="Пользователи" id="adminBtn" style="display:none"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg></button>
+      </div>
+
+      <div class="folder-add-row" id="addFolderRow">
+        <div class="fp-row">
+          <input type="text" id="newFolderPath" class="folder-path-input" style="flex:1" placeholder="/путь/к/музыке..." onkeydown="if(event.key==='Enter')addFolderFromInput()">
+          <button class="folder-btn folder-btn-secondary" onclick="openBrowse()" data-tip="Обзор">&#128193;</button>
+          <button class="folder-btn folder-btn-primary" onclick="addFolderFromInput()">Добавить</button>
+        </div>
+      </div>
+
+      <div class="fp-row">
+        <button class="folder-btn folder-btn-secondary" style="flex:1" onclick="startMetaSearch()" data-tip="Поиск обложек, артистов и альбомов">Meta</button>
+        <button class="folder-btn folder-btn-secondary" style="flex:1" onclick="openVkModal()" data-tip="Загрузка треков из VK Music">VK</button>
+        <div id="networkToggles" style="display:none;align-items:center;gap:4px;flex-shrink:0">
+          <span style="font-size:10px;color:rgba(255,255,255,0.35)">LAN</span>
+          <label style="position:relative;width:30px;height:16px;cursor:pointer;flex-shrink:0">
+            <input type="checkbox" id="publicToggle" onchange="togglePublic(this.checked)" style="opacity:0;width:0;height:0">
+            <span style="position:absolute;inset:0;background:rgba(255,255,255,0.15);border-radius:8px;transition:.3s"></span>
+            <span id="publicDot" style="position:absolute;top:2px;left:2px;width:12px;height:12px;background:#888;border-radius:50%;transition:.3s"></span>
+          </label>
+          <span style="font-size:10px;color:rgba(255,255,255,0.35)">WAN</span>
+          <label style="position:relative;width:30px;height:16px;cursor:pointer;flex-shrink:0">
+            <input type="checkbox" id="wanToggle" onchange="toggleWan(this.checked)" style="opacity:0;width:0;height:0">
+            <span style="position:absolute;inset:0;background:rgba(255,255,255,0.15);border-radius:8px;transition:.3s"></span>
+            <span id="wanDot" style="position:absolute;top:2px;left:2px;width:12px;height:12px;background:#888;border-radius:50%;transition:.3s"></span>
+          </label>
+        </div>
+      </div>
+
+      <div id="lanInfo" style="font-size:11px;color:rgba(255,255,255,0.4);display:none"></div>
+
+      <div class="search-wrap" style="position:relative">
+        <input type="text" id="searchInput" class="folder-path-input" style="width:100%" placeholder="Поиск по трекам..." oninput="onSearchInput(this.value)">
+        <button class="search-clear" id="searchClear" onclick="clearSearch()">&times;</button>
+      </div>
+    </div>
+
+    <!-- Meta confirm -->
+    <div class="meta-overlay" id="metaConfirmOverlay" onclick="if(event.target===this)metaConfirmClose()">
+      <div class="meta-modal" style="width:400px">
+        <h3>Meta-данные</h3>
+        <p style="font-size:13px;color:rgba(255,255,255,0.6);margin:12px 0">Начать поиск Meta-данных для всех треков в каталоге?</p>
+        <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:rgba(255,255,255,0.5);cursor:pointer;margin:12px 0;padding:10px;background:rgba(255,255,255,0.04);border-radius:8px">
+          <input type="checkbox" id="autoMetaCheck" style="accent-color:#e94560;width:16px;height:16px">
+          <span>Автоматически искать Meta-данные при воспроизведении трека, если их нет</span>
+        </label>
+        <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
+          <button class="folder-btn folder-btn-primary" onclick="metaConfirmGo()">Сканировать</button>
+          <button class="folder-btn folder-btn-secondary" onclick="metaConfirmClose()">Закрыть</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Meta search modal -->
+    <div class="meta-overlay" id="metaOverlay" onclick="if(event.target===this)closeMetaModal()">
+      <div class="meta-modal">
+        <h3>Поиск метаданных</h3>
+        <div style="font-size:11px;color:rgba(255,255,255,0.3);margin-bottom:8px">Deezer + iTunes + Last.fm + MusicBrainz</div>
+        <div class="meta-progress" id="metaProgress"></div>
+        <div class="meta-bar"><div class="meta-bar-fill" id="metaBarFill" style="width:0%"></div></div>
+        <div class="meta-log" id="metaLog"></div>
+        <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px">
+          <button onclick="cancelMeta()" style="background:#e94560;color:#fff">Отменить</button>
+          <button onclick="closeMetaModal()">Закрыть</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- VK Download modal -->
+    <div class="meta-overlay" id="vkOverlay" onclick="if(event.target===this)closeVkModal()">
+      <div class="meta-modal">
+        <h3>Загрузка из VK Music</h3>
+        <div id="vkAuthSection">
+          <div id="vkAuthStatus" style="font-size:12px;color:rgba(255,255,255,0.4);margin-bottom:8px"></div>
+          <div id="vkAuthForm" style="display:none;margin-bottom:10px">
+            <div style="font-size:12px;color:rgba(255,255,255,0.5);margin-bottom:4px">Вставьте URL после авторизации VK:</div>
+            <div style="display:flex;gap:6px">
+              <input type="text" id="vkTokenInput" class="folder-path-input" style="flex:1" placeholder="https://oauth.vk.com/blank.html#access_token=...">
+              <button class="folder-btn folder-btn-primary" onclick="submitVkToken()">OK</button>
+            </div>
+          </div>
+        </div>
+        <div id="vkFormSection">
+          <div id="vkFolderHint" style="font-size:11px;color:rgba(255,255,255,0.35);margin-bottom:8px"></div>
+          <div style="font-size:12px;color:rgba(255,255,255,0.5);margin-bottom:4px">Ссылки на плейлисты (по одной на строку):</div>
+          <textarea id="vkUrls" style="width:100%;height:80px;padding:8px;border-radius:8px;border:1px solid rgba(255,255,255,0.12);background:rgba(255,255,255,0.06);color:#eee;font-size:12px;resize:vertical;outline:none;font-family:inherit" placeholder="https://vk.ru/music/playlist/..."></textarea>
+          <div style="display:flex;gap:8px;margin:10px 0;font-size:12px;align-items:center;flex-wrap:wrap">
+            <select id="vkMode" class="folder-select" style="flex:1;min-width:120px;padding:8px 28px 8px 10px;font-size:12px">
+              <option value="prepend">В начало</option>
+              <option value="append">В конец</option>
+            </select>
+            <select id="vkOrder" class="folder-select" style="flex:1;min-width:120px;padding:8px 28px 8px 10px;font-size:12px">
+              <option value="normal">Как в плейлисте</option>
+              <option value="reverse">В обратном порядке</option>
+            </select>
+            <label style="display:flex;align-items:center;gap:5px;color:rgba(255,255,255,0.6);cursor:pointer;white-space:nowrap">
+              <input type="checkbox" id="vkRunMeta" style="accent-color:#e94560"> Получить Meta-данные после загрузки
+            </label>
+          </div>
+          <button class="folder-btn folder-btn-primary" style="width:100%" id="vkStartBtn" onclick="startVkDownload()">Начать загрузку</button>
+        </div>
+        <div id="vkProgressSection" style="display:none;margin-top:10px">
+          <div class="meta-progress" id="vkProgress"></div>
+          <div class="meta-bar"><div class="meta-bar-fill" id="vkBarFill" style="width:0%"></div></div>
+          <div class="meta-log" id="vkLog"></div>
+        </div>
+        <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px">
+          <button onclick="cancelVkDownload()" style="background:#e94560;color:#fff" class="folder-btn">Отменить</button>
+          <button onclick="closeVkModal()" class="folder-btn folder-btn-secondary">Закрыть</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="playlist-tabs">
+      <button class="playlist-tab active" id="tabTracks" onclick="showTab('tracks')">Треки</button>
+      <button class="playlist-tab" id="tabAlbums" onclick="showTab('albums')">Альбомы</button>
+    </div>
+
+    <div class="playlist-header" style="display:flex;align-items:center;gap:8px">
+      <span id="playlistHeader" style="flex:1">0 треков</span>
+      <button class="shuffle-btn" id="shuffleListBtn" onclick="toggleShuffleFromList()" data-tip="Перемешать"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M10.59 9.17L5.41 4 4 5.41l5.17 5.17 1.42-1.41zM14.5 4l2.04 2.04L4 18.59 5.41 20 17.96 7.46 20 9.5V4h-5.5zm.33 9.41l-1.41 1.41 3.13 3.13L14.5 20H20v-5.5l-2.04 2.04-3.13-3.13z"/></svg></button>
+      <button class="folder-btn-icon" id="editBtn" onclick="startEdit()" data-tip="Редактировать порядок" style="display:none;width:28px;height:28px;font-size:13px">&#9998;</button>
+      <div id="editControls" style="display:none;gap:6px">
+        <button class="folder-btn folder-btn-primary" style="padding:4px 12px;font-size:11px" onclick="saveEdit()">Сохранить</button>
+        <button class="folder-btn folder-btn-secondary" style="padding:4px 12px;font-size:11px" onclick="cancelEdit()">Отмена</button>
+      </div>
+    </div>
+
+    <div class="playlist-list" id="trackList"></div>
+    <div class="coverflow-wrap tab-hidden" id="albumList"></div>
+  </div>
+</div>
+
+<div class="mobile-toggle" id="mobileToggle">
+  <button id="btnVinyl" onclick="mobileShow('vinyl')">Винил</button>
+  <button class="active" id="btnPlaylist" onclick="mobileShow('playlist')">Треки</button>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<!-- WAN mode modal -->
+<div class="meta-overlay" id="wanModeOverlay" onclick="if(event.target===this){this.classList.remove('show');setToggle('wanToggle','wanDot',false)}">
+  <div class="meta-modal" style="width:380px">
+    <h3>Внешний доступ (WAN)</h3>
+    <div style="display:flex;flex-direction:column;gap:8px;margin:12px 0">
+      <button class="folder-btn folder-btn-secondary" style="padding:14px;text-align:left" onclick="startWanMode('tunnel')">
+        <div style="font-weight:600;margin-bottom:4px">Cloudflare Tunnel</div>
+        <div style="font-size:11px;color:rgba(255,255,255,0.4)">Автоматический HTTPS-туннель. Не нужен статический IP. URL меняется при каждом запуске.</div>
+      </button>
+      <button class="folder-btn folder-btn-secondary" style="padding:14px;text-align:left" onclick="document.getElementById('wanStaticForm').style.display=''">
+        <div style="font-weight:600;margin-bottom:4px">Статический IP / VPS</div>
+        <div style="font-size:11px;color:rgba(255,255,255,0.4)">Сервер доступен напрямую по IP. Для VPS, выделенных серверов, проброшенных портов.</div>
+      </button>
+    </div>
+    <div id="wanStaticForm" style="display:none;margin-top:8px">
+      <div style="font-size:12px;color:rgba(255,255,255,0.4);margin-bottom:6px">Настройки прямого доступа</div>
+      <div class="fp-row" style="margin-bottom:6px">
+        <input type="text" id="wanStaticIp" class="folder-path-input" style="flex:2" placeholder="IP-адрес (напр. 85.192.12.34)">
+        <input type="text" id="wanStaticPort" class="folder-path-input" style="flex:1" placeholder="Порт (7656)">
+      </div>
+      <button class="folder-btn folder-btn-primary" style="width:100%" onclick="startWanMode('static')">Подключить</button>
+    </div>
+    <div style="display:flex;justify-content:flex-end;margin-top:12px">
+      <button class="folder-btn folder-btn-secondary" onclick="document.getElementById('wanModeOverlay').classList.remove('show');setToggle('wanToggle','wanDot',false)">Отмена</button>
+    </div>
+  </div>
+</div>
+
+<!-- Browse modal -->
+<div class="meta-overlay" id="browseOverlay" onclick="if(event.target===this)this.classList.remove('show')">
+  <div class="meta-modal" style="width:480px;max-height:80vh;display:flex;flex-direction:column">
+    <h3>Выбор каталога</h3>
+    <div style="display:flex;gap:6px;margin-bottom:8px;align-items:center">
+      <input type="text" id="browsePath" class="folder-path-input" style="flex:1;font-size:12px" onkeydown="if(event.key==='Enter')browseTo(this.value)">
+      <button class="folder-btn folder-btn-secondary" onclick="browseTo(document.getElementById('browsePath').value)">Перейти</button>
+    </div>
+    <div id="browseList" style="flex:1;overflow-y:auto;border:1px solid rgba(255,255,255,0.06);border-radius:8px;background:#111;min-height:200px"></div>
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px">
+      <button class="folder-btn folder-btn-primary" onclick="browseSelect()">Выбрать эту папку</button>
+      <button class="folder-btn folder-btn-secondary" onclick="document.getElementById('browseOverlay').classList.remove('show')">Отмена</button>
+    </div>
+  </div>
+</div>
+
+<!-- Profile modal -->
+<div class="meta-overlay" id="profileOverlay" onclick="if(event.target===this)this.classList.remove('show')">
+  <div class="meta-modal" style="width:360px">
+    <h3>Профиль</h3>
+    <div style="font-size:14px;color:rgba(255,255,255,0.6);margin:8px 0 16px" id="profileUser"></div>
+    <div style="font-size:12px;color:rgba(255,255,255,0.4);margin-bottom:8px">Сменить пароль</div>
+    <div class="pw-field"><input type="password" id="profOldPw" placeholder="Текущий пароль"><button class="pw-eye" onclick="togglePwVis('profOldPw',this)"></button></div>
+    <div class="pw-field" style="margin-top:6px"><input type="password" id="profNewPw" placeholder="Новый пароль"><button class="pw-eye" onclick="togglePwVis('profNewPw',this)"></button></div>
+    <button class="folder-btn folder-btn-primary" style="width:100%;margin-top:12px" onclick="changeMyPassword()">Сменить пароль</button>
+    <div style="display:flex;gap:8px;margin-top:16px;padding-top:12px;border-top:1px solid rgba(255,255,255,0.06)">
+      <button class="folder-btn folder-btn-secondary" style="flex:1" onclick="doLogout()">Выйти</button>
+      <button class="folder-btn folder-btn-secondary" style="flex:1" onclick="document.getElementById('profileOverlay').classList.remove('show')">Закрыть</button>
+    </div>
+  </div>
+</div>
+
+<!-- Admin modal -->
+<div class="meta-overlay" id="adminOverlay" onclick="if(event.target===this)this.classList.remove('show')">
+  <div class="meta-modal" style="width:440px;max-height:80vh;display:flex;flex-direction:column;overflow:hidden">
+    <h3>Управление пользователями</h3>
+    <div id="adminUserList" style="flex:1;overflow-y:auto;margin:10px 0;min-height:0"></div>
+    <div style="border-top:1px solid rgba(255,255,255,0.08);padding-top:12px;margin-top:8px">
+      <div style="font-size:12px;color:rgba(255,255,255,0.5);margin-bottom:6px">Создать пользователя</div>
+      <div style="display:flex;gap:6px;margin-bottom:6px">
+        <input type="text" id="newUserName" class="folder-path-input" placeholder="Логин" style="flex:1">
+        <input type="password" id="newUserPw" class="folder-path-input" placeholder="Пароль" style="flex:1">
+      </div>
+      <button class="folder-btn folder-btn-primary" style="width:100%" onclick="adminCreateUser()">Создать</button>
+    </div>
+    <div style="display:flex;justify-content:flex-end;margin-top:12px">
+      <button class="folder-btn folder-btn-secondary" onclick="document.getElementById('adminOverlay').classList.remove('show')">Закрыть</button>
+    </div>
+  </div>
+</div>
+
+<!-- Admin password change modal -->
+<div class="meta-overlay" id="pwChangeOverlay" onclick="if(event.target===this)this.classList.remove('show')">
+  <div class="meta-modal" style="width:380px">
+    <h3>Сменить пароль</h3>
+    <div style="font-size:14px;color:rgba(255,255,255,0.5);margin-bottom:12px" id="pwChangeUser"></div>
+    <div class="pw-field" style="margin-bottom:6px"><input type="password" id="pwChangeNew" placeholder="Новый пароль"><button class="pw-eye" onclick="togglePwVis('pwChangeNew',this)"></button></div>
+    <div class="pw-field"><input type="password" id="pwChangeConfirm" placeholder="Подтвердите пароль"><button class="pw-eye" onclick="togglePwVis('pwChangeConfirm',this)"></button></div>
+    <div style="display:flex;gap:8px;margin-top:12px">
+      <button class="folder-btn folder-btn-primary" style="flex:1" onclick="submitPwChange()">Сменить</button>
+      <button class="folder-btn folder-btn-secondary" style="flex:1" onclick="document.getElementById('pwChangeOverlay').classList.remove('show')">Отмена</button>
+    </div>
+  </div>
+</div>
+
+<!-- Confirm dialog -->
+<div class="meta-overlay" id="confirmOverlay">
+  <div class="meta-modal" style="width:360px;text-align:center">
+    <div id="confirmText" style="font-size:15px;margin:12px 0 20px"></div>
+    <div style="display:flex;gap:8px;justify-content:center">
+      <button class="folder-btn" style="background:#e94560;color:#fff;min-width:80px" id="confirmYes">Удалить</button>
+      <button class="folder-btn folder-btn-secondary" style="min-width:80px" onclick="closeConfirm()">Отмена</button>
+    </div>
+  </div>
+</div>
+<audio id="audioEl"></audio>
+
+<script>
+var tracks = [];
+var filteredTracks = null; // null = show all
+var albums = [];
+var currentIdx = -1;
+var playQueue = []; // ordered list of track indices for prev/next
+var playQueuePos = -1; // position within playQueue
+var isPlaying = false;
+var audio = document.getElementById('audioEl');
+var activeTab = 'tracks';
+var expandedAlbum = null;
+var savedFolders = [];
+
+// ── Prefetch next track ──
+var prefetchAudio = new Audio();
+var prefetchedFile = null;
+
+function prefetchNext() {
+  if (playQueue.length < 2) return;
+  var nextPos = (playQueuePos + 1) % playQueue.length;
+  var nextIdx = playQueue[nextPos];
+  if (nextIdx < 0 || nextIdx >= tracks.length) return;
+  var nextFile = tracks[nextIdx].file;
+  if (nextFile === prefetchedFile) return; // already cached
+  prefetchedFile = nextFile;
+  prefetchAudio.src = '/api/stream/' + encodeURIComponent(nextFile);
+  prefetchAudio.preload = 'auto';
+  prefetchAudio.load();
+}
+
+// ── Scratch sound via Web Audio API ──
+var audioCtx = null;
+var scratchGain = null;
+var scratchNoise = null;
+var scratchFilter = null;
+var isScratchPlaying = false;
+
+function initScratchSound() {
+  if (audioCtx) {
+    // iOS requires resume after user gesture
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+    return;
+  }
+  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  // iOS: resume on first interaction
+  if (audioCtx.state === 'suspended') audioCtx.resume();
+  var bufSize = audioCtx.sampleRate * 2;
+  var buf = audioCtx.createBuffer(1, bufSize, audioCtx.sampleRate);
+  var data = buf.getChannelData(0);
+  for (var i = 0; i < bufSize; i++) data[i] = Math.random() * 2 - 1;
+  scratchNoise = audioCtx.createBufferSource();
+  scratchNoise.buffer = buf;
+  scratchNoise.loop = true;
+  scratchFilter = audioCtx.createBiquadFilter();
+  scratchFilter.type = 'bandpass';
+  scratchFilter.frequency.value = 800;
+  scratchFilter.Q.value = 0.5;
+  scratchGain = audioCtx.createGain();
+  scratchGain.gain.value = 0;
+  scratchNoise.connect(scratchFilter);
+  scratchFilter.connect(scratchGain);
+  scratchGain.connect(audioCtx.destination);
+  scratchNoise.start();
+}
+
+function startScratch(speed) {
+  if (!audioCtx) initScratchSound();
+  var vol = Math.min(Math.abs(speed) * 0.15, 0.35);
+  scratchFilter.frequency.value = 600 + Math.abs(speed) * 200;
+  scratchGain.gain.setTargetAtTime(vol, audioCtx.currentTime, 0.02);
+  isScratchPlaying = true;
+}
+
+function stopScratch() {
+  if (!audioCtx || !isScratchPlaying) return;
+  scratchGain.gain.setTargetAtTime(0, audioCtx.currentTime, 0.05);
+  isScratchPlaying = false;
+}
+
+// Vinyl rotation state (JS-controlled)
+var vinylAngle = 0;
+var vinylSpeed = 0; // deg per frame, ~33rpm = 198deg/s = 3.3deg/frame@60fps
+var TARGET_SPEED = 3.3;
+var vinylRec = document.getElementById('vinylRecord');
+var tonearmEl = document.getElementById('tonearm');
+
+// Tonearm range: from outer edge (START_DEG) to inner label (END_DEG)
+var ARM_REST = 53;
+var ARM_START = 83;
+var ARM_END = 105;
+var currentArmAngle = ARM_REST;
+
+// Vinyl drag-to-seek state
+var isDragging = false;
+var dragStartAngle = 0;
+var dragStartTime = 0;
+
+audio.volume = 0.8;
+
+// ── Animation loop ──
+var lastTime = 0;
+function animationLoop(ts) {
+  var dt = lastTime ? (ts - lastTime) / 1000 : 0;
+  lastTime = ts;
+
+  if (isPlaying && !isDragging) {
+    // Smooth spin-up
+    vinylSpeed += (TARGET_SPEED - vinylSpeed) * 0.05;
+    vinylAngle += vinylSpeed;
+  } else if (!isDragging) {
+    // Slow down
+    vinylSpeed *= 0.95;
+    if (Math.abs(vinylSpeed) > 0.01) vinylAngle += vinylSpeed;
+  }
+
+  vinylRec.style.transform = 'rotate(' + (vinylAngle % 360) + 'deg)';
+
+  // Tonearm follows track progress with smooth lerp
+  var targetArm = ARM_REST;
+  if (isPlaying && (!audio.duration || isNaN(audio.duration))) {
+    // Track started but duration not loaded yet — move to start position
+    targetArm = ARM_START;
+  } else if (audio.duration && !isNaN(audio.duration) && (isPlaying || audio.currentTime > 0)) {
+    var pct = audio.currentTime / audio.duration;
+    targetArm = ARM_START + (ARM_END - ARM_START) * pct;
+  }
+  if (!isDragging) {
+    currentArmAngle += (targetArm - currentArmAngle) * 0.12;
+    tonearmEl.style.transform = 'rotate(' + currentArmAngle + 'deg)';
+  }
+
+  // Progress bar & time
+  if (audio.duration && !isDragging) {
+    var pctBar = audio.currentTime / audio.duration * 100;
+    document.getElementById('progressFill').style.width = pctBar + '%';
+    document.getElementById('timeCurrent').textContent = formatTime(audio.currentTime);
+  }
+
+  requestAnimationFrame(animationLoop);
+}
+requestAnimationFrame(animationLoop);
+
+audio.addEventListener('loadedmetadata', function() {
+  document.getElementById('timeDuration').textContent = formatTime(audio.duration);
+});
+audio.addEventListener('ended', function() {
+  nextTrack();
+});
+
+// ── Vinyl drag to seek ──
+function getAngleFromCenter(el, clientX, clientY) {
+  var rect = el.getBoundingClientRect();
+  var cx = rect.left + rect.width / 2;
+  var cy = rect.top + rect.height / 2;
+  return Math.atan2(clientY - cy, clientX - cx) * 180 / Math.PI;
+}
+
+vinylRec.addEventListener('mousedown', function(e) {
+  if (!audio.duration) return;
+  e.preventDefault();
+  isDragging = true;
+  vinylRec.classList.add('grabbing');
+  dragStartAngle = getAngleFromCenter(vinylRec, e.clientX, e.clientY);
+  dragStartTime = audio.currentTime;
+  vinylSpeed = 0;
+});
+
+document.addEventListener('mousemove', function(e) {
+  if (!isDragging) return;
+  var angle = getAngleFromCenter(vinylRec, e.clientX, e.clientY);
+  var delta = angle - dragStartAngle;
+  if (delta > 180) delta -= 360;
+  if (delta < -180) delta += 360;
+
+  vinylAngle += delta;
+  dragStartAngle = angle;
+
+  var secPerRevolution = 60 / 33;
+  var timeDelta = (delta / 360) * secPerRevolution;
+  var newTime = Math.max(0, Math.min(audio.currentTime + timeDelta, audio.duration - 0.1));
+  audio.currentTime = newTime;
+
+  var pct = newTime / audio.duration;
+  currentArmAngle = ARM_START + (ARM_END - ARM_START) * pct;
+  tonearmEl.style.transform = 'rotate(' + currentArmAngle + 'deg)';
+  document.getElementById('progressFill').style.width = (pct * 100) + '%';
+  document.getElementById('timeCurrent').textContent = formatTime(newTime);
+
+  startScratch(delta);
+});
+
+document.addEventListener('mouseup', function() {
+  if (!isDragging) return;
+  isDragging = false;
+  vinylRec.classList.remove('grabbing');
+  stopScratch();
+});
+
+// Touch support for vinyl drag
+vinylRec.addEventListener('touchstart', function(e) {
+  if (!audio.duration || e.touches.length !== 1) return;
+  e.preventDefault();
+  isDragging = true;
+  var t = e.touches[0];
+  dragStartAngle = getAngleFromCenter(vinylRec, t.clientX, t.clientY);
+  dragStartTime = audio.currentTime;
+  vinylSpeed = 0;
+}, {passive: false});
+
+document.addEventListener('touchmove', function(e) {
+  if (!isDragging || e.touches.length !== 1) return;
+  var t = e.touches[0];
+  var angle = getAngleFromCenter(vinylRec, t.clientX, t.clientY);
+  var delta = angle - dragStartAngle;
+  if (delta > 180) delta -= 360;
+  if (delta < -180) delta += 360;
+  vinylAngle += delta;
+  dragStartAngle = angle;
+  var secPerRevolution = 60 / 33;
+  var timeDelta = (delta / 360) * secPerRevolution;
+  var newTime = Math.max(0, Math.min(audio.currentTime + timeDelta, audio.duration - 0.1));
+  audio.currentTime = newTime;
+  var pct = newTime / audio.duration;
+  currentArmAngle = ARM_START + (ARM_END - ARM_START) * pct;
+  tonearmEl.style.transform = 'rotate(' + currentArmAngle + 'deg)';
+  document.getElementById('progressFill').style.width = (pct * 100) + '%';
+  document.getElementById('timeCurrent').textContent = formatTime(newTime);
+  startScratch(delta);
+}, {passive: false});
+
+document.addEventListener('touchend', function() { isDragging = false; stopScratch(); });
+
+function formatTime(s) {
+  var m = Math.floor(s / 60);
+  var sec = Math.floor(s % 60);
+  return m + ':' + (sec < 10 ? '0' : '') + sec;
+}
+
+function renderTracks() {
+  var html = '';
+  var indices = filteredTracks || [];
+  if (!filteredTracks) {
+    indices = [];
+    for (var j = 0; j < tracks.length; j++) indices.push(j);
+  }
+  for (var ii = 0; ii < indices.length; ii++) {
+    var i = indices[ii];
+    var t = tracks[i];
+    var coverHtml = t.has_cover
+      ? '<img src="/api/cover/' + encodeURIComponent(t.file) + '" loading="lazy">'
+      : '<span style="color:rgba(255,255,255,0.2);font-size:16px">&#9835;</span>';
+    if (isEditMode) {
+      html += '<div class="playlist-item' + (i === currentIdx ? ' active' : '') + '" data-idx="' + i + '"'
+        + ' draggable="true" ondragstart="onDragStart(event,' + i + ')" ondragend="onDragEnd(event)"'
+        + ' ondragover="onDragOver(event,' + i + ')" ondrop="onDrop(event,' + i + ')"'
+        + ' ontouchstart="onTouchDragStart(event,' + i + ')">'
+        + '<span class="drag-handle">&#9776;</span>'
+        + '<span class="num">' + (i+1) + '</span>'
+        + '<div class="cover-thumb">' + coverHtml + '</div>'
+        + '<div class="info"><div class="name">' + esc(t.title) + '</div>'
+        + '<div class="artist">' + esc(t.artist) + '</div></div></div>';
+    } else {
+      html += '<div class="playlist-item' + (i === currentIdx ? ' active' : '') + '" onclick="playFromList(' + i + ')">'
+        + '<span class="num">' + (i+1) + '</span>'
+        + '<div class="cover-thumb">' + coverHtml + '</div>'
+        + '<div class="info"><div class="name">' + esc(t.title) + '</div>'
+        + '<div class="artist">' + esc(t.artist) + '</div></div></div>';
+    }
+  }
+  document.getElementById('trackList').innerHTML = html;
+}
+
+function renderAlbums() {
+  var html = '';
+  var indices = filteredAlbums;
+  if (!indices) {
+    indices = [];
+    for (var j = 0; j < albums.length; j++) indices.push(j);
+  }
+  for (var ai = 0; ai < indices.length; ai++) {
+    var a = indices[ai];
+    var alb = albums[a];
+    var coverHtml = alb.cover_file
+      ? '<img src="/api/cover/' + encodeURIComponent(alb.cover_file) + '" loading="lazy">'
+      : '';
+    var isExp = expandedAlbum === a;
+    html += '<div class="album-card' + (isExp ? ' active' : '') + '" onclick="toggleAlbum(' + a + ')">'
+      + '<div class="album-cover">' + coverHtml + '</div>'
+      + '<div class="album-info"><div class="album-name">' + esc(alb.name) + '</div>'
+      + '<div class="album-artist">' + esc(alb.artist) + '</div>'
+      + '<div class="album-count">' + alb.tracks.length + ' треков</div>'
+      + '</div></div>';
+    html += '<div class="album-tracks' + (isExp ? ' open' : '') + '" id="albumTracks_' + a + '">';
+    for (var ti = 0; ti < alb.tracks.length; ti++) {
+      var idx = alb.tracks[ti];
+      var t = tracks[idx];
+      html += '<div class="playlist-item' + (idx === currentIdx ? ' active' : '') + '" onclick="event.stopPropagation();playFromAlbum(' + a + ',' + idx + ')" style="padding-left:36px">'
+        + '<span class="num">' + (ti+1) + '</span>'
+        + '<div class="info"><div class="name">' + esc(t.title) + '</div></div></div>';
+    }
+    html += '</div>';
+  }
+  document.getElementById('albumList').innerHTML = html;
+}
+
+function toggleAlbum(i) {
+  var wasOpen = expandedAlbum === i;
+  // Close previous
+  if (expandedAlbum !== null && expandedAlbum !== i) {
+    var prev = document.getElementById('albumTracks_' + expandedAlbum);
+    if (prev) prev.classList.remove('open');
+    var prevCard = prev ? prev.previousElementSibling : null;
+    if (prevCard) prevCard.classList.remove('active');
+  }
+  expandedAlbum = wasOpen ? null : i;
+  var el = document.getElementById('albumTracks_' + i);
+  var card = el ? el.previousElementSibling : null;
+  if (el) {
+    if (wasOpen) {
+      el.classList.remove('open');
+      if (card) card.classList.remove('active');
+    } else {
+      el.classList.add('open');
+      if (card) card.classList.add('active');
+    }
+  }
+}
+
+function showTab(tab) {
+  activeTab = tab;
+  document.getElementById('tabTracks').className = 'playlist-tab' + (tab === 'tracks' ? ' active' : '');
+  document.getElementById('tabAlbums').className = 'playlist-tab' + (tab === 'albums' ? ' active' : '');
+  document.getElementById('trackList').classList.toggle('tab-hidden', tab !== 'tracks');
+  document.getElementById('albumList').classList.toggle('tab-hidden', tab !== 'albums');
+  if (tab === 'albums') {
+    document.getElementById('playlistHeader').textContent = (filteredAlbums ? filteredAlbums.length + ' / ' : '') + albums.length + ' альбомов';
+    document.getElementById('editBtn').style.display = 'none';
+    if (isEditMode) cancelEdit();
+  } else {
+    document.getElementById('playlistHeader').textContent = (filteredTracks ? filteredTracks.length + ' / ' : '') + tracks.length + ' треков';
+    document.getElementById('editBtn').style.display = isNumberedCatalog ? '' : 'none';
+  }
+}
+
+function selectTrack(i, autoplay) {
+  if (i < 0 || i >= tracks.length) return;
+  currentIdx = i;
+  var t = tracks[i];
+
+  vinylAngle = 0;
+  vinylSpeed = 0;
+
+  // Use prefetched audio if it matches, otherwise load normally
+  if (prefetchedFile === t.file && prefetchAudio.src) {
+    var oldAudio = audio;
+    audio = prefetchAudio;
+    audio.volume = oldAudio.volume;
+    audio.id = 'audioEl';
+    // Rebind events
+    audio.addEventListener('loadedmetadata', function() {
+      document.getElementById('timeDuration').textContent = formatTime(audio.duration);
+    });
+    audio.addEventListener('ended', function() { nextTrack(); });
+    audio.addEventListener('timeupdate', onTimeUpdate);
+    // Reset prefetch
+    prefetchAudio = oldAudio;
+    prefetchAudio.pause();
+    prefetchAudio.removeAttribute('src');
+    prefetchedFile = null;
+  } else {
+    audio.src = '/api/stream/' + encodeURIComponent(t.file);
+    prefetchedFile = null;
+  }
+  var titleEl = document.getElementById('trackTitle');
+  var artistEl = document.getElementById('trackArtist');
+  // Fade out, swap text, fade in
+  titleEl.style.opacity = '0';
+  artistEl.style.opacity = '0';
+  setTimeout(function() {
+    titleEl.textContent = t.title;
+    artistEl.textContent = t.artist;
+    titleEl.style.opacity = '1';
+    artistEl.style.opacity = '1';
+  }, 150);
+
+  var img = document.getElementById('vinylCover');
+  if (t.has_cover) {
+    img.src = '/api/cover/' + encodeURIComponent(t.file);
+    img.style.display = '';
+    document.getElementById('vinylPlaceholder').style.display = 'none';
+    img.onload = function() { extractColor(img); };
+  } else {
+    img.style.display = 'none';
+    document.getElementById('vinylPlaceholder').style.display = '';
+    randomBackground();
+  }
+
+  updateActiveHighlight();
+  scrollToActive();
+  updateMediaSession(t);
+  autoMetaForTrack(t);
+
+  if (autoplay) {
+    audio.play();
+    setPlayState(true);
+  }
+  // Prefetch next track in queue
+  setTimeout(prefetchNext, 500);
+}
+
+function togglePlay() {
+  if (currentIdx < 0 && tracks.length > 0) {
+    playFromList(0);
+    return;
+  }
+  if (isPlaying) {
+    audio.pause();
+    setPlayState(false);
+  } else {
+    audio.play();
+    setPlayState(true);
+  }
+}
+
+function setPlayState(playing) {
+  isPlaying = playing;
+  var btn = document.getElementById('playBtn');
+  document.getElementById('playIcon').innerHTML = playing
+    ? '<path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/>'
+    : '<path d="M8 5v14l11-7z"/>';
+}
+
+var isShuffled = false;
+
+function buildDefaultQueue() {
+  playQueue = [];
+  for (var i = 0; i < tracks.length; i++) playQueue.push(i);
+  playQueuePos = -1;
+  if (isShuffled) shuffleArray(playQueue);
+}
+
+function shuffleArray(arr) {
+  for (var i = arr.length - 1; i > 0; i--) {
+    var j = Math.floor(Math.random() * (i + 1));
+    var tmp = arr[i]; arr[i] = arr[j]; arr[j] = tmp;
+  }
+  return arr;
+}
+
+function toggleShuffle() {
+  isShuffled = !isShuffled;
+  syncShuffleUI();
+  if (isShuffled) {
+    // Shuffle current queue, keep current track at position 0
+    var cur = playQueue[playQueuePos];
+    var rest = playQueue.filter(function(x) { return x !== cur; });
+    shuffleArray(rest);
+    playQueue = [cur].concat(rest);
+    playQueuePos = 0;
+  } else {
+    // Restore order
+    var cur = currentIdx;
+    buildDefaultQueue();
+    playQueuePos = playQueue.indexOf(cur);
+    if (playQueuePos < 0) playQueuePos = 0;
+  }
+}
+
+function toggleShuffleFromList() {
+  if (!isShuffled) {
+    isShuffled = true;
+    syncShuffleUI();
+    var indices = [];
+    for (var i = 0; i < tracks.length; i++) indices.push(i);
+    shuffleArray(indices);
+    playQueue = indices;
+    playQueuePos = 0;
+    selectTrack(playQueue[0], true);
+  } else {
+    toggleShuffle();
+  }
+}
+
+function syncShuffleUI() {
+  var b1 = document.getElementById('shuffleListBtn');
+  var b2 = document.getElementById('shufflePlayerBtn');
+  if (b1) b1.classList.toggle('active', isShuffled);
+  if (b2) b2.classList.toggle('active', isShuffled);
+}
+
+function playFromList(trackIdx) {
+  // Build queue from current visible list (search results or all tracks)
+  var indices = filteredTracks;
+  if (!indices) {
+    indices = [];
+    for (var j = 0; j < tracks.length; j++) indices.push(j);
+  }
+  playQueue = indices.slice();
+  playQueuePos = playQueue.indexOf(trackIdx);
+  if (playQueuePos < 0) playQueuePos = 0;
+  selectTrack(trackIdx, true);
+}
+
+function playFromAlbum(albumIdx, trackIdx) {
+  // Build queue from album tracks
+  var alb = albums[albumIdx];
+  if (!alb) return;
+  playQueue = alb.tracks.slice();
+  playQueuePos = playQueue.indexOf(trackIdx);
+  if (playQueuePos < 0) playQueuePos = 0;
+  selectTrack(trackIdx, true);
+}
+
+function prevTrack() {
+  if (audio.currentTime > 3) { audio.currentTime = 0; return; }
+  if (playQueue.length > 0) {
+    playQueuePos--;
+    if (playQueuePos < 0) playQueuePos = playQueue.length - 1;
+    selectTrack(playQueue[playQueuePos], isPlaying);
+  }
+}
+
+function nextTrack() {
+  if (playQueue.length > 0) {
+    playQueuePos++;
+    if (playQueuePos >= playQueue.length) playQueuePos = 0;
+    selectTrack(playQueue[playQueuePos], isPlaying);
+  }
+}
+
+function seek(e) {
+  if (!audio.duration) return;
+  var rect = e.currentTarget.getBoundingClientRect();
+  var pct = (e.clientX - rect.left) / rect.width;
+  audio.currentTime = pct * audio.duration;
+}
+
+function setVolume(v) { audio.volume = v; }
+
+function updateActiveHighlight() {
+  // Remove old active
+  var old = document.querySelectorAll('.playlist-item.active');
+  for (var i = 0; i < old.length; i++) old[i].classList.remove('active');
+  // Find new active by onclick attribute containing the current index
+  var all = document.querySelectorAll('.playlist-item');
+  for (var j = 0; j < all.length; j++) {
+    var onclick = all[j].getAttribute('onclick') || '';
+    if (onclick.indexOf('(' + currentIdx + ')') >= 0 || onclick.indexOf(',' + currentIdx + ')') >= 0) {
+      all[j].classList.add('active');
+    }
+  }
+}
+
+function scrollToActive() {
+  var item = document.querySelector('.playlist-item.active');
+  if (item) {
+    var container = item.closest('.playlist-list') || item.closest('.coverflow-wrap');
+    if (container) {
+      var itemTop = item.offsetTop - container.offsetTop;
+      var itemH = item.offsetHeight;
+      var scrollTop = container.scrollTop;
+      var containerH = container.clientHeight;
+      // Only scroll if item is outside visible area
+      if (itemTop < scrollTop || itemTop + itemH > scrollTop + containerH) {
+        container.scrollTo({ top: itemTop - containerH / 2 + itemH / 2, behavior: 'smooth' });
+      }
+    }
+  }
+}
+
+function extractColor(img) {
+  try {
+    var canvas = document.createElement('canvas');
+    canvas.width = 50; canvas.height = 50;
+    var ctx = canvas.getContext('2d');
+    var tmpImg = new Image();
+    tmpImg.crossOrigin = 'anonymous';
+    tmpImg.onload = function() {
+      ctx.drawImage(tmpImg, 0, 0, 50, 50);
+      var data = ctx.getImageData(0, 0, 50, 50).data;
+      var r = 0, g = 0, b = 0, count = 0;
+      for (var i = 0; i < data.length; i += 16) {
+        r += data[i]; g += data[i+1]; b += data[i+2]; count++;
+      }
+      r = Math.floor(r / count * 0.45);
+      g = Math.floor(g / count * 0.45);
+      b = Math.floor(b / count * 0.45);
+      var mx = Math.max(r, g, b);
+      if (mx < 30) { r += 20; g += 20; b += 20; }
+      setBgPlaying(r, g, b);
+    };
+    tmpImg.src = img.src;
+  } catch(e) {}
+}
+
+var bgPalette = [
+  [45, 20, 60], [20, 40, 65], [55, 25, 20], [15, 50, 40],
+  [50, 30, 50], [25, 25, 55], [55, 40, 15], [20, 45, 50],
+  [45, 15, 35], [30, 50, 25], [50, 20, 45], [20, 35, 55],
+];
+
+function randomBackground() {
+  var c = bgPalette[Math.floor(Math.random() * bgPalette.length)];
+  setBgPlaying(c[0], c[1], c[2]);
+}
+
+// ── Smooth canvas background ──
+var bgOrbs = [];
+var bgBaseR = 17, bgBaseG = 17, bgBaseB = 17;
+var bgTargetR = 17, bgTargetG = 17, bgTargetB = 17;
+var bgCvs, bgCtx;
+
+function initBgCanvas() {
+  bgCvs = document.getElementById('bgC');
+  bgCtx = bgCvs.getContext('2d');
+  resizeBgCanvas();
+  window.addEventListener('resize', resizeBgCanvas);
+  // Idle orbs
+  bgOrbs = [
+    {x:0.2, y:0.4, r:0.7, cr:120, cg:40, cb:200, a:0.35, sx:0.07, sy:0.05},
+    {x:0.8, y:0.3, r:0.6, cr:200, cg:160, cb:30, a:0.3, sx:-0.06, sy:0.08},
+    {x:0.5, y:0.8, r:0.65, cr:30, cg:120, cb:200, a:0.28, sx:0.05, sy:-0.06},
+    {x:0.7, y:0.6, r:0.55, cr:200, cg:50, cb:80, a:0.22, sx:-0.08, sy:-0.04},
+  ];
+  requestAnimationFrame(drawBg);
+}
+
+function resizeBgCanvas() {
+  if (!bgCvs) return;
+  bgCvs.width = Math.floor(window.innerWidth / 2);
+  bgCvs.height = Math.floor(window.innerHeight / 2);
+}
+
+function drawBg(t) {
+  if (!bgCtx) { requestAnimationFrame(drawBg); return; }
+  var w = bgCvs.width, h = bgCvs.height;
+  var s = t * 0.0002;
+
+  // Lerp base color
+  bgBaseR += (bgTargetR - bgBaseR) * 0.02;
+  bgBaseG += (bgTargetG - bgBaseG) * 0.02;
+  bgBaseB += (bgTargetB - bgBaseB) * 0.02;
+
+  bgCtx.fillStyle = 'rgb('+Math.round(bgBaseR)+','+Math.round(bgBaseG)+','+Math.round(bgBaseB)+')';
+  bgCtx.fillRect(0, 0, w, h);
+
+  for (var i = 0; i < bgOrbs.length; i++) {
+    var o = bgOrbs[i];
+    // Wider, slower movement
+    var cx = (o.x + Math.sin(s * (0.7 + i * 0.4) + i * 1.5) * 0.25) * w;
+    var cy = (o.y + Math.cos(s * (0.5 + i * 0.3) + i * 2.5) * 0.2) * h;
+    var radius = o.r * Math.max(w, h);
+
+    var grad = bgCtx.createRadialGradient(cx, cy, 0, cx, cy, radius);
+    grad.addColorStop(0, 'rgba('+o.cr+','+o.cg+','+o.cb+','+o.a+')');
+    grad.addColorStop(0.4, 'rgba('+o.cr+','+o.cg+','+o.cb+','+(o.a*0.5)+')');
+    grad.addColorStop(1, 'rgba('+o.cr+','+o.cg+','+o.cb+',0)');
+    bgCtx.fillStyle = grad;
+    bgCtx.fillRect(0, 0, w, h);
+  }
+
+  requestAnimationFrame(drawBg);
+}
+
+function setBgPlaying(r, g, b) {
+  bgTargetR = r; bgTargetG = g; bgTargetB = b;
+  // Contrasting orbs: shifted hues, brighter, more opaque
+  if (bgOrbs.length >= 4) {
+    // Warm highlight (shifted toward yellow/pink)
+    bgOrbs[0].cr = Math.min(255, r + 120); bgOrbs[0].cg = Math.min(255, g + 80); bgOrbs[0].cb = Math.min(255, b + 40); bgOrbs[0].a = 0.4;
+    // Complementary cool (inverted hue influence)
+    bgOrbs[1].cr = Math.min(255, 255 - Math.floor(r*0.4)); bgOrbs[1].cg = Math.min(255, Math.floor(g * 1.5)); bgOrbs[1].cb = Math.min(255, Math.floor(b * 1.6)); bgOrbs[1].a = 0.3;
+    // Deep shifted
+    bgOrbs[2].cr = Math.floor(r * 0.4); bgOrbs[2].cg = Math.min(255, Math.floor(g * 0.6)); bgOrbs[2].cb = Math.min(255, Math.floor(b * 2)); bgOrbs[2].a = 0.3;
+    // Accent glow
+    bgOrbs[3].cr = Math.min(255, r + 60); bgOrbs[3].cg = Math.floor(g * 0.3); bgOrbs[3].cb = Math.min(255, b + 100); bgOrbs[3].a = 0.25;
+  }
+}
+
+function setBgIdle() {
+  bgTargetR = 17; bgTargetG = 17; bgTargetB = 17;
+  if (bgOrbs.length >= 4) {
+    bgOrbs[0].cr = 120; bgOrbs[0].cg = 40; bgOrbs[0].cb = 200; bgOrbs[0].a = 0.35;
+    bgOrbs[1].cr = 200; bgOrbs[1].cg = 160; bgOrbs[1].cb = 30; bgOrbs[1].a = 0.3;
+    bgOrbs[2].cr = 30; bgOrbs[2].cg = 120; bgOrbs[2].cb = 200; bgOrbs[2].a = 0.28;
+    bgOrbs[3].cr = 200; bgOrbs[3].cg = 50; bgOrbs[3].cb = 80; bgOrbs[3].a = 0.22;
+  }
+}
+
+function esc(s) {
+  var d = document.createElement('div');
+  d.textContent = s || '';
+  return d.innerHTML;
+}
+
+// ── Media Session API (lock screen controls) ──
+function updateMediaSession(t) {
+  if (!('mediaSession' in navigator)) return;
+  var artwork = [];
+  if (t.has_cover) {
+    artwork.push({
+      src: '/api/cover/' + encodeURIComponent(t.file),
+      sizes: '512x512',
+      type: 'image/jpeg'
+    });
+  }
+  navigator.mediaSession.metadata = new MediaMetadata({
+    title: t.title || '',
+    artist: t.artist || '',
+    album: t.album || '',
+    artwork: artwork
+  });
+}
+
+function initMediaSession() {
+  if (!('mediaSession' in navigator)) return;
+  navigator.mediaSession.setActionHandler('play', function() {
+    if (currentIdx < 0 && tracks.length > 0) selectTrack(0, true);
+    else { audio.play(); setPlayState(true); }
+  });
+  navigator.mediaSession.setActionHandler('pause', function() {
+    audio.pause(); setPlayState(false);
+  });
+  navigator.mediaSession.setActionHandler('previoustrack', function() { prevTrack(); });
+  navigator.mediaSession.setActionHandler('nexttrack', function() { nextTrack(); });
+  navigator.mediaSession.setActionHandler('seekto', function(d) {
+    if (d.seekTime !== undefined && audio.duration) audio.currentTime = d.seekTime;
+  });
+  // Explicitly disable seek buttons so iOS shows prev/next instead
+  try { navigator.mediaSession.setActionHandler('seekbackward', null); } catch(e) {}
+  try { navigator.mediaSession.setActionHandler('seekforward', null); } catch(e) {}
+}
+
+// Update position state for lock screen progress bar
+function onTimeUpdate() {
+  if ('mediaSession' in navigator && audio.duration && !isNaN(audio.duration)) {
+    try {
+      navigator.mediaSession.setPositionState({
+        duration: audio.duration,
+        playbackRate: audio.playbackRate,
+        position: audio.currentTime
+      });
+    } catch(e) {}
+  }
+}
+audio.addEventListener('timeupdate', onTimeUpdate);
+
+// ── Config / Folders ──
+var currentUser = '';
+var isAdmin = false;
+
+function loadConfig() {
+  fetch('/api/config').then(function(r){return r.json()}).then(function(cfg) {
+    if (cfg.error === 'unauthorized') { window.location.reload(); return; }
+    currentUser = cfg.username || '';
+    isAdmin = cfg.is_admin || false;
+    savedFolders = cfg.folders || [];
+    renderFolderSelect();
+    syncNetworkState();
+    // Show admin-only UI
+    document.getElementById('adminBtn').style.display = isAdmin ? '' : 'none';
+    document.getElementById('networkToggles').style.display = isAdmin ? 'flex' : 'none';
+    if (cfg.last_folder) {
+      document.getElementById('folderSelect').value = cfg.last_folder;
+      loadFolder(cfg.last_folder);
+    }
+  });
+}
+
+function renderFolderSelect() {
+  var sel = document.getElementById('folderSelect');
+  var val = sel.value;
+  sel.innerHTML = '<option value="">-- Выберите каталог --</option>';
+  for (var i = 0; i < savedFolders.length; i++) {
+    var o = document.createElement('option');
+    o.value = savedFolders[i];
+    o.textContent = savedFolders[i].split('/').pop() || savedFolders[i];
+    sel.appendChild(o);
+  }
+  if (val) sel.value = val;
+}
+
+function onFolderSelect(val) {
+  if (val) loadFolder(val);
+}
+
+function toggleAddFolder() {
+  var row = document.getElementById('addFolderRow');
+  row.classList.toggle('show');
+  if (row.classList.contains('show')) {
+    document.getElementById('newFolderPath').focus();
+  }
+}
+
+// ── File browser ──
+var browseCurrentPath = '';
+
+function openBrowse() {
+  document.getElementById('browseOverlay').classList.add('show');
+  var initial = document.getElementById('newFolderPath').value.trim() || '';
+  browseTo(initial);
+}
+
+function browseTo(path) {
+  fetch('/api/browse?path=' + encodeURIComponent(path || ''))
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      browseCurrentPath = d.current;
+      document.getElementById('browsePath').value = d.current;
+      var html = '';
+      for (var i = 0; i < d.items.length; i++) {
+        var item = d.items[i];
+        if (item.is_dir) {
+          html += '<div class="browse-item is-dir" onclick="browseTo(\'' + item.path.replace(/\\/g,'\\\\').replace(/'/g,"\\'") + '\')">'
+            + '<span class="bi-icon">&#128193;</span>'
+            + '<span class="bi-name">' + esc(item.name) + '</span></div>';
+        } else {
+          html += '<div class="browse-item is-file">'
+            + '<span class="bi-icon">&#9835;</span>'
+            + '<span class="bi-name">' + esc(item.name) + '</span></div>';
+        }
+      }
+      if (d.music_count > 0) {
+        html += '<div class="browse-info">' + d.music_count + ' аудиофайлов в этой папке</div>';
+      }
+      document.getElementById('browseList').innerHTML = html;
+    });
+}
+
+function browseSelect() {
+  if (!browseCurrentPath) return;
+  document.getElementById('newFolderPath').value = browseCurrentPath;
+  document.getElementById('browseOverlay').classList.remove('show');
+}
+
+function addFolderFromInput() {
+  var input = document.getElementById('newFolderPath');
+  var path = input.value.trim();
+  if (!path) return;
+  if (savedFolders.indexOf(path) < 0) savedFolders.push(path);
+  renderFolderSelect();
+  document.getElementById('folderSelect').value = path;
+  input.value = '';
+  document.getElementById('addFolderRow').classList.remove('show');
+  loadFolder(path);
+}
+
+function removeCurrentFolder() {
+  var sel = document.getElementById('folderSelect');
+  var path = sel.value;
+  if (!path) { showToast('Каталог не выбран'); return; }
+  var name = path.split('/').pop() || path;
+  showConfirm('Удалить каталог «' + name + '» из списка?', function() {
+    fetch('/api/remove_folder', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({path: path})});
+    var idx = savedFolders.indexOf(path);
+    if (idx >= 0) savedFolders.splice(idx, 1);
+    renderFolderSelect();
+    tracks = []; albums = []; currentIdx = -1; filteredTracks = null; filteredAlbums = null;
+    renderTracks(); renderAlbums();
+    document.getElementById('playlistHeader').textContent = '0 треков';
+    showToast('Каталог удалён');
+  });
+}
+
+function showConfirm(text, onYes, yesLabel) {
+  document.getElementById('confirmText').textContent = text;
+  var btn = document.getElementById('confirmYes');
+  btn.textContent = yesLabel || 'Да';
+  document.getElementById('confirmOverlay').classList.add('show');
+  var newBtn = btn.cloneNode(true);
+  btn.parentNode.replaceChild(newBtn, btn);
+  newBtn.addEventListener('click', function() { closeConfirm(); onYes(); });
+}
+
+function closeConfirm() {
+  document.getElementById('confirmOverlay').classList.remove('show');
+}
+
+function loadFolder(path, retries) {
+  if (!path) return;
+  if (retries === undefined) retries = 3;
+  document.getElementById('playlistHeader').textContent = 'Загрузка...';
+  fetch('/api/scan?path=' + encodeURIComponent(path))
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (data.error) {
+        if (retries > 0) { setTimeout(function(){ loadFolder(path, retries - 1); }, 1000); return; }
+        showToast(data.error); return;
+      }
+      tracks = data.tracks;
+      albums = data.albums;
+      filteredTracks = null;
+      filteredAlbums = null;
+      document.getElementById('searchInput').value = '';
+      document.getElementById('searchClear').classList.remove('show');
+      isEditMode = false;
+      document.getElementById('editControls').style.display = 'none';
+      renderTracks();
+      renderAlbums();
+      checkIfNumbered();
+      buildDefaultQueue();
+      if (activeTab === 'albums') {
+        document.getElementById('playlistHeader').textContent = albums.length + ' альбомов';
+      } else {
+        document.getElementById('playlistHeader').textContent = tracks.length + ' треков';
+      }
+      // Don't auto-select first track — show idle state
+    })
+    .catch(function() {
+      if (retries > 0) { setTimeout(function(){ loadFolder(path, retries - 1); }, 1000); }
+      else { document.getElementById('playlistHeader').textContent = 'Ошибка загрузки'; }
+    });
+}
+
+// ── Network state sync ──
+function setToggle(id, dotId, on) {
+  document.getElementById(id).checked = on;
+  var dot = document.getElementById(dotId);
+  dot.style.left = on ? '16px' : '2px';
+  dot.style.background = on ? '#e94560' : '#888';
+}
+
+function syncNetworkState() {
+  // Fetch both LAN and WAN status
+  Promise.all([
+    fetch('/api/config').then(function(r){return r.json()}),
+    fetch('/api/wan/status').then(function(r){return r.json()})
+  ]).then(function(results) {
+    var cfg = results[0];
+    var wan = results[1];
+    var info = document.getElementById('lanInfo');
+    var parts = [];
+
+    // LAN
+    setToggle('publicToggle', 'publicDot', cfg.public);
+    if (cfg.public && cfg.all_urls && cfg.all_urls.length) {
+      var lanPart = '<span style="color:#52b788">&#9679;</span> LAN:';
+      for (var u = 0; u < cfg.all_urls.length; u++) {
+        lanPart += ' <a href="' + cfg.all_urls[u] + '" target="_blank" class="net-link">' + cfg.all_urls[u] + '</a>';
+      }
+      parts.push(lanPart);
+    }
+
+    // WAN
+    setToggle('wanToggle', 'wanDot', wan.active);
+    if (wan.active && wan.url) {
+      parts.push('<span style="color:#52b788">&#9679;</span> WAN: <a href="' + wan.url + '" target="_blank" class="net-link">' + wan.url + '</a>');
+    }
+
+    if (parts.length) {
+      info.style.display = '';
+      info.innerHTML = parts.join('<br>');
+    } else {
+      info.style.display = 'none';
+    }
+  });
+}
+
+function togglePublic(enabled) {
+  setToggle('publicToggle', 'publicDot', enabled);
+  var info = document.getElementById('lanInfo');
+  info.style.display = '';
+  info.textContent = enabled ? 'Подключаю LAN...' : 'Отключаю LAN...';
+
+  if (!enabled) {
+    // Disable WAN too if it's on
+    if (document.getElementById('wanToggle').checked) {
+      fetch('/api/wan/stop', {method:'POST'});
+      setToggle('wanToggle', 'wanDot', false);
+    }
+  }
+
+  fetch('/api/public', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({enabled: enabled})})
+  .then(function(r){return r.json()})
+  .then(function(d) {
+    if (d.public && d.lan_url) {
+      setTimeout(function() { window.location.href = d.lan_url; }, 2500);
+    } else {
+      setTimeout(function() { window.location.href = 'http://127.0.0.1:PORT_PLACEHOLDER'; }, 2500);
+    }
+  });
+}
+
+// ── WAN (Cloudflare Tunnel) ──
+function toggleWan(enabled) {
+  if (enabled) {
+    document.getElementById('wanModeOverlay').classList.add('show');
+  } else {
+    setToggle('wanToggle', 'wanDot', false);
+    fetch('/api/wan/stop', {method:'POST'}).then(function() {
+      syncNetworkState();
+      showToast('WAN остановлен');
+    });
+  }
+}
+
+function startWanMode(mode) {
+  document.getElementById('wanModeOverlay').classList.remove('show');
+  setToggle('wanToggle', 'wanDot', true);
+
+  // Auto-enable LAN
+  if (!document.getElementById('publicToggle').checked) {
+    setToggle('publicToggle', 'publicDot', true);
+    fetch('/api/public', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({enabled: true})});
+  }
+
+  var info = document.getElementById('lanInfo');
+  info.style.display = '';
+
+  if (mode === 'tunnel') {
+    info.innerHTML = '<span style="color:#e9a545">&#9679;</span> Запускаю туннель...';
+    fetch('/api/wan/start', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({mode: 'tunnel'})}).then(function() {
+      wanPollCount = 0;
+      pollWanStatus();
+    });
+  } else if (mode === 'static') {
+    var ip = document.getElementById('wanStaticIp').value.trim();
+    var port = document.getElementById('wanStaticPort').value.trim() || 'PORT_PLACEHOLDER';
+    if (!ip) { showToast('Введите IP-адрес'); setToggle('wanToggle', 'wanDot', false); return; }
+    fetch('/api/wan/start', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({mode: 'static', ip: ip, port: port})}).then(function(r) {return r.json()}).then(function(d) {
+      if (d.url) {
+        syncNetworkState();
+        showToast('WAN: ' + d.url);
+      }
+    });
+  }
+}
+
+var wanPollCount = 0;
+function pollWanStatus() {
+  fetch('/api/wan/status').then(function(r){return r.json()}).then(function(d) {
+    if (d.url) {
+      wanPollCount = 0;
+      syncNetworkState();
+      showToast('WAN туннель активен');
+    } else {
+      wanPollCount++;
+      if (wanPollCount < 25) {
+        var info = document.getElementById('lanInfo');
+        info.innerHTML = '<span style="color:#e9a545">&#9679;</span> Запускаю туннель... (' + wanPollCount + 'с)';
+        setTimeout(pollWanStatus, 1000);
+      } else {
+        wanPollCount = 0;
+        setToggle('wanToggle', 'wanDot', false);
+        syncNetworkState();
+        showToast('Не удалось запустить туннель');
+      }
+    }
+  });
+}
+
+// ── Search ──
+var searchTimer = null;
+var filteredAlbums = null;
+
+function onSearchInput(q) {
+  var btn = document.getElementById('searchClear');
+  btn.classList.toggle('show', q.length > 0);
+  clearTimeout(searchTimer);
+  q = q.trim().toLowerCase();
+  if (!q) {
+    filteredTracks = null;
+    filteredAlbums = null;
+    renderTracks();
+    renderAlbums();
+    document.getElementById('playlistHeader').textContent =
+      activeTab === 'albums' ? albums.length + ' альбомов' : tracks.length + ' треков';
+    return;
+  }
+  searchTimer = setTimeout(function() {
+    // Filter tracks
+    filteredTracks = [];
+    for (var i = 0; i < tracks.length; i++) {
+      var t = tracks[i];
+      var hay = (t.title + ' ' + t.artist + ' ' + t.album).toLowerCase();
+      if (hay.indexOf(q) >= 0) filteredTracks.push(i);
+    }
+    // Filter albums
+    filteredAlbums = [];
+    for (var a = 0; a < albums.length; a++) {
+      var alb = albums[a];
+      var hay = (alb.name + ' ' + alb.artist).toLowerCase();
+      if (hay.indexOf(q) >= 0) {
+        filteredAlbums.push(a);
+      } else {
+        // Check if any track in album matches
+        for (var ti = 0; ti < alb.tracks.length; ti++) {
+          var t = tracks[alb.tracks[ti]];
+          if (t && (t.title + ' ' + t.artist).toLowerCase().indexOf(q) >= 0) {
+            filteredAlbums.push(a);
+            break;
+          }
+        }
+      }
+    }
+    renderTracks();
+    renderAlbums();
+    if (activeTab === 'albums') {
+      document.getElementById('playlistHeader').textContent = filteredAlbums.length + ' / ' + albums.length + ' альбомов';
+    } else {
+      document.getElementById('playlistHeader').textContent = filteredTracks.length + ' / ' + tracks.length + ' треков';
+    }
+  }, 200);
+}
+
+function clearSearch() {
+  var input = document.getElementById('searchInput');
+  input.value = '';
+  document.getElementById('searchClear').classList.remove('show');
+  filteredTracks = null;
+  filteredAlbums = null;
+  renderTracks();
+  renderAlbums();
+  document.getElementById('playlistHeader').textContent =
+    activeTab === 'albums' ? albums.length + ' альбомов' : tracks.length + ' треков';
+  input.focus();
+}
+
+// ── Toast ──
+function showToast(msg) {
+  var t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  setTimeout(function(){ t.classList.remove('show'); }, 2500);
+}
+
+// ── Meta search ──
+var autoMetaEnabled = false;
+
+function startMetaSearch() {
+  var path = document.getElementById('folderSelect').value;
+  if (!path) { showToast('Сначала выберите каталог'); return; }
+  document.getElementById('metaConfirmOverlay').classList.add('show');
+  document.getElementById('autoMetaCheck').checked = autoMetaEnabled;
+}
+
+function metaConfirmGo() {
+  autoMetaEnabled = document.getElementById('autoMetaCheck').checked;
+  document.getElementById('metaConfirmOverlay').classList.remove('show');
+  var path = document.getElementById('folderSelect').value;
+  if (path) doMetaSearch(path);
+}
+
+function metaConfirmClose() {
+  autoMetaEnabled = document.getElementById('autoMetaCheck').checked;
+  document.getElementById('metaConfirmOverlay').classList.remove('show');
+}
+
+function autoMetaForTrack(t) {
+  if (!autoMetaEnabled || !t || !t.file) return;
+  if (t.has_cover && t.artist && t.album) return;
+  var path = document.getElementById('folderSelect').value;
+  if (!path) return;
+  fetch('/api/meta/single', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({folder: path, file: t.file})})
+  .then(function(r){return r.json()}).then(function(d) {
+    if (d.ok && d.updated) {
+      showToast('Meta: ' + (d.artist || '') + ' — ' + (d.album || ''));
+      // Refresh current track info
+      if (currentIdx >= 0 && tracks[currentIdx].file === t.file) {
+        if (d.artist) tracks[currentIdx].artist = d.artist;
+        if (d.album) tracks[currentIdx].album = d.album;
+        if (d.has_cover) tracks[currentIdx].has_cover = true;
+        document.getElementById('trackArtist').textContent = d.artist || '';
+        updateMediaSession(tracks[currentIdx]);
+        if (d.has_cover) {
+          var img = document.getElementById('vinylCover');
+          img.src = '/api/cover/' + encodeURIComponent(t.file) + '?t=' + Date.now();
+          img.style.display = '';
+          document.getElementById('vinylPlaceholder').style.display = 'none';
+          img.onload = function() { extractColor(img); };
+        }
+      }
+      renderTracks();
+    }
+  });
+}
+
+function doMetaSearch(path) {
+  fetch('/api/meta/start', { method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({path: path}) })
+  .then(function(r) { return r.json(); })
+  .then(function(d) {
+    if (d.already_running) {
+      showToast('Поиск уже идёт');
+      document.getElementById('metaOverlay').classList.add('show');
+      pollMeta();
+      return;
+    }
+    if (d.ok) {
+      document.getElementById('metaOverlay').classList.add('show');
+      document.getElementById('metaLog').textContent = 'Запуск...';
+      document.getElementById('metaBarFill').style.width = '0%';
+      document.getElementById('metaProgress').textContent = '';
+      pollMeta();
+    } else {
+      showToast(d.error || 'Ошибка');
+    }
+  });
+}
+
+function cancelMeta() {
+  fetch('/api/meta/cancel', {method:'POST'});
+  showToast('Отменяю...');
+}
+
+function pollMeta() {
+  fetch('/api/meta/status').then(function(r) { return r.json(); }).then(function(d) {
+    var pct = d.total > 0 ? Math.round(d.progress / d.total * 100) : 0;
+    document.getElementById('metaBarFill').style.width = pct + '%';
+    document.getElementById('metaProgress').textContent =
+      d.total > 0 ? d.progress + ' / ' + d.total + ' (' + pct + '%)' : '';
+    document.getElementById('metaLog').textContent = d.log.join('\n');
+    document.getElementById('metaLog').scrollTop = document.getElementById('metaLog').scrollHeight;
+    if (d.running) setTimeout(pollMeta, 800);
+    else if (d.done) {
+      document.getElementById('metaProgress').textContent = 'Готово! ' + d.progress + '/' + d.total;
+      var curFolder = document.getElementById('folderSelect').value;
+      if (curFolder) loadFolder(curFolder);
+    }
+  });
+}
+
+function closeMetaModal() {
+  document.getElementById('metaOverlay').classList.remove('show');
+}
+
+// ── VK Download ──
+function openVkModal() {
+  document.getElementById('vkOverlay').classList.add('show');
+  checkVkAuth();
+  // Folder hint & mode validation
+  var folder = document.getElementById('folderSelect').value;
+  var hint = document.getElementById('vkFolderHint');
+  var modeEl = document.getElementById('vkMode');
+  if (folder) {
+    var name = folder.split('/').pop() || folder;
+    hint.textContent = 'Треки будут добавлены в каталог: ' + name;
+    if (tracks.length === 0) {
+      modeEl.innerHTML = '<option value="prepend">В начало</option>';
+      modeEl.disabled = true;
+    } else {
+      modeEl.innerHTML = '<option value="prepend">В начало</option><option value="append">В конец</option>';
+      modeEl.disabled = false;
+    }
+  } else {
+    hint.textContent = 'Сначала выберите каталог';
+  }
+  if (vkPolling) pollVk();
+}
+
+function closeVkModal() {
+  document.getElementById('vkOverlay').classList.remove('show');
+}
+
+var vkPolling = false;
+
+function checkVkAuth() {
+  fetch('/api/vk/status').then(function(r){return r.json()}).then(function(d) {
+    if (!d.has_vk) {
+      document.getElementById('vkAuthStatus').innerHTML = '<span style="color:#e94560">vkpymusic не установлен</span>';
+      return;
+    }
+    if (d.authenticated) {
+      document.getElementById('vkAuthStatus').innerHTML = '<span style="color:#52b788">VK авторизован</span>';
+      document.getElementById('vkAuthForm').style.display = 'none';
+    } else {
+      document.getElementById('vkAuthStatus').innerHTML = '<span style="color:#e94560">Не авторизован</span> <button class="folder-btn folder-btn-primary" style="padding:4px 12px;font-size:11px;margin-left:8px" onclick="doVkAuth()">Войти</button>';
+      document.getElementById('vkAuthForm').style.display = 'none';
+    }
+    if (d.running) {
+      document.getElementById('vkProgressSection').style.display = '';
+      vkPolling = true;
+      pollVk();
+    }
+  });
+}
+
+function doVkAuth() {
+  var url = 'https://oauth.vk.com/authorize?client_id=2685278&scope=audio&redirect_uri=https://oauth.vk.com/blank.html&response_type=token&v=5.131';
+  window.open(url, '_blank');
+  document.getElementById('vkAuthForm').style.display = '';
+  document.getElementById('vkTokenInput').focus();
+}
+
+function submitVkToken() {
+  var raw = document.getElementById('vkTokenInput').value.trim();
+  if (!raw) return;
+  fetch('/api/vk/auth', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({url: raw})})
+  .then(function(r){return r.json()}).then(function(d) {
+    if (d.ok) {
+      showToast('VK авторизован');
+      checkVkAuth();
+    } else {
+      showToast(d.error || 'Ошибка');
+    }
+  });
+}
+
+function startVkDownload() {
+  var folder = document.getElementById('folderSelect').value;
+  if (!folder) { showToast('Выберите каталог'); return; }
+  var raw = document.getElementById('vkUrls').value.trim();
+  if (!raw) { showToast('Введите ссылки'); return; }
+  var urls = raw.split('\n').map(function(s){return s.trim()}).filter(function(s){return s.length > 0});
+  if (!urls.length) { showToast('Введите ссылки'); return; }
+
+  var mode = document.getElementById('vkMode').value;
+  var order = document.getElementById('vkOrder').value;
+  var runMeta = document.getElementById('vkRunMeta').checked;
+
+  fetch('/api/vk/download', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({urls:urls, folder:folder, order:order, mode:mode, run_meta:runMeta})})
+  .then(function(r){return r.json()}).then(function(d) {
+    if (d.already_running) { showToast('Загрузка уже идёт'); pollVk(); return; }
+    if (!d.ok) { showToast(d.error || 'Ошибка'); return; }
+    document.getElementById('vkProgressSection').style.display = '';
+    vkPolling = true;
+    pollVk();
+  });
+}
+
+function pollVk() {
+  fetch('/api/vk/status').then(function(r){return r.json()}).then(function(d) {
+    var pct = d.total > 0 ? Math.round(d.progress / d.total * 100) : 0;
+    document.getElementById('vkBarFill').style.width = pct + '%';
+    document.getElementById('vkProgress').textContent =
+      d.total > 0 ? d.progress + ' / ' + d.total + ' (' + pct + '%)' : '';
+    document.getElementById('vkLog').textContent = d.log.join('\n');
+    document.getElementById('vkLog').scrollTop = document.getElementById('vkLog').scrollHeight;
+    if (d.running) setTimeout(pollVk, 800);
+    else {
+      vkPolling = false;
+      if (d.done) {
+        showToast('Загрузка завершена!');
+        var curFolder = document.getElementById('folderSelect').value;
+        if (curFolder) loadFolder(curFolder);
+      }
+    }
+  });
+}
+
+function cancelVkDownload() {
+  fetch('/api/vk/cancel', {method:'POST'});
+  showToast('Отменяю загрузку...');
+}
+
+// ── Mobile view toggle ──
+function mobileShow(view) {
+  document.body.classList.remove('mobile-view-vinyl', 'mobile-view-playlist');
+  document.body.classList.add('mobile-view-' + view);
+  document.getElementById('btnVinyl').classList.toggle('active', view === 'vinyl');
+  document.getElementById('btnPlaylist').classList.toggle('active', view === 'playlist');
+}
+
+// Set default mobile view
+if (window.innerWidth <= 768) {
+  document.body.classList.add('mobile-view-playlist');
+}
+
+// keyboard
+document.addEventListener('keydown', function(e) {
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+  if (e.code === 'Space') { e.preventDefault(); togglePlay(); }
+  if (e.code === 'ArrowRight') { nextTrack(); }
+  if (e.code === 'ArrowLeft') { prevTrack(); }
+  if (e.code === 'Escape') { closeMetaModal(); }
+});
+
+// ── Profile & Admin ──
+function openProfile() {
+  document.getElementById('profileUser').textContent = 'Пользователь: ' + currentUser;
+  document.getElementById('profOldPw').value = '';
+  document.getElementById('profNewPw').value = '';
+  document.getElementById('profileOverlay').classList.add('show');
+}
+
+function changeMyPassword() {
+  var old_pw = document.getElementById('profOldPw').value;
+  var new_pw = document.getElementById('profNewPw').value;
+  if (!old_pw || !new_pw) { showToast('Заполните оба поля'); return; }
+  fetch('/api/profile/change_password', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({old_password: old_pw, new_password: new_pw})})
+  .then(function(r){return r.json()}).then(function(d) {
+    if (d.ok) { showToast('Пароль изменён'); document.getElementById('profileOverlay').classList.remove('show'); }
+    else showToast(d.error || 'Ошибка');
+  });
+}
+
+function doLogout() {
+  fetch('/api/auth/logout', {method:'POST'}).then(function() { window.location.reload(); });
+}
+
+function openAdmin() {
+  if (!isAdmin) return;
+  document.getElementById('adminOverlay').classList.add('show');
+  loadAdminUsers();
+}
+
+function loadAdminUsers() {
+  fetch('/api/admin/users').then(function(r){return r.json()}).then(function(d) {
+    var html = '';
+    var users = d.users || [];
+    for (var i = 0; i < users.length; i++) {
+      var u = users[i];
+      var foldersHtml = '';
+      for (var fi = 0; fi < u.folders.length; fi++) {
+        var fname = u.folders[fi].split('/').pop() || u.folders[fi];
+        foldersHtml += '<span style="display:inline-flex;align-items:center;gap:2px;background:rgba(255,255,255,0.06);padding:2px 8px;border-radius:4px;font-size:10px;margin:1px">'
+          + esc(fname)
+          + '<button style="background:none;border:none;color:rgba(255,255,255,0.3);cursor:pointer;font-size:10px;padding:0 2px" onclick="event.stopPropagation();adminRemoveFolder(\'' + esc(u.username) + '\',\'' + u.folders[fi].replace(/\\/g,'\\\\').replace(/'/g,"\\'") + '\')">&times;</button></span>';
+      }
+      html += '<div style="padding:10px;border-bottom:1px solid rgba(255,255,255,0.06)">'
+        + '<div style="display:flex;align-items:center;gap:8px">'
+        + '<div style="flex:1"><b>' + esc(u.username) + '</b>'
+        + (u.is_admin ? ' <span style="color:#e94560;font-size:10px">admin</span>' : '') + '</div>'
+        + '<button class="folder-btn-icon admin-pw-btn" onclick="adminChangePassword(\'' + esc(u.username) + '\')" title="Сменить пароль"></button>'
+        + '<button class="folder-btn-icon" style="width:26px;height:26px;font-size:13px" onclick="adminAddFolder(\'' + esc(u.username) + '\')" title="Добавить каталог">+</button>'
+        + (u.is_admin ? '' : '<button class="folder-btn-icon" style="width:26px;height:26px;font-size:13px;color:#e94560" onclick="adminDeleteUser(\'' + esc(u.username) + '\')" title="Удалить">&times;</button>')
+        + '</div>'
+        + (u.folders.length ? '<div style="margin-top:6px">' + foldersHtml + '</div>' : '<div style="font-size:10px;color:rgba(255,255,255,0.2);margin-top:4px">Нет каталогов</div>')
+        + '</div>';
+    }
+    document.getElementById('adminUserList').innerHTML = html || '<div style="color:rgba(255,255,255,0.3);padding:12px">Нет пользователей</div>';
+  });
+}
+
+function adminCreateUser() {
+  var u = document.getElementById('newUserName').value.trim();
+  var p = document.getElementById('newUserPw').value;
+  if (!u || !p) { showToast('Заполните логин и пароль'); return; }
+  fetch('/api/admin/create_user', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({username: u, password: p})})
+  .then(function(r){return r.json()}).then(function(d) {
+    if (d.ok) { showToast('Пользователь создан'); document.getElementById('newUserName').value=''; document.getElementById('newUserPw').value=''; loadAdminUsers(); }
+    else showToast(d.error || 'Ошибка');
+  });
+}
+
+function adminDeleteUser(username) {
+  showConfirm('Удалить пользователя «' + username + '»?', function() {
+    fetch('/api/admin/delete_user', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({username: username})})
+    .then(function(r){return r.json()}).then(function(d) {
+      if (d.ok) { showToast('Удалён'); loadAdminUsers(); } else showToast(d.error);
+    });
+  }, 'Удалить');
+}
+
+var _pwChangeTarget = '';
+
+function adminChangePassword(username) {
+  _pwChangeTarget = username;
+  document.getElementById('pwChangeUser').textContent = 'Пользователь: ' + username;
+  document.getElementById('pwChangeNew').value = '';
+  document.getElementById('pwChangeConfirm').value = '';
+  document.getElementById('pwChangeOverlay').classList.add('show');
+  document.getElementById('pwChangeNew').focus();
+}
+
+function submitPwChange() {
+  var pw = document.getElementById('pwChangeNew').value;
+  var pw2 = document.getElementById('pwChangeConfirm').value;
+  if (!pw) { showToast('Введите пароль'); return; }
+  if (pw !== pw2) { showToast('Пароли не совпадают'); return; }
+  fetch('/api/admin/change_password', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({username: _pwChangeTarget, password: pw})})
+  .then(function(r){return r.json()}).then(function(d) {
+    if (d.ok) { showToast('Пароль изменён'); document.getElementById('pwChangeOverlay').classList.remove('show'); }
+    else showToast(d.error);
+  });
+}
+
+function togglePwVis(inputId, btn) {
+  var inp = document.getElementById(inputId);
+  if (inp.type === 'password') { inp.type = 'text'; btn.classList.add('visible'); }
+  else { inp.type = 'password'; btn.classList.remove('visible'); }
+}
+
+function adminAddFolder(username) {
+  var path = prompt('Путь к каталогу для ' + username + ':');
+  if (!path) return;
+  fetch('/api/admin/users').then(function(r){return r.json()}).then(function(d) {
+    var users = d.users || [];
+    for (var i = 0; i < users.length; i++) {
+      if (users[i].username === username) {
+        var folders = users[i].folders.slice();
+        if (folders.indexOf(path) < 0) folders.push(path);
+        fetch('/api/admin/set_folders', {method:'POST', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({username: username, folders: folders})})
+        .then(function(r){return r.json()}).then(function(dd) {
+          if (dd.ok) { showToast('Каталог добавлен'); loadAdminUsers(); } else showToast(dd.error);
+        });
+        break;
+      }
+    }
+  });
+}
+
+function adminRemoveFolder(username, folder) {
+  fetch('/api/admin/users').then(function(r){return r.json()}).then(function(d) {
+    var users = d.users || [];
+    for (var i = 0; i < users.length; i++) {
+      if (users[i].username === username) {
+        var folders = users[i].folders.filter(function(f) { return f !== folder; });
+        fetch('/api/admin/set_folders', {method:'POST', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({username: username, folders: folders})})
+        .then(function(r){return r.json()}).then(function(dd) {
+          if (dd.ok) { showToast('Каталог удалён'); loadAdminUsers(); }
+        });
+        break;
+      }
+    }
+  });
+}
+
+// ── Edit mode (drag reorder) ──
+var isEditMode = false;
+var isNumberedCatalog = false;
+var editOrder = []; // array of filenames in current drag order
+
+function checkIfNumbered() {
+  if (!tracks.length) { isNumberedCatalog = false; return; }
+  var numbered = 0;
+  for (var i = 0; i < tracks.length; i++) {
+    if (/^\d+\.\s/.test(tracks[i].file)) numbered++;
+  }
+  isNumberedCatalog = (numbered / tracks.length) > 0.8;
+  document.getElementById('editBtn').style.display = isNumberedCatalog ? '' : 'none';
+}
+
+function startEdit() {
+  isEditMode = true;
+  editOrder = tracks.map(function(t) { return t.file; });
+  document.getElementById('editBtn').style.display = 'none';
+  document.getElementById('editControls').style.display = 'flex';
+  renderTracks();
+}
+
+function cancelEdit() {
+  isEditMode = false;
+  document.getElementById('editBtn').style.display = isNumberedCatalog ? '' : 'none';
+  document.getElementById('editControls').style.display = 'none';
+  renderTracks();
+}
+
+function saveEdit() {
+  var folder = document.getElementById('folderSelect').value;
+  if (!folder) return;
+  showConfirm('Сохранить новый порядок треков?', function() {
+    fetch('/api/reorder', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({folder: folder, order: editOrder})})
+    .then(function(r){return r.json()}).then(function(d) {
+      if (d.ok) {
+        showToast('Порядок сохранён');
+        isEditMode = false;
+        document.getElementById('editBtn').style.display = isNumberedCatalog ? '' : 'none';
+        document.getElementById('editControls').style.display = 'none';
+        loadFolder(folder);
+      } else {
+        showToast(d.error || 'Ошибка');
+      }
+    });
+  }, 'Сохранить');
+}
+
+// Drag and drop handlers
+var dragIdx = null;
+
+function onDragStart(e, idx) {
+  dragIdx = idx;
+  e.dataTransfer.effectAllowed = 'move';
+  e.target.closest('.playlist-item').classList.add('dragging');
+}
+
+function onDragEnd(e) {
+  dragIdx = null;
+  var items = document.querySelectorAll('.playlist-item');
+  for (var i = 0; i < items.length; i++) {
+    items[i].classList.remove('dragging', 'drag-over');
+  }
+}
+
+function onDragOver(e, idx) {
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'move';
+  var items = document.querySelectorAll('.playlist-item');
+  for (var i = 0; i < items.length; i++) items[i].classList.remove('drag-over');
+  e.target.closest('.playlist-item').classList.add('drag-over');
+}
+
+function onDrop(e, targetIdx) {
+  e.preventDefault();
+  if (dragIdx === null || dragIdx === targetIdx) return;
+  var item = editOrder.splice(dragIdx, 1)[0];
+  editOrder.splice(targetIdx, 0, item);
+  // Also reorder tracks array for display
+  var tItem = tracks.splice(dragIdx, 1)[0];
+  tracks.splice(targetIdx, 0, tItem);
+  // Update IDs
+  for (var i = 0; i < tracks.length; i++) tracks[i].id = i;
+  dragIdx = null;
+  renderTracks();
+}
+
+// Touch drag for mobile
+var touchDragIdx = null;
+var touchDragEl = null;
+var touchStartY = 0;
+var touchClone = null;
+
+function onTouchDragStart(e, idx) {
+  touchDragIdx = idx;
+  touchStartY = e.touches[0].clientY;
+  touchDragEl = e.target.closest('.playlist-item');
+  // Create visual clone
+  touchClone = touchDragEl.cloneNode(true);
+  touchClone.style.position = 'fixed';
+  touchClone.style.width = touchDragEl.offsetWidth + 'px';
+  touchClone.style.opacity = '0.8';
+  touchClone.style.zIndex = '100';
+  touchClone.style.pointerEvents = 'none';
+  touchClone.style.background = 'rgba(233,69,96,0.2)';
+  touchClone.style.borderRadius = '8px';
+  document.body.appendChild(touchClone);
+  touchDragEl.style.opacity = '0.3';
+  e.preventDefault();
+}
+
+function onTouchDragMove(e) {
+  if (touchDragIdx === null) return;
+  var y = e.touches[0].clientY;
+  if (touchClone) {
+    touchClone.style.top = (y - 25) + 'px';
+    touchClone.style.left = touchDragEl.getBoundingClientRect().left + 'px';
+  }
+  // Find target
+  var items = document.querySelectorAll('.playlist-item[data-idx]');
+  for (var i = 0; i < items.length; i++) {
+    var rect = items[i].getBoundingClientRect();
+    items[i].classList.remove('drag-over');
+    if (y > rect.top && y < rect.bottom) {
+      items[i].classList.add('drag-over');
+    }
+  }
+}
+
+function onTouchDragEnd(e) {
+  if (touchDragIdx === null) return;
+  if (touchClone) { touchClone.remove(); touchClone = null; }
+  if (touchDragEl) { touchDragEl.style.opacity = ''; }
+  // Find drop target
+  var items = document.querySelectorAll('.playlist-item[data-idx]');
+  var targetIdx = touchDragIdx;
+  for (var i = 0; i < items.length; i++) {
+    if (items[i].classList.contains('drag-over')) {
+      targetIdx = parseInt(items[i].getAttribute('data-idx'));
+      items[i].classList.remove('drag-over');
+    }
+  }
+  if (touchDragIdx !== targetIdx) {
+    var item = editOrder.splice(touchDragIdx, 1)[0];
+    editOrder.splice(targetIdx, 0, item);
+    var tItem = tracks.splice(touchDragIdx, 1)[0];
+    tracks.splice(targetIdx, 0, tItem);
+    for (var j = 0; j < tracks.length; j++) tracks[j].id = j;
+  }
+  touchDragIdx = null;
+  touchDragEl = null;
+  renderTracks();
+}
+
+// Fix viewport on iOS rotation
+window.addEventListener('orientationchange', function() {
+  setTimeout(function() { window.scrollTo(0,0); document.body.style.height = window.innerHeight + 'px'; }, 300);
+});
+window.addEventListener('resize', function() {
+  document.body.style.height = window.innerHeight + 'px';
+});
+
+// Block pinch zoom and double-tap zoom
+document.addEventListener('gesturestart', function(e) { e.preventDefault(); });
+document.addEventListener('gesturechange', function(e) { e.preventDefault(); });
+document.addEventListener('gestureend', function(e) { e.preventDefault(); });
+document.addEventListener('touchstart', function(e) {
+  if (e.touches.length > 1) e.preventDefault();
+}, {passive: false});
+var lastTap = 0;
+document.addEventListener('touchend', function(e) {
+  var now = Date.now();
+  if (now - lastTap < 300 && e.target.tagName !== 'BUTTON' && e.target.tagName !== 'INPUT' && e.target.tagName !== 'SELECT') {
+    e.preventDefault();
+  }
+  lastTap = now;
+}, {passive: false});
+
+// Touch drag for edit mode
+document.addEventListener('touchmove', function(e) {
+  if (touchDragIdx !== null) { onTouchDragMove(e); e.preventDefault(); }
+}, {passive: false});
+document.addEventListener('touchend', function(e) {
+  if (touchDragIdx !== null) onTouchDragEnd(e);
+});
+
+// iOS status bar tap → scroll track list to top
+window.addEventListener('scroll', function() {
+  if (window.scrollY === 0) {
+    var el = document.getElementById('trackList');
+    if (el) el.scrollTop = 0;
+    var el2 = document.getElementById('albumList');
+    if (el2) el2.scrollTop = 0;
+  }
+  // Prevent body scroll
+  window.scrollTo(0, 0);
+});
+
+// Init background, media session, and load config
+initBgCanvas();
+initMediaSession();
+loadConfig();
+</script>
+</body>
+</html>"""
+
+
+# ──────────────────── HTTP Server ────────────────────
+
+LOGIN_PAGE = r"""<!DOCTYPE html>
+<html lang="ru"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Vinyl Player — Вход</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#111;color:#eee;display:flex;align-items:center;justify-content:center;min-height:100vh}
+.login-card{background:#1c1c1c;border-radius:16px;padding:32px;width:340px;box-shadow:0 20px 60px rgba(0,0,0,0.5)}
+.login-card h2{color:#e94560;margin-bottom:20px;text-align:center}
+.login-card label{display:block;font-size:12px;color:rgba(255,255,255,0.5);margin-bottom:4px;margin-top:12px}
+.login-card input{width:100%;padding:10px 12px;border-radius:8px;border:1px solid rgba(255,255,255,0.12);background:rgba(255,255,255,0.06);color:#eee;font-size:14px;outline:none}
+.login-card input:focus{border-color:#e94560}
+.login-card button{width:100%;padding:12px;border-radius:8px;border:none;background:#e94560;color:#fff;font-size:14px;font-weight:600;cursor:pointer;margin-top:16px}
+.login-card button:hover{background:#d13a54}
+.login-card .error{color:#e94560;font-size:12px;margin-top:8px;text-align:center;min-height:16px}
+.login-card .subtitle{font-size:12px;color:rgba(255,255,255,0.4);text-align:center;margin-bottom:4px}
+</style></head><body>
+<div class="login-card">
+<h2>Vinyl Player</h2>
+<div class="subtitle" id="subtitle">Вход</div>
+<form onsubmit="return doLogin()" id="loginForm">
+<label>Логин</label><input type="text" id="lu" autocomplete="username" required>
+<label>Пароль</label><input type="password" id="lp" autocomplete="current-password" required>
+<button type="submit" id="lbtn">Войти</button>
+<div class="error" id="lerr"></div>
+</form>
+</div>
+<script>
+// Check if setup needed
+fetch('/api/auth/check').then(function(r){return r.json()}).then(function(d){
+  if(d.needs_setup){
+    document.getElementById('subtitle').textContent='Создайте аккаунт администратора';
+    document.getElementById('lbtn').textContent='Создать';
+    document.getElementById('loginForm').onsubmit=function(){return doSetup()};
+  }
+});
+function doLogin(){
+  var u=document.getElementById('lu').value,p=document.getElementById('lp').value;
+  fetch('/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u,password:p})})
+  .then(function(r){return r.json()}).then(function(d){
+    if(d.ok) window.location.reload(); else document.getElementById('lerr').textContent=d.error||'Ошибка';
+  });return false;
+}
+function doSetup(){
+  var u=document.getElementById('lu').value,p=document.getElementById('lp').value;
+  fetch('/api/auth/setup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u,password:p})})
+  .then(function(r){return r.json()}).then(function(d){
+    if(d.ok) window.location.reload(); else document.getElementById('lerr').textContent=d.error||'Ошибка';
+  });return false;
+}
+</script></body></html>"""
+
+
+class Handler(BaseHTTPRequestHandler):
+    def _get_user(self):
+        """Извлекает текущего пользователя из cookie."""
+        cookie_header = self.headers.get("Cookie", "")
+        for part in cookie_header.split(";"):
+            part = part.strip()
+            if part.startswith("session="):
+                token = part[len("session="):]
+                return get_session_user(token)
+        return None
+
+    def _set_cookie(self, token):
+        self.send_header("Set-Cookie", "session={}; Path=/; HttpOnly; SameSite=Lax; Max-Age={}".format(token, 86400*30))
+
+    def _needs_auth(self, path):
+        return not path.startswith("/api/auth/")
+
+    def do_GET(self):
+        parsed = urlparse(self.path)
+        path = parsed.path
+
+        # Auth check
+        if path.startswith("/api/auth/"):
+            return self._handle_auth_get(path, parsed)
+
+        user = self._get_user()
+        users = load_users()
+
+        # No users yet or not logged in — show login
+        if path == "/" or path == "/index.html":
+            if not users or not user:
+                self._respond(200, "text/html", LOGIN_PAGE.encode("utf-8"))
+                return
+            page = HTML_PAGE.replace("PORT_PLACEHOLDER", str(SERVER_PORT))
+            self._respond(200, "text/html", page.encode("utf-8"))
+            return
+
+        if not user:
+            self._respond_json({"error": "unauthorized"})
+            return
+
+        udata = get_user_data(user)
+
+        if path == "/api/config":
+            folders = get_user_folders(user)
+            last = get_user_last_folder(user)
+            local_ip = get_local_ip()
+            lan_url = "http://{}:{}".format(local_ip, SERVER_PORT) if IS_PUBLIC else None
+            all_urls = ["http://{}:{}".format(ip, SERVER_PORT) for ip in get_all_local_ips()] if IS_PUBLIC else []
+            self._respond_json({
+                "folders": folders,
+                "last_folder": last,
+                "public": IS_PUBLIC,
+                "lan_url": lan_url,
+                "all_urls": all_urls,
+                "username": user,
+                "is_admin": udata.get("is_admin", False) if udata else False,
+            })
+
+        elif path == "/api/scan":
+            params = parse_qs(parsed.query)
+            folder = params.get("path", [""])[0]
+            if not folder or not Path(folder).is_dir():
+                self._respond_json({"error": "Папка не найдена: " + folder})
+                return
+            global MUSIC_DIR
+            MUSIC_DIR = folder
+            add_user_folder(user, folder)
+            set_user_last_folder(user, folder)
+            track_list = scan_library(folder)
+            album_list = group_by_album(track_list)
+            self._respond_json({"tracks": track_list, "albums": album_list})
+
+        elif path == "/api/search":
+            params = parse_qs(parsed.query)
+            q = params.get("q", [""])[0].lower().strip()
+            if not q or not MUSIC_DIR:
+                self._respond_json({"results": []})
+                return
+            track_list = scan_library(MUSIC_DIR)
+            results = [t for t in track_list if q in "{} {} {}".format(t["title"], t["artist"], t["album"]).lower()]
+            self._respond_json({"results": results})
+
+        elif path == "/api/meta/status":
+            self._respond_json({
+                "running": meta_state["running"], "done": meta_state["done"],
+                "progress": meta_state["progress"], "total": meta_state["total"],
+                "log": meta_state["log"][-300:],
+            })
+
+        elif path == "/api/vk/status":
+            authenticated = vk_state.get("_user") == user and vk_state["service"] is not None
+            self._respond_json({
+                "authenticated": authenticated, "running": vk_state["running"],
+                "done": vk_state["done"], "progress": vk_state["progress"],
+                "total": vk_state["total"], "log": vk_state["log"][-300:], "has_vk": HAS_VK,
+            })
+
+        elif path.startswith("/api/cover/"):
+            filename = unquote(path[len("/api/cover/"):])
+            filepath = _safe_path(MUSIC_DIR, filename)
+            if not filepath or not filepath.is_file():
+                self._respond(404, "text/plain", b"Not found")
+                return
+            meta = get_metadata(str(filepath))
+            if meta["cover"]:
+                img_data = base64.b64decode(meta["cover"])
+                mime = meta["cover_mime"] or "image/jpeg"
+                self.send_response(200)
+                self.send_header("Content-Type", mime)
+                self.send_header("Content-Length", str(len(img_data)))
+                self.send_header("Cache-Control", "public, max-age=86400")
+                self.end_headers()
+                self.wfile.write(img_data)
+            else:
+                self._respond(404, "text/plain", b"No cover")
+
+        elif path == "/api/wan/status":
+            active = _tunnel_proc is not None and _tunnel_proc.poll() is None
+            self._respond_json({"active": active, "url": _tunnel_url})
+
+        elif path == "/api/browse":
+            params = parse_qs(parsed.query)
+            browse_path = params.get("path", [""])[0] or str(Path.home())
+            p = Path(browse_path)
+            if not p.is_dir():
+                p = Path.home()
+            items = []
+            # Parent
+            parent = str(p.parent)
+            if parent != str(p):
+                items.append({"name": "..", "path": parent, "is_dir": True})
+            try:
+                for child in sorted(p.iterdir(), key=lambda x: (not x.is_dir(), x.name.lower())):
+                    if child.name.startswith('.'):
+                        continue
+                    if child.is_dir():
+                        items.append({"name": child.name, "path": str(child), "is_dir": True})
+                    elif child.suffix.lower() in SUPPORTED_FORMATS:
+                        items.append({"name": child.name, "path": str(child), "is_dir": False})
+            except PermissionError:
+                pass
+            # Count music files to show if folder has music
+            music_count = sum(1 for c in items if not c["is_dir"])
+            self._respond_json({"current": str(p), "items": items, "music_count": music_count})
+
+        elif path == "/api/admin/users":
+            if not udata or not udata.get("is_admin"):
+                self._respond_json({"error": "forbidden"})
+                return
+            all_users = load_users()
+            user_list = []
+            for uname, ud in all_users.items():
+                user_list.append({"username": uname, "is_admin": ud.get("is_admin", False), "folders": ud.get("folders", [])})
+            self._respond_json({"users": user_list})
+
+        elif path.startswith("/api/stream/"):
+            filename = unquote(path[len("/api/stream/"):])
+            filepath = _safe_path(MUSIC_DIR, filename)
+            if not filepath or not filepath.is_file():
+                self._respond(404, "text/plain", b"Not found")
+                return
+            mime = mimetypes.guess_type(str(filepath))[0] or "audio/mpeg"
+            size = filepath.stat().st_size
+            range_header = self.headers.get("Range")
+            if range_header:
+                rm = re.match(r'bytes=(\d+)-(\d*)', range_header)
+                if rm:
+                    start = int(rm.group(1))
+                    end = int(rm.group(2)) if rm.group(2) else size - 1
+                    length = end - start + 1
+                    self.send_response(206)
+                    self.send_header("Content-Type", mime)
+                    self.send_header("Content-Range", "bytes {}-{}/{}".format(start, end, size))
+                    self.send_header("Content-Length", str(length))
+                    self.send_header("Accept-Ranges", "bytes")
+                    self.end_headers()
+                    with open(filepath, "rb") as f:
+                        f.seek(start)
+                        self.wfile.write(f.read(length))
+                    return
+            self.send_response(200)
+            self.send_header("Content-Type", mime)
+            self.send_header("Content-Length", str(size))
+            self.send_header("Accept-Ranges", "bytes")
+            self.end_headers()
+            with open(filepath, "rb") as f:
+                self.wfile.write(f.read())
+
+        else:
+            self._respond(404, "text/plain", b"Not found")
+
+    def _handle_auth_get(self, path, parsed):
+        if path == "/api/auth/check":
+            users = load_users()
+            user = self._get_user()
+            self._respond_json({"needs_setup": len(users) == 0, "logged_in": user is not None})
+        else:
+            self._respond(404, "text/plain", b"Not found")
+
+    def do_POST(self):
+        parsed = urlparse(self.path)
+        path = parsed.path
+        length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(length)
+        try:
+            data = json.loads(body) if body else {}
+        except Exception:
+            data = {}
+
+        # Auth endpoints — no login required
+        if path == "/api/auth/setup":
+            users = load_users()
+            if len(users) > 0:
+                self._respond_json({"ok": False, "error": "Пользователи уже существуют."})
+                return
+            u, p = data.get("username", "").strip(), data.get("password", "")
+            if not u or not p:
+                self._respond_json({"ok": False, "error": "Заполните все поля."})
+                return
+            create_user(u, p, is_admin=True)
+            token = create_session(u)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self._set_cookie(token)
+            body_bytes = json.dumps({"ok": True}).encode()
+            self.send_header("Content-Length", str(len(body_bytes)))
+            self.end_headers()
+            self.wfile.write(body_bytes)
+            return
+
+        if path == "/api/auth/login":
+            global _GLOBAL_FAIL_COUNT, _GLOBAL_FAIL_TIME
+            client_ip = self.client_address[0]
+            now = time.time()
+            u, p = data.get("username", "").strip(), data.get("password", "")
+
+            # Rate limit by IP
+            ip_att = _login_attempts_ip.get(client_ip, (0, 0))
+            if ip_att[0] >= _LOGIN_MAX_IP and (now - ip_att[1]) < _LOGIN_WINDOW:
+                self._respond_json({"ok": False, "error": "Слишком много попыток с вашего IP. Подождите 5 минут."})
+                return
+
+            # Rate limit by username (password spraying protection)
+            user_att = _login_attempts_user.get(u, (0, 0))
+            if user_att[0] >= _LOGIN_MAX_USER and (now - user_att[1]) < _LOGIN_WINDOW:
+                self._respond_json({"ok": False, "error": "Аккаунт временно заблокирован. Подождите 5 минут."})
+                return
+
+            # Global rate limit (distributed attack protection)
+            if _GLOBAL_FAIL_COUNT >= _GLOBAL_MAX and (now - _GLOBAL_FAIL_TIME) < _LOGIN_WINDOW:
+                self._respond_json({"ok": False, "error": "Слишком много неудачных попыток. Сервер приостановил вход."})
+                return
+
+            if not authenticate_user(u, p):
+                # Increment all counters
+                ip_c = ip_att[0] + 1 if (now - ip_att[1]) < _LOGIN_WINDOW else 1
+                _login_attempts_ip[client_ip] = (ip_c, now)
+                user_c = user_att[0] + 1 if (now - user_att[1]) < _LOGIN_WINDOW else 1
+                _login_attempts_user[u] = (user_c, now)
+                _GLOBAL_FAIL_COUNT = _GLOBAL_FAIL_COUNT + 1 if (now - _GLOBAL_FAIL_TIME) < _LOGIN_WINDOW else 1
+                _GLOBAL_FAIL_TIME = now
+                self._respond_json({"ok": False, "error": "Неверный логин или пароль."})
+                return
+
+            # Success — clear counters
+            _login_attempts_ip.pop(client_ip, None)
+            _login_attempts_user.pop(u, None)
+            token = create_session(u)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self._set_cookie(token)
+            body_bytes = json.dumps({"ok": True}).encode()
+            self.send_header("Content-Length", str(len(body_bytes)))
+            self.end_headers()
+            self.wfile.write(body_bytes)
+            return
+
+        if path == "/api/auth/logout":
+            cookie_header = self.headers.get("Cookie", "")
+            for part in cookie_header.split(";"):
+                part = part.strip()
+                if part.startswith("session="):
+                    tok = part[len("session="):]
+                    _sessions.pop(tok, None)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Set-Cookie", "session=; Path=/; Max-Age=0")
+            body_bytes = json.dumps({"ok": True}).encode()
+            self.send_header("Content-Length", str(len(body_bytes)))
+            self.end_headers()
+            self.wfile.write(body_bytes)
+            return
+
+        # All other POST endpoints require auth
+        user = self._get_user()
+        if not user:
+            self._respond_json({"error": "unauthorized"})
+            return
+        udata = get_user_data(user)
+
+        if path == "/api/meta/start":
+            if meta_state["running"]:
+                self._respond_json({"ok": False, "already_running": True})
+                return
+            folder = data.get("path", MUSIC_DIR)
+            if not folder or not Path(folder).is_dir():
+                self._respond_json({"ok": False, "error": "Папка не найдена."})
+                return
+            t = threading.Thread(target=metadata_worker, args=(folder,), daemon=True)
+            t.start()
+            self._respond_json({"ok": True})
+
+        elif path == "/api/meta/cancel":
+            meta_state["cancel"] = True
+            self._respond_json({"ok": True})
+
+        elif path == "/api/meta/single":
+            folder = data.get("folder", MUSIC_DIR)
+            filename = data.get("file", "")
+            if not folder or not filename:
+                self._respond_json({"ok": False})
+                return
+            filepath = _safe_path(folder, filename)
+            if not filepath or not filepath.is_file():
+                self._respond_json({"ok": False})
+                return
+            existing = get_metadata(str(filepath))
+            if existing.get("artist") and existing.get("album") and existing.get("cover"):
+                self._respond_json({"ok": True, "updated": False})
+                return
+            artist_q, title_q = parse_track_name(filename)
+            found = search_metadata(artist_q, title_q)
+            if not found:
+                self._respond_json({"ok": True, "updated": False})
+                return
+            cover_data = fetch_cover_art(found)
+            write_metadata_to_file(str(filepath), found, cover_data)
+            done_set = _load_meta_done(folder)
+            done_set.add(filename)
+            _save_meta_done(folder, done_set)
+            self._respond_json({"ok": True, "updated": True, "artist": found.get("artist", ""), "album": found.get("album", ""), "has_cover": cover_data is not None})
+
+        elif path == "/api/public":
+            enabled = data.get("enabled", False)
+            global IS_PUBLIC
+            IS_PUBLIC = enabled
+            local_ip = get_local_ip()
+            if enabled:
+                all_ips = get_all_local_ips()
+                lan_url = "http://{}:{}".format(local_ip, SERVER_PORT)
+                all_urls = ["http://{}:{}".format(ip, SERVER_PORT) for ip in all_ips]
+                self._respond_json({"ok": True, "public": True, "lan_url": lan_url, "ip": local_ip, "all_urls": all_urls})
+                threading.Timer(0.3, _restart_server, args=["0.0.0.0"]).start()
+            else:
+                self._respond_json({"ok": True, "public": False})
+                threading.Timer(0.3, _restart_server, args=["127.0.0.1"]).start()
+
+        elif path == "/api/remove_folder":
+            folder = data.get("path", "")
+            remove_user_folder(user, folder)
+            self._respond_json({"ok": True})
+
+        elif path == "/api/vk/auth":
+            raw = data.get("url", "")
+            m = re.search(r'access_token=([A-Za-z0-9._-]+)', raw)
+            token = m.group(1) if m else raw.strip()
+            if not token:
+                self._respond_json({"ok": False, "error": "Не удалось извлечь токен."})
+                return
+            if not HAS_VK:
+                self._respond_json({"ok": False, "error": "vkpymusic не установлен."})
+                return
+            if not vk_validate_token(token):
+                self._respond_json({"ok": False, "error": "Токен невалиден."})
+                return
+            set_user_vk_token(user, token)
+            vk_state["service"] = VkService(VK_USER_AGENT, token)
+            vk_state["_user"] = user
+            self._respond_json({"ok": True})
+
+        elif path == "/api/vk/download":
+            if vk_state["running"]:
+                self._respond_json({"ok": False, "already_running": True})
+                return
+            if not vk_state["service"]:
+                self._respond_json({"ok": False, "error": "VK не авторизован."})
+                return
+            urls = data.get("urls", [])
+            folder = data.get("folder", MUSIC_DIR)
+            order = data.get("order", "normal")
+            mode = data.get("mode", "new")
+            run_meta = data.get("run_meta", False)
+            if not urls:
+                self._respond_json({"ok": False, "error": "Нет ссылок."})
+                return
+            t = threading.Thread(target=vk_download_worker, args=(urls, folder, order, mode, run_meta), daemon=True)
+            t.start()
+            self._respond_json({"ok": True})
+
+        elif path == "/api/vk/cancel":
+            vk_state["cancel"] = True
+            self._respond_json({"ok": True})
+
+        elif path == "/api/reorder":
+            folder = data.get("folder", MUSIC_DIR)
+            new_order = data.get("order", [])
+            if not folder or not new_order:
+                self._respond_json({"ok": False, "error": "Нет данных"})
+                return
+            try:
+                p = Path(folder)
+                pad = len(str(len(new_order)))
+                temp_map = {}
+                for i, fname in enumerate(new_order):
+                    src = p / fname
+                    if src.exists():
+                        tmp = p / ("__tmp_reorder_{}_{}".format(i, fname))
+                        src.rename(tmp)
+                        temp_map[i] = (tmp, fname)
+                for i in sorted(temp_map.keys()):
+                    tmp, fname = temp_map[i]
+                    rm = re.match(r'^\d+\.\s+(.+)$', Path(fname).stem)
+                    name_part = rm.group(1) if rm else Path(fname).stem
+                    ext = Path(fname).suffix
+                    new_name = "{}. {}{}".format(str(i+1).zfill(pad), name_part, ext)
+                    tmp.rename(p / new_name)
+                self._respond_json({"ok": True})
+            except Exception as e:
+                self._respond_json({"ok": False, "error": str(e)})
+
+        elif path == "/api/wan/start":
+            mode = data.get("mode", "tunnel")
+            if mode == "static":
+                ip = data.get("ip", "")
+                port = data.get("port", str(SERVER_PORT))
+                if not ip:
+                    self._respond_json({"ok": False, "error": "IP не указан"})
+                    return
+                wan_url = set_wan_static(ip, port)
+                self._respond_json({"ok": True, "url": wan_url})
+            else:
+                t = threading.Thread(target=start_tunnel, daemon=True)
+                self._respond_json({"ok": True, "status": "starting"})
+                t.start()
+
+        elif path == "/api/wan/stop":
+            stop_tunnel()
+            self._respond_json({"ok": True})
+
+        # ── Admin endpoints ──
+        elif path == "/api/admin/create_user":
+            if not udata or not udata.get("is_admin"):
+                self._respond_json({"ok": False, "error": "Нет доступа."})
+                return
+            nu, np = data.get("username", "").strip(), data.get("password", "")
+            if not nu or not np:
+                self._respond_json({"ok": False, "error": "Заполните все поля."})
+                return
+            if not create_user(nu, np):
+                self._respond_json({"ok": False, "error": "Пользователь уже существует."})
+                return
+            self._respond_json({"ok": True})
+
+        elif path == "/api/admin/delete_user":
+            if not udata or not udata.get("is_admin"):
+                self._respond_json({"ok": False, "error": "Нет доступа."})
+                return
+            target = data.get("username", "")
+            if target == user:
+                self._respond_json({"ok": False, "error": "Нельзя удалить себя."})
+                return
+            users_db = load_users()
+            if target in users_db:
+                del users_db[target]
+                save_users(users_db)
+            self._respond_json({"ok": True})
+
+        elif path == "/api/admin/change_password":
+            if not udata or not udata.get("is_admin"):
+                self._respond_json({"ok": False, "error": "Нет доступа."})
+                return
+            target = data.get("username", "")
+            new_pw = data.get("password", "")
+            if not target or not new_pw:
+                self._respond_json({"ok": False, "error": "Заполните все поля."})
+                return
+            users_db = load_users()
+            if target not in users_db:
+                self._respond_json({"ok": False, "error": "Пользователь не найден."})
+                return
+            users_db[target]["password"] = _hash_pw(new_pw)
+            save_users(users_db)
+            self._respond_json({"ok": True})
+
+        elif path == "/api/admin/set_folders":
+            if not udata or not udata.get("is_admin"):
+                self._respond_json({"ok": False, "error": "Нет доступа."})
+                return
+            target = data.get("username", "")
+            folders = data.get("folders", [])
+            users_db = load_users()
+            if target in users_db:
+                users_db[target]["folders"] = folders
+                save_users(users_db)
+            self._respond_json({"ok": True})
+
+        elif path == "/api/profile/change_password":
+            old_pw = data.get("old_password", "")
+            new_pw = data.get("new_password", "")
+            if not authenticate_user(user, old_pw):
+                self._respond_json({"ok": False, "error": "Неверный текущий пароль."})
+                return
+            users_db = load_users()
+            users_db[user]["password"] = _hash_pw(new_pw)
+            save_users(users_db)
+            self._respond_json({"ok": True})
+
+        else:
+            self._respond_json({"ok": False, "error": "Unknown endpoint"})
+
+    def _respond(self, code, content_type, body):
+        self.send_response(code)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _respond_json(self, data):
+        body = json.dumps(data, ensure_ascii=False).encode("utf-8")
+        self._respond(200, "application/json", body)
+
+    def log_message(self, format, *args):
+        pass
+
+
+import socket
+import subprocess
+import signal
+
+_tunnel_proc = None
+_tunnel_url = None
+
+
+def start_tunnel():
+    """Запускает cloudflared tunnel и возвращает публичный URL."""
+    global _tunnel_proc, _tunnel_url
+    stop_tunnel()
+    _tunnel_url = None
+    try:
+        proc = subprocess.Popen(
+            ["cloudflared", "tunnel", "--url", "http://127.0.0.1:{}".format(SERVER_PORT)],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True
+        )
+        _tunnel_proc = proc
+        # cloudflared prints URL to stderr/stdout, parse it
+        import time as _t
+        deadline = _t.time() + 30
+        while _t.time() < deadline:
+            line = proc.stdout.readline()
+            if not line:
+                if proc.poll() is not None:
+                    break
+                continue
+            # URL looks like: https://xxx-xxx-xxx.trycloudflare.com
+            m = re.search(r'(https://[a-zA-Z0-9-]+\.trycloudflare\.com)', line)
+            if m:
+                _tunnel_url = m.group(1)
+                print("WAN tunnel: " + _tunnel_url)
+                # Keep reading in background so pipe doesn't block
+                def drain():
+                    try:
+                        while proc.poll() is None:
+                            proc.stdout.readline()
+                    except Exception:
+                        pass
+                threading.Thread(target=drain, daemon=True).start()
+                return _tunnel_url
+        print("cloudflared: не удалось получить URL")
+        return None
+    except FileNotFoundError:
+        print("cloudflared не установлен. brew install cloudflared")
+        return None
+    except Exception as e:
+        print("Ошибка tunnel: " + str(e))
+        return None
+
+
+def set_wan_static(ip, port):
+    """Настраивает WAN в режиме статического IP — без туннеля."""
+    global _tunnel_url, IS_PUBLIC, _tunnel_proc
+    stop_tunnel()
+    wan_url = "http://{}:{}".format(ip, port)
+    _tunnel_url = wan_url
+    if not IS_PUBLIC:
+        IS_PUBLIC = True
+        _restart_server("0.0.0.0")
+        time.sleep(1)
+    print("WAN static: " + wan_url)
+    return wan_url
+
+
+def stop_tunnel():
+    global _tunnel_proc, _tunnel_url
+    if _tunnel_proc:
+        try:
+            _tunnel_proc.terminate()
+            _tunnel_proc.wait(timeout=5)
+        except Exception:
+            try:
+                _tunnel_proc.kill()
+            except Exception:
+                pass
+        _tunnel_proc = None
+    _tunnel_url = None
+    # Kill any orphan cloudflared processes
+    try:
+        subprocess.run(["pkill", "-f", "cloudflared tunnel"], timeout=3, capture_output=True)
+    except Exception:
+        pass
+
+
+class ReusableHTTPServer(HTTPServer):
+    allow_reuse_address = True
+
+    def server_bind(self):
+        self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+        except (AttributeError, OSError):
+            pass
+        super().server_bind()
+
+
+_server = None
+_server_thread = None
+_server_lock = threading.Lock()
+
+
+def get_all_local_ips():
+    """Возвращает список всех локальных IP-адресов."""
+    ips = []
+    try:
+        import subprocess
+        out = subprocess.check_output(["ifconfig"], stderr=subprocess.DEVNULL).decode()
+        for line in out.split('\n'):
+            line = line.strip()
+            if line.startswith('inet ') and '127.0.0.1' not in line:
+                parts = line.split()
+                if len(parts) >= 2:
+                    ips.append(parts[1])
+    except Exception:
+        pass
+    if not ips:
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("8.8.8.8", 80))
+            ips.append(s.getsockname()[0])
+            s.close()
+        except Exception:
+            pass
+    return ips or ["127.0.0.1"]
+
+
+def get_local_ip():
+    ips = get_all_local_ips()
+    # Prefer 192.168.x.x (WiFi) over 10.x.x.x (VPN/other)
+    for ip in ips:
+        if ip.startswith("192.168."):
+            return ip
+    return ips[0]
+
+
+def _start_server(bind_addr):
+    """Запускает HTTP-сервер в фоновом потоке."""
+    global _server, _server_thread
+    with _server_lock:
+        if _server:
+            try:
+                _server.shutdown()
+                _server.server_close()
+            except Exception:
+                pass
+            _server = None
+        time.sleep(0.5)  # дать порту освободиться
+        srv = ReusableHTTPServer((bind_addr, SERVER_PORT), Handler)
+        _server = srv
+    _server_thread = threading.Thread(target=srv.serve_forever, daemon=True)
+    _server_thread.start()
+
+
+def _restart_server(bind_addr):
+    """Перезапускает HTTP-сервер на новом адресе."""
+    _start_server(bind_addr)
+
+
+def main():
+    global IS_PUBLIC
+    public = "--public" in sys.argv
+    IS_PUBLIC = public
+    bind_addr = "0.0.0.0" if public else "127.0.0.1"
+
+    _start_server(bind_addr)
+
+    url = "http://127.0.0.1:{}".format(SERVER_PORT)
+    print("Vinyl Player: " + url)
+    if public:
+        local_ip = get_local_ip()
+        print("LAN: http://{}:{}".format(local_ip, SERVER_PORT))
+    print("Ctrl+C для остановки")
+    webbrowser.open(url)
+
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print("\nОстановлено.")
+        stop_tunnel()
+        with _server_lock:
+            if _server:
+                _server.shutdown()
+                _server.server_close()
+
+
+if __name__ == "__main__":
+    main()

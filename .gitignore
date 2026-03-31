@@ -1,0 +1,19 @@
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store
+VK_Music/
+Music/
+*.mp3
+*.flac
+*.m4a
+*.ogg
+*.wav
+
+# User data — never commit
+.vinyl_users.json
+.vinyl_app_secret
+.vinyl_player_config.json
+.vk_music_token.json
+.vinyl_meta_done.json
+config_vk.ini
