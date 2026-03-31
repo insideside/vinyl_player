@@ -1345,10 +1345,7 @@ body {
   will-change: right;
 }
 .sidebar-toggle:hover { color: rgba(255,255,255,0.6); background: rgba(0,0,0,0.5); }
-.playlist-side.collapsing {
-  overflow: hidden; pointer-events: none;
-}
-.playlist-side.collapsed {
+.sidebar-collapsed .playlist-side {
   width: 0; min-width: 0; padding: 0; border: none; overflow: hidden; pointer-events: none;
 }
 .sidebar-collapsed .sidebar-toggle { right: 0; }
@@ -3284,34 +3281,12 @@ function cancelVkDownload() {
 
 // ── Mobile view toggle ──
 // ── Desktop sidebar toggle ──
-var sidebarOpen = true;
 function toggleSidebar() {
-  var ps = document.querySelector('.playlist-side');
   var app = document.querySelector('.app');
-  sidebarOpen = !sidebarOpen;
-  document.getElementById('sidebarIcon').innerHTML = sidebarOpen
-    ? '<path d="M8.59 16.59L10 18l6-6-6-6-1.41 1.41L13.17 12z"/>'
-    : '<path d="M15.41 7.41L14 6l-6 6 6 6 1.41-1.41L10.83 12z"/>';
-
-  if (!sidebarOpen) {
-    // Close: fade out content first, then collapse width
-    ps.style.opacity = '0';
-    ps.classList.add('collapsing');
-    setTimeout(function() {
-      ps.classList.add('collapsed');
-      ps.classList.remove('collapsing');
-      ps.style.opacity = '';
-      app.classList.add('sidebar-collapsed');
-    }, 150);
-  } else {
-    // Open: expand width first, then fade in content
-    app.classList.remove('sidebar-collapsed');
-    ps.classList.remove('collapsed');
-    ps.style.opacity = '0';
-    // Force reflow
-    ps.offsetHeight;
-    ps.style.opacity = '1';
-  }
+  var collapsed = app.classList.toggle('sidebar-collapsed');
+  document.getElementById('sidebarIcon').innerHTML = collapsed
+    ? '<path d="M15.41 7.41L14 6l-6 6 6 6 1.41-1.41L10.83 12z"/>'
+    : '<path d="M8.59 16.59L10 18l6-6-6-6-1.41 1.41L13.17 12z"/>';
 }
 
 function mobileShow(view) {
