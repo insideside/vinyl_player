@@ -1180,8 +1180,13 @@ body {
 
 /* ── Playlist ── */
 .playlist-header {
-  padding: 16px 20px; border-bottom: 1px solid rgba(255,255,255,0.06);
+  padding: 12px 12px; border-bottom: 1px solid rgba(255,255,255,0.06);
   font-size: 14px; font-weight: 600; color: rgba(255,255,255,0.6);
+  transition: transform 0.25s ease, opacity 0.25s ease;
+  position: sticky; top: 0; z-index: 3; background: inherit;
+}
+.playlist-header.header-hidden {
+  transform: translateY(-100%); opacity: 0; pointer-events: none;
 }
 .playlist-tabs {
   display: flex; border-bottom: 1px solid rgba(255,255,255,0.06);
@@ -1320,7 +1325,7 @@ body {
 }
 .meta-modal .meta-bar { width: 100%; height: 6px; background: #333; border-radius: 3px; margin-bottom: 8px; }
 .meta-modal .meta-bar-fill { height: 100%; background: #e94560; border-radius: 3px; transition: width 0.3s; }
-.meta-modal button {
+.meta-modal > button {
   margin-top: 12px; align-self: flex-end; padding: 8px 20px; border-radius: 8px;
   border: none; background: rgba(255,255,255,0.1); color: #eee; cursor: pointer;
 }
@@ -2755,7 +2760,7 @@ function setToggle(id, dotId, on) {
 }
 
 function syncNetworkState() {
-  // Fetch both LAN and WAN status
+  if (!isAdmin) return; // Non-admins don't see network state
   Promise.all([
     fetch('/api/config').then(function(r){return r.json()}),
     fetch('/api/wan/status').then(function(r){return r.json()})
@@ -2765,20 +2770,18 @@ function syncNetworkState() {
     var info = document.getElementById('lanInfo');
     var parts = [];
 
-    // LAN
     setToggle('publicToggle', 'publicDot', cfg.public);
-    if (cfg.public && cfg.all_urls && cfg.all_urls.length) {
+    setToggle('wanToggle', 'wanDot', wan.active);
+
+    // Show WAN only, or LAN if no WAN
+    if (wan.active && wan.url) {
+      parts.push('<span style="color:#52b788">&#9679;</span> WAN: <a href="' + wan.url + '" target="_blank" class="net-link">' + wan.url + '</a>');
+    } else if (cfg.public && cfg.all_urls && cfg.all_urls.length) {
       var lanPart = '<span style="color:#52b788">&#9679;</span> LAN:';
       for (var u = 0; u < cfg.all_urls.length; u++) {
         lanPart += ' <a href="' + cfg.all_urls[u] + '" target="_blank" class="net-link">' + cfg.all_urls[u] + '</a>';
       }
       parts.push(lanPart);
-    }
-
-    // WAN
-    setToggle('wanToggle', 'wanDot', wan.active);
-    if (wan.active && wan.url) {
-      parts.push('<span style="color:#52b788">&#9679;</span> WAN: <a href="' + wan.url + '" target="_blank" class="net-link">' + wan.url + '</a>');
     }
 
     if (parts.length) {
@@ -3577,6 +3580,30 @@ window.addEventListener('scroll', function() {
   // Prevent body scroll
   window.scrollTo(0, 0);
 });
+
+// ── Auto-hide playlist header on scroll ──
+(function() {
+  var lastScroll = 0;
+  var header = null;
+  function onTrackScroll(e) {
+    if (!header) header = document.querySelector('.playlist-header');
+    if (!header) return;
+    var st = e.target.scrollTop;
+    if (st > lastScroll && st > 40) {
+      header.classList.add('header-hidden');
+    } else {
+      header.classList.remove('header-hidden');
+    }
+    lastScroll = st;
+  }
+  // Attach after DOM ready
+  setTimeout(function() {
+    var tl = document.getElementById('trackList');
+    if (tl) tl.addEventListener('scroll', onTrackScroll);
+    var al = document.getElementById('albumList');
+    if (al) al.addEventListener('scroll', onTrackScroll);
+  }, 500);
+})();
 
 // ── Tooltips (JS, position:fixed) ──
 (function() {
