@@ -1699,8 +1699,8 @@ body { touch-action: pan-y; }
     <div class="meta-bar"><div class="meta-bar-fill" id="metaBarFill" style="width:0%"></div></div>
     <div class="meta-log" id="metaLog"></div>
     <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px">
-      <button onclick="cancelMeta()" style="background:#e94560;color:#fff">Отменить</button>
-      <button onclick="closeMetaModal()">Закрыть</button>
+      <button class="folder-btn folder-btn-primary" onclick="cancelMeta()">Отменить</button>
+      <button class="folder-btn folder-btn-secondary" onclick="closeMetaModal()">Закрыть</button>
     </div>
   </div>
 </div>
