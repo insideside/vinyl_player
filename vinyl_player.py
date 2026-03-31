@@ -267,15 +267,15 @@ def set_user_last_folder(username, folder):
 
 # ──────────────────── VK Download ────────────────────
 
-vk_state = {
-    "service": None,
-    "running": False,
-    "cancel": False,
-    "progress": 0,
-    "total": 0,
-    "log": [],
-    "done": False,
-}
+_vk_states = {}  # username -> state dict
+
+def get_vk_state(username=""):
+    if username not in _vk_states:
+        _vk_states[username] = {
+            "service": None, "running": False, "cancel": False,
+            "progress": 0, "total": 0, "log": [], "done": False,
+        }
+    return _vk_states[username]
 
 
 def vk_load_token():
@@ -389,7 +389,8 @@ def vk_repad_tracks(folder):
             old_path.rename(new_path)
 
 
-def vk_download_worker(urls, folder, order, mode, run_meta_after):
+def vk_download_worker(urls, folder, order, mode, run_meta_after, username=""):
+    vk_state = get_vk_state(username)
     vk_state["running"] = True
     vk_state["done"] = False
     vk_state["cancel"] = False
@@ -489,7 +490,7 @@ def vk_download_worker(urls, folder, order, mode, run_meta_after):
 
         if run_meta_after and not vk_state["cancel"]:
             vk_state["log"].append("\nЗапускаю поиск мета-данных...")
-            metadata_worker(folder)
+            metadata_worker(folder, username)
 
     except Exception as e:
         vk_state["log"].append("ОШИБКА: " + str(e))
@@ -610,14 +611,15 @@ def group_by_album(tracks):
 
 # ──────────────────── Metadata lookup ────────────────────
 
-meta_state = {
-    "running": False,
-    "cancel": False,
-    "progress": 0,
-    "total": 0,
-    "log": [],
-    "done": False,
-}
+_meta_states = {}  # username -> state dict
+
+def get_meta_state(username=""):
+    if username not in _meta_states:
+        _meta_states[username] = {
+            "running": False, "cancel": False,
+            "progress": 0, "total": 0, "log": [], "done": False,
+        }
+    return _meta_states[username]
 
 
 def parse_track_name(filename):
@@ -915,8 +917,9 @@ def _save_meta_done(music_dir, done_set):
     p.write_text(json.dumps(sorted(done_set), ensure_ascii=False))
 
 
-def metadata_worker(music_dir):
+def metadata_worker(music_dir, username=""):
     """Фоновый процесс поиска и записи метаданных."""
+    meta_state = get_meta_state(username)
     meta_state["running"] = True
     meta_state["done"] = False
     meta_state["cancel"] = False
@@ -1628,82 +1631,6 @@ body { touch-action: pan-y; }
       </div>
     </div>
 
-    <!-- Meta confirm -->
-    <div class="meta-overlay" id="metaConfirmOverlay" onclick="if(event.target===this)metaConfirmClose()">
-      <div class="meta-modal" style="width:400px">
-        <h3>Meta-данные</h3>
-        <p style="font-size:13px;color:rgba(255,255,255,0.6);margin:12px 0">Начать поиск Meta-данных для всех треков в каталоге?</p>
-        <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:rgba(255,255,255,0.5);cursor:pointer;margin:12px 0;padding:10px;background:rgba(255,255,255,0.04);border-radius:8px">
-          <input type="checkbox" id="autoMetaCheck" style="accent-color:#e94560;width:16px;height:16px">
-          <span>Автоматически искать Meta-данные при воспроизведении трека, если их нет</span>
-        </label>
-        <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
-          <button class="folder-btn folder-btn-primary" onclick="metaConfirmGo()">Сканировать</button>
-          <button class="folder-btn folder-btn-secondary" onclick="metaConfirmClose()">Закрыть</button>
-        </div>
-      </div>
-    </div>
-
-    <!-- Meta search modal -->
-    <div class="meta-overlay" id="metaOverlay" onclick="if(event.target===this)closeMetaModal()">
-      <div class="meta-modal">
-        <h3>Поиск метаданных</h3>
-        <div style="font-size:11px;color:rgba(255,255,255,0.3);margin-bottom:8px">Deezer + iTunes + Last.fm + MusicBrainz</div>
-        <div class="meta-progress" id="metaProgress"></div>
-        <div class="meta-bar"><div class="meta-bar-fill" id="metaBarFill" style="width:0%"></div></div>
-        <div class="meta-log" id="metaLog"></div>
-        <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px">
-          <button onclick="cancelMeta()" style="background:#e94560;color:#fff">Отменить</button>
-          <button onclick="closeMetaModal()">Закрыть</button>
-        </div>
-      </div>
-    </div>
-
-    <!-- VK Download modal -->
-    <div class="meta-overlay" id="vkOverlay" onclick="if(event.target===this)closeVkModal()">
-      <div class="meta-modal">
-        <h3>Загрузка из VK Music</h3>
-        <div id="vkAuthSection">
-          <div id="vkAuthStatus" style="font-size:12px;color:rgba(255,255,255,0.4);margin-bottom:8px"></div>
-          <div id="vkAuthForm" style="display:none;margin-bottom:10px">
-            <div style="font-size:12px;color:rgba(255,255,255,0.5);margin-bottom:4px">Вставьте URL после авторизации VK:</div>
-            <div style="display:flex;gap:6px">
-              <input type="text" id="vkTokenInput" class="folder-path-input" style="flex:1" placeholder="https://oauth.vk.com/blank.html#access_token=...">
-              <button class="folder-btn folder-btn-primary" onclick="submitVkToken()">OK</button>
-            </div>
-          </div>
-        </div>
-        <div id="vkFormSection">
-          <div id="vkFolderHint" style="font-size:11px;color:rgba(255,255,255,0.35);margin-bottom:8px"></div>
-          <div style="font-size:12px;color:rgba(255,255,255,0.5);margin-bottom:4px">Ссылки на плейлисты (по одной на строку):</div>
-          <textarea id="vkUrls" style="width:100%;height:80px;padding:8px;border-radius:8px;border:1px solid rgba(255,255,255,0.12);background:rgba(255,255,255,0.06);color:#eee;font-size:12px;resize:vertical;outline:none;font-family:inherit" placeholder="https://vk.ru/music/playlist/..."></textarea>
-          <div style="display:flex;gap:8px;margin:10px 0;font-size:12px;align-items:center;flex-wrap:wrap">
-            <select id="vkMode" class="folder-select" style="flex:1;min-width:120px;padding:8px 28px 8px 10px;font-size:12px">
-              <option value="prepend">В начало</option>
-              <option value="append">В конец</option>
-            </select>
-            <select id="vkOrder" class="folder-select" style="flex:1;min-width:120px;padding:8px 28px 8px 10px;font-size:12px">
-              <option value="normal">Как в плейлисте</option>
-              <option value="reverse">В обратном порядке</option>
-            </select>
-            <label style="display:flex;align-items:center;gap:5px;color:rgba(255,255,255,0.6);cursor:pointer;white-space:nowrap">
-              <input type="checkbox" id="vkRunMeta" style="accent-color:#e94560"> Получить Meta-данные после загрузки
-            </label>
-          </div>
-          <button class="folder-btn folder-btn-primary" style="width:100%" id="vkStartBtn" onclick="startVkDownload()">Начать загрузку</button>
-        </div>
-        <div id="vkProgressSection" style="display:none;margin-top:10px">
-          <div class="meta-progress" id="vkProgress"></div>
-          <div class="meta-bar"><div class="meta-bar-fill" id="vkBarFill" style="width:0%"></div></div>
-          <div class="meta-log" id="vkLog"></div>
-        </div>
-        <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px">
-          <button onclick="cancelVkDownload()" style="background:#e94560;color:#fff" class="folder-btn">Отменить</button>
-          <button onclick="closeVkModal()" class="folder-btn folder-btn-secondary">Закрыть</button>
-        </div>
-      </div>
-    </div>
-
     <div class="playlist-tabs">
       <button class="playlist-tab active" id="tabTracks" onclick="showTab('tracks')">Треки</button>
       <button class="playlist-tab" id="tabAlbums" onclick="showTab('albums')">Альбомы</button>
@@ -1724,6 +1651,82 @@ body { touch-action: pan-y; }
         <div class="playlist-list" id="trackList"></div>
         <div class="coverflow-wrap" id="albumList"></div>
       </div>
+    </div>
+  </div>
+</div>
+
+<!-- Meta confirm -->
+<div class="meta-overlay" id="metaConfirmOverlay" onclick="if(event.target===this)metaConfirmClose()">
+  <div class="meta-modal" style="width:400px">
+    <h3>Meta-данные</h3>
+    <p style="font-size:13px;color:rgba(255,255,255,0.6);margin:12px 0">Начать поиск Meta-данных для всех треков в каталоге?</p>
+    <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:rgba(255,255,255,0.5);cursor:pointer;margin:12px 0;padding:10px;background:rgba(255,255,255,0.04);border-radius:8px">
+      <input type="checkbox" id="autoMetaCheck" style="accent-color:#e94560;width:16px;height:16px">
+      <span>Автоматически искать Meta-данные при воспроизведении трека, если их нет</span>
+    </label>
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
+      <button class="folder-btn folder-btn-primary" onclick="metaConfirmGo()">Сканировать</button>
+      <button class="folder-btn folder-btn-secondary" onclick="metaConfirmClose()">Закрыть</button>
+    </div>
+  </div>
+</div>
+
+<!-- Meta search modal -->
+<div class="meta-overlay" id="metaOverlay" onclick="if(event.target===this)closeMetaModal()">
+  <div class="meta-modal">
+    <h3>Поиск метаданных</h3>
+    <div style="font-size:11px;color:rgba(255,255,255,0.3);margin-bottom:8px">Deezer + iTunes + Last.fm + MusicBrainz</div>
+    <div class="meta-progress" id="metaProgress"></div>
+    <div class="meta-bar"><div class="meta-bar-fill" id="metaBarFill" style="width:0%"></div></div>
+    <div class="meta-log" id="metaLog"></div>
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px">
+      <button onclick="cancelMeta()" style="background:#e94560;color:#fff">Отменить</button>
+      <button onclick="closeMetaModal()">Закрыть</button>
+    </div>
+  </div>
+</div>
+
+<!-- VK Download modal -->
+<div class="meta-overlay" id="vkOverlay" onclick="if(event.target===this)closeVkModal()">
+  <div class="meta-modal">
+    <h3>Загрузка из VK Music</h3>
+    <div id="vkAuthSection">
+      <div id="vkAuthStatus" style="font-size:12px;color:rgba(255,255,255,0.4);margin-bottom:8px"></div>
+      <div id="vkAuthForm" style="display:none;margin-bottom:10px">
+        <div style="font-size:12px;color:rgba(255,255,255,0.5);margin-bottom:4px">Вставьте URL после авторизации VK:</div>
+        <div style="display:flex;gap:6px">
+          <input type="text" id="vkTokenInput" class="folder-path-input" style="flex:1" placeholder="https://oauth.vk.com/blank.html#access_token=...">
+          <button class="folder-btn folder-btn-primary" onclick="submitVkToken()">OK</button>
+        </div>
+      </div>
+    </div>
+    <div id="vkFormSection">
+      <div id="vkFolderHint" style="font-size:11px;color:rgba(255,255,255,0.35);margin-bottom:8px"></div>
+      <div style="font-size:12px;color:rgba(255,255,255,0.5);margin-bottom:4px">Ссылки на плейлисты (по одной на строку):</div>
+      <textarea id="vkUrls" style="width:100%;height:80px;padding:8px;border-radius:8px;border:1px solid rgba(255,255,255,0.12);background:rgba(255,255,255,0.06);color:#eee;font-size:12px;resize:vertical;outline:none;font-family:inherit" placeholder="https://vk.ru/music/playlist/..."></textarea>
+      <div style="display:flex;gap:8px;margin:10px 0;font-size:12px;align-items:center;flex-wrap:wrap">
+        <select id="vkMode" class="folder-select" style="flex:1;min-width:120px;padding:8px 28px 8px 10px;font-size:12px">
+          <option value="prepend">В начало</option>
+          <option value="append">В конец</option>
+        </select>
+        <select id="vkOrder" class="folder-select" style="flex:1;min-width:120px;padding:8px 28px 8px 10px;font-size:12px">
+          <option value="normal">Как в плейлисте</option>
+          <option value="reverse">В обратном порядке</option>
+        </select>
+        <label style="display:flex;align-items:center;gap:5px;color:rgba(255,255,255,0.6);cursor:pointer;white-space:nowrap">
+          <input type="checkbox" id="vkRunMeta" style="accent-color:#e94560"> Получить Meta-данные после загрузки
+        </label>
+      </div>
+      <button class="folder-btn folder-btn-primary" style="width:100%" id="vkStartBtn" onclick="startVkDownload()">Начать загрузку</button>
+    </div>
+    <div id="vkProgressSection" style="display:none;margin-top:10px">
+      <div class="meta-progress" id="vkProgress"></div>
+      <div class="meta-bar"><div class="meta-bar-fill" id="vkBarFill" style="width:0%"></div></div>
+      <div class="meta-log" id="vkLog"></div>
+    </div>
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px">
+      <button onclick="cancelVkDownload()" style="background:#e94560;color:#fff" class="folder-btn">Отменить</button>
+      <button onclick="closeVkModal()" class="folder-btn folder-btn-secondary">Закрыть</button>
     </div>
   </div>
 </div>
@@ -3944,18 +3947,20 @@ class Handler(BaseHTTPRequestHandler):
             self._respond_json({"results": results})
 
         elif path == "/api/meta/status":
+            ms = get_meta_state(user)
             self._respond_json({
-                "running": meta_state["running"], "done": meta_state["done"],
-                "progress": meta_state["progress"], "total": meta_state["total"],
-                "log": meta_state["log"][-300:],
+                "running": ms["running"], "done": ms["done"],
+                "progress": ms["progress"], "total": ms["total"],
+                "log": ms["log"][-300:],
             })
 
         elif path == "/api/vk/status":
-            authenticated = vk_state.get("_user") == user and vk_state["service"] is not None
+            vs = get_vk_state(user)
+            authenticated = vs["service"] is not None
             self._respond_json({
-                "authenticated": authenticated, "running": vk_state["running"],
-                "done": vk_state["done"], "progress": vk_state["progress"],
-                "total": vk_state["total"], "log": vk_state["log"][-300:], "has_vk": HAS_VK,
+                "authenticated": authenticated, "running": vs["running"],
+                "done": vs["done"], "progress": vs["progress"],
+                "total": vs["total"], "log": vs["log"][-300:], "has_vk": HAS_VK,
             })
 
         elif path.startswith("/api/cover/"):
@@ -4192,7 +4197,8 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/api/meta/start":
             if self._deny_demo(udata): return
-            if meta_state["running"]:
+            ms = get_meta_state(user)
+            if ms["running"]:
                 self._respond_json({"ok": False, "already_running": True})
                 return
             folder = data.get("path", MUSIC_DIR)
@@ -4203,12 +4209,12 @@ class Handler(BaseHTTPRequestHandler):
             if folder not in user_folders:
                 self._respond_json({"ok": False, "error": "Нет доступа к каталогу."})
                 return
-            t = threading.Thread(target=metadata_worker, args=(folder,), daemon=True)
+            t = threading.Thread(target=metadata_worker, args=(folder, user), daemon=True)
             t.start()
             self._respond_json({"ok": True})
 
         elif path == "/api/meta/cancel":
-            meta_state["cancel"] = True
+            get_meta_state(user)["cancel"] = True
             self._respond_json({"ok": True})
 
         elif path == "/api/meta/single":
@@ -4281,21 +4287,20 @@ class Handler(BaseHTTPRequestHandler):
                 self._respond_json({"ok": False, "error": "Токен невалиден."})
                 return
             set_user_vk_token(user, token)
-            vk_state["service"] = VkService(VK_USER_AGENT, token)
-            vk_state["_user"] = user
+            get_vk_state(user)["service"] = VkService(VK_USER_AGENT, token)
             self._respond_json({"ok": True})
 
         elif path == "/api/vk/download":
             if self._deny_demo(udata): return
-            if vk_state["running"]:
+            vs = get_vk_state(user)
+            if vs["running"]:
                 self._respond_json({"ok": False, "already_running": True})
                 return
-            if not vk_state["service"]:
+            if not vs["service"]:
                 self._respond_json({"ok": False, "error": "VK не авторизован."})
                 return
             urls = data.get("urls", [])
             folder = data.get("folder", MUSIC_DIR)
-            # Verify folder access
             user_folders = get_user_folders(user)
             if folder not in user_folders:
                 is_admin_user = udata.get("is_admin", False) if udata else False
@@ -4308,12 +4313,12 @@ class Handler(BaseHTTPRequestHandler):
             if not urls:
                 self._respond_json({"ok": False, "error": "Нет ссылок."})
                 return
-            t = threading.Thread(target=vk_download_worker, args=(urls, folder, order, mode, run_meta), daemon=True)
+            t = threading.Thread(target=vk_download_worker, args=(urls, folder, order, mode, run_meta, user), daemon=True)
             t.start()
             self._respond_json({"ok": True})
 
         elif path == "/api/vk/cancel":
-            vk_state["cancel"] = True
+            get_vk_state(user)["cancel"] = True
             self._respond_json({"ok": True})
 
         elif path == "/api/reorder":
