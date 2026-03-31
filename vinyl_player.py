@@ -1338,7 +1338,7 @@ body {
 /* ── Sidebar toggle (desktop) ── */
 .sidebar-toggle {
   display: none; position: absolute; right: 360px; top: 108px;
-  z-index: 20; width: 30px; height: 56px; border: none; border-radius: 8px 0 0 8px;
+  z-index: 20; width: 30px; height: 44px; border: none; border-radius: 8px 0 0 8px;
   background: rgba(0,0,0,0.4); backdrop-filter: blur(20px); color: rgba(255,255,255,0.3); cursor: pointer;
   align-items: center; justify-content: center;
   transition: right 0.3s ease, background 0.15s;
