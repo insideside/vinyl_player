@@ -1193,11 +1193,6 @@ body {
 .playlist-header {
   padding: 12px 12px; border-bottom: 1px solid rgba(255,255,255,0.06);
   font-size: 14px; font-weight: 600; color: rgba(255,255,255,0.6);
-  will-change: transform, opacity;
-  transition: transform 0.2s ease, opacity 0.2s ease;
-}
-.playlist-header.header-hidden {
-  transform: translateY(-100%); opacity: 0; pointer-events: none; position: absolute; width: 100%;
 }
 .playlist-tabs {
   display: flex; border-bottom: 1px solid rgba(255,255,255,0.06);
@@ -3721,57 +3716,6 @@ document.addEventListener('touchend', function(e) {
   if (touchDragIdx !== null) onTouchDragEnd(e);
 });
 
-// iOS status bar tap → scroll track list to top
-// Use a 1px-taller-than-viewport invisible div to make window scrollable
-// iOS status bar tap triggers window scroll to top
-(function() {
-  var sentinel = document.createElement('div');
-  sentinel.style.cssText = 'height:calc(100vh + 1px);width:1px;position:fixed;top:0;left:0;pointer-events:none;opacity:0;z-index:-1';
-  document.body.appendChild(sentinel);
-  window.addEventListener('scroll', function() {
-    if (window.scrollY <= 0) {
-      var tl = document.getElementById('trackList');
-      if (tl) tl.scrollTo({top: 0, behavior: 'smooth'});
-      var al = document.getElementById('albumList');
-      if (al) al.scrollTo({top: 0, behavior: 'smooth'});
-    }
-    window.scrollTo(0, 1);
-  });
-  // Keep window at 1px scroll so tap-to-top works
-  setTimeout(function() { window.scrollTo(0, 1); }, 100);
-})();
-
-// ── Auto-hide playlist header on scroll (throttled, GPU) ──
-(function() {
-  var lastScroll = 0;
-  var header = null;
-  var ticking = false;
-  var hidden = false;
-  function checkScroll(st) {
-    if (!header) header = document.querySelector('.playlist-header');
-    if (!header) return;
-    var shouldHide = st > lastScroll && st > 40;
-    if (shouldHide !== hidden) {
-      hidden = shouldHide;
-      if (hidden) header.classList.add('header-hidden');
-      else header.classList.remove('header-hidden');
-    }
-    lastScroll = st;
-    ticking = false;
-  }
-  function onTrackScroll(e) {
-    if (ticking) return;
-    ticking = true;
-    var st = e.target.scrollTop;
-    requestAnimationFrame(function() { checkScroll(st); });
-  }
-  setTimeout(function() {
-    var tl = document.getElementById('trackList');
-    if (tl) tl.addEventListener('scroll', onTrackScroll, {passive: true});
-    var al = document.getElementById('albumList');
-    if (al) al.addEventListener('scroll', onTrackScroll, {passive: true});
-  }, 500);
-})();
 
 // ── Tooltips (JS, position:fixed) ──
 (function() {
