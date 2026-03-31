@@ -1029,6 +1029,7 @@ body {
   width: 360px; background: rgba(0,0,0,0.4); backdrop-filter: blur(20px);
   display: flex; flex-direction: column; border-left: 1px solid rgba(255,255,255,0.06);
   transition: width 0.35s cubic-bezier(0.4,0,0.2,1), opacity 0.25s ease;
+  z-index: 15; position: relative;
   overflow: hidden;
 }
 
@@ -1182,10 +1183,10 @@ body {
 .playlist-header {
   padding: 12px 12px; border-bottom: 1px solid rgba(255,255,255,0.06);
   font-size: 14px; font-weight: 600; color: rgba(255,255,255,0.6);
-  transition: transform 0.25s ease, opacity 0.25s ease;
+  transition: height 0.25s ease, padding 0.25s ease, opacity 0.25s ease;
 }
 .playlist-header.header-hidden {
-  transform: translateY(-100%); opacity: 0; pointer-events: none;
+  height: 0; padding: 0; margin: 0; border: none; overflow: hidden; opacity: 0; pointer-events: none;
 }
 .playlist-tabs {
   display: flex; border-bottom: 1px solid rgba(255,255,255,0.06);
