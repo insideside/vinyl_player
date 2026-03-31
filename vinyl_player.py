@@ -993,12 +993,12 @@ HTML_PAGE = r"""<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="Vinyl Player">
+<meta name="apple-mobile-web-app-title" content="insideside music">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="theme-color" content="#1a1a1a">
 <link rel="apple-touch-icon" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxODAgMTgwIj4KPHJlY3Qgd2lkdGg9IjE4MCIgaGVpZ2h0PSIxODAiIHJ4PSI0MCIgZmlsbD0iIzFhMWEyZSIvPgo8Y2lyY2xlIGN4PSI5MCIgY3k9IjkwIiByPSI2OCIgZmlsbD0iIzExMSIgc3Ryb2tlPSIjMzMzIiBzdHJva2Utd2lkdGg9IjEuNSIvPgo8Y2lyY2xlIGN4PSI5MCIgY3k9IjkwIiByPSI1NSIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjMjIyIiBzdHJva2Utd2lkdGg9IjAuNSIvPgo8Y2lyY2xlIGN4PSI5MCIgY3k9IjkwIiByPSI0MiIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjMjIyIiBzdHJva2Utd2lkdGg9IjAuNSIvPgo8Y2lyY2xlIGN4PSI5MCIgY3k9IjkwIiByPSIyMiIgZmlsbD0iI2U5NDU2MCIvPgo8Y2lyY2xlIGN4PSI5MCIgY3k9IjkwIiByPSI0IiBmaWxsPSIjMWExYTJlIi8+Cjwvc3ZnPg==">
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxODAgMTgwIj4KPHJlY3Qgd2lkdGg9IjE4MCIgaGVpZ2h0PSIxODAiIHJ4PSI0MCIgZmlsbD0iIzFhMWEyZSIvPgo8Y2lyY2xlIGN4PSI5MCIgY3k9IjkwIiByPSI2OCIgZmlsbD0iIzExMSIgc3Ryb2tlPSIjMzMzIiBzdHJva2Utd2lkdGg9IjEuNSIvPgo8Y2lyY2xlIGN4PSI5MCIgY3k9IjkwIiByPSI1NSIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjMjIyIiBzdHJva2Utd2lkdGg9IjAuNSIvPgo8Y2lyY2xlIGN4PSI5MCIgY3k9IjkwIiByPSI0MiIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjMjIyIiBzdHJva2Utd2lkdGg9IjAuNSIvPgo8Y2lyY2xlIGN4PSI5MCIgY3k9IjkwIiByPSIyMiIgZmlsbD0iI2U5NDU2MCIvPgo8Y2lyY2xlIGN4PSI5MCIgY3k9IjkwIiByPSI0IiBmaWxsPSIjMWExYTJlIi8+Cjwvc3ZnPg==">
-<title>Vinyl Player</title>
+<title>insideside music</title>
 <style>
 * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; -webkit-user-select: none; }
 input, textarea { user-select: text; -webkit-user-select: text; }
@@ -1548,7 +1548,7 @@ body { touch-action: pan-y; }
     </div>
 
     <div class="track-info">
-      <div class="track-title" id="trackTitle" style="opacity:0.3">Vinyl Player</div>
+      <div class="track-title" id="trackTitle" style="opacity:0.3">insideside music</div>
       <div class="track-artist" id="trackArtist" style="opacity:0.3">Выберите трек</div>
     </div>
 
@@ -3783,7 +3783,7 @@ LOGIN_PAGE = r"""<!DOCTYPE html>
 <html lang="ru"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<title>Vinyl Player — Вход</title>
+<title>insideside music — Вход</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#111;color:#eee;display:flex;align-items:center;justify-content:center;min-height:100vh}
@@ -3798,7 +3798,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
 .login-card .subtitle{font-size:12px;color:rgba(255,255,255,0.4);text-align:center;margin-bottom:4px}
 </style></head><body>
 <div class="login-card">
-<h2>Vinyl Player</h2>
+<h2>insideside music</h2>
 <div class="subtitle" id="subtitle">Вход</div>
 <form onsubmit="return doLogin()" id="loginForm">
 <label>Логин</label><input type="text" id="lu" autocomplete="username" required>
@@ -4689,7 +4689,7 @@ def main():
         set_wan_static(s["wan_ip"], s.get("wan_port", str(SERVER_PORT)))
 
     url = "http://127.0.0.1:{}".format(SERVER_PORT)
-    print("Vinyl Player: " + url)
+    print("insideside music: " + url)
     if public or IS_PUBLIC:
         local_ip = get_local_ip()
         print("LAN: http://{}:{}".format(local_ip, SERVER_PORT))
