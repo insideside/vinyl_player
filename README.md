@@ -30,7 +30,32 @@ Web-based music player with vinyl record visualization, multi-user support, LAN/
 pip install httpx mutagen
 # Optional
 pip install vkpymusic musicbrainzngs
-brew install cloudflared  # macOS, for WAN tunnel
+```
+
+### Cloudflare Tunnel (optional, for WAN mode)
+
+**macOS:**
+```bash
+brew install cloudflared
+```
+
+**Linux (Debian/Ubuntu):**
+```bash
+curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg | sudo tee /usr/share/keyrings/cloudflare-main.gpg >/dev/null
+echo "deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/cloudflared.list
+sudo apt update && sudo apt install cloudflared
+```
+
+**Linux (any, binary):**
+```bash
+curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o /usr/local/bin/cloudflared
+chmod +x /usr/local/bin/cloudflared
+```
+
+**Windows:**
+```powershell
+winget install Cloudflare.cloudflared
+# or download from https://github.com/cloudflare/cloudflared/releases
 ```
 
 ## Run
@@ -55,13 +80,36 @@ Enable WAN toggle and choose:
 
 ```bash
 # Install dependencies
-pip install httpx mutagen musicbrainzngs
+pip3 install httpx mutagen musicbrainzngs
 
-# Run (optionally with --public for immediate LAN access)
+# Run with public access
 python3 vinyl_player.py --public
+```
 
-# Or use systemd service
-# Create /etc/systemd/system/vinyl-player.service
+**systemd service** (`/etc/systemd/system/vinyl-player.service`):
+```ini
+[Unit]
+Description=Vinyl Player
+After=network.target
+
+[Service]
+Type=simple
+User=www-data
+WorkingDirectory=/opt/vinyl-player
+ExecStart=/usr/bin/python3 vinyl_player.py --public
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo systemctl enable vinyl-player
+sudo systemctl start vinyl-player
+
+# Open firewall
+sudo ufw allow 7656/tcp
 ```
 
 ## Security
