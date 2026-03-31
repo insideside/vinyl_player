@@ -1649,7 +1649,8 @@ body { touch-action: pan-y; }
     </div>
 
     <div class="playlist-header" style="display:flex;align-items:center;gap:8px">
-      <span id="playlistHeader" style="flex:1">0 треков</span>
+      <button class="shuffle-btn" id="downloadCatalogBtn" onclick="downloadCatalog()" data-tip="Скачать каталог" style="display:none"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg></button>
+      <span id="playlistHeader" style="flex:1;cursor:pointer" onclick="scrollTracklistTop()">0 треков</span>
       <button class="shuffle-btn" id="shuffleListBtn" onclick="toggleShuffleFromList()" data-tip="Перемешать"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M10.59 9.17L5.41 4 4 5.41l5.17 5.17 1.42-1.41zM14.5 4l2.04 2.04L4 18.59 5.41 20 17.96 7.46 20 9.5V4h-5.5zm.33 9.41l-1.41 1.41 3.13 3.13L14.5 20H20v-5.5l-2.04 2.04-3.13-3.13z"/></svg></button>
       <button class="shuffle-btn" id="editBtn" onclick="startEdit()" data-tip="Редактировать порядок" style="display:none"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 000-1.41l-2.34-2.34a1 1 0 00-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg></button>
       <div id="editControls" style="display:none;gap:4px">
@@ -2730,6 +2731,7 @@ function loadConfig() {
     var isDemo = userRole === 'demo';
     document.getElementById('adminBtn').style.display = isAdmin ? '' : 'none';
     document.getElementById('networkToggles').style.display = isAdmin ? 'flex' : 'none';
+    document.getElementById('downloadCatalogBtn').style.display = isAdmin ? '' : 'none';
     // Demo: hide add/remove folder, meta/vk row, edit button
     document.getElementById('metaVkRow').style.display = isDemo ? 'none' : '';
     document.getElementById('addFolderBtn').style.display = isDemo ? 'none' : '';
@@ -3878,12 +3880,21 @@ document.addEventListener('touchend', function(e) {
 
 
 // ── Header tap → scroll to top ──
-document.getElementById('playlistHeader').addEventListener('click', function() {
+function downloadCatalog() {
+  var folder = document.getElementById('folderSelect').value;
+  if (!folder) { showToast('Выберите каталог'); return; }
+  showConfirm('Скачать все треки каталога как ZIP-архив?', function() {
+    showToast('Подготовка архива...');
+    window.location.href = '/api/admin/download_catalog?path=' + encodeURIComponent(folder);
+  }, 'Скачать');
+}
+
+function scrollTracklistTop() {
   var tl = document.getElementById('trackList');
   if (tl) tl.scrollTo({top: 0, behavior: 'smooth'});
   var al = document.getElementById('albumList');
   if (al) al.scrollTo({top: 0, behavior: 'smooth'});
-});
+}
 
 // ── Tooltips (JS, position:fixed) ──
 (function() {
@@ -4126,6 +4137,40 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/wan/status":
             active = _tunnel_proc is not None and _tunnel_proc.poll() is None
             self._respond_json({"active": active, "url": _tunnel_url})
+
+        elif path == "/api/admin/download_catalog":
+            # Admin-only: download entire catalog as ZIP
+            if not udata or not udata.get("is_admin"):
+                self._respond(403, "text/plain", b"Forbidden")
+                return
+            params = parse_qs(parsed.query)
+            folder = params.get("path", [""])[0]
+            if not folder or not Path(folder).is_dir():
+                self._respond(404, "text/plain", b"Not found")
+                return
+            # Verify folder exists in system
+            if not is_path_within(folder, get_music_root()):
+                # Admin can access any folder, but double-check it's a real dir
+                if not Path(folder).is_dir():
+                    self._respond(404, "text/plain", b"Not found")
+                    return
+            import zipfile
+            import io
+            buf = io.BytesIO()
+            folder_path = Path(folder)
+            with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as zf:
+                for f in sorted(folder_path.iterdir()):
+                    if f.is_file() and f.suffix.lower() in SUPPORTED_FORMATS:
+                        zf.write(f, f.name)
+            zip_data = buf.getvalue()
+            folder_name = folder_path.name or "catalog"
+            self.send_response(200)
+            self.send_header("Content-Type", "application/zip")
+            self.send_header("Content-Length", str(len(zip_data)))
+            self.send_header("Content-Disposition", 'attachment; filename="{}.zip"'.format(folder_name))
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.end_headers()
+            self.wfile.write(zip_data)
 
         elif path == "/api/browse":
             params = parse_qs(parsed.query)
