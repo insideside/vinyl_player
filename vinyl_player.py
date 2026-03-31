@@ -1028,6 +1028,7 @@ body {
 .playlist-side {
   width: 360px; background: rgba(0,0,0,0.4); backdrop-filter: blur(20px);
   display: flex; flex-direction: column; border-left: 1px solid rgba(255,255,255,0.06);
+  transition: width 0.3s ease, opacity 0.3s ease;
   overflow: hidden;
 }
 
@@ -1324,6 +1325,21 @@ body {
   border: none; background: rgba(255,255,255,0.1); color: #eee; cursor: pointer;
 }
 
+/* ── Sidebar toggle (desktop) ── */
+.sidebar-toggle {
+  display: none; position: absolute; right: 368px; top: 50%; transform: translateY(-50%);
+  z-index: 5; width: 24px; height: 48px; border: none; border-radius: 8px 0 0 8px;
+  background: rgba(0,0,0,0.4); color: rgba(255,255,255,0.4); cursor: pointer;
+  align-items: center; justify-content: center; backdrop-filter: blur(12px);
+  transition: right 0.3s ease;
+}
+.sidebar-toggle:hover { color: rgba(255,255,255,0.7); background: rgba(0,0,0,0.6); }
+.sidebar-collapsed .playlist-side { width: 0; opacity: 0; overflow: hidden; padding: 0; border: none; }
+.sidebar-collapsed .sidebar-toggle { right: 0; border-radius: 8px 0 0 8px; }
+@media (min-width: 769px) {
+  .sidebar-toggle { display: flex; }
+}
+
 /* ── Password field with eye ── */
 .pw-field {
   display: flex; align-items: center; border: 1px solid rgba(255,255,255,0.12);
@@ -1442,16 +1458,33 @@ body { touch-action: pan-y; }
 .vinyl-side { padding-top: env(safe-area-inset-top); padding-bottom: env(safe-area-inset-bottom); }
 
 /* ── Mobile toggle ── */
+.mobile-bar {
+  display: none; position: fixed; bottom: 0; left: 0; right: 0;
+  z-index: 50; background: rgba(28,28,28,0.95); backdrop-filter: blur(12px);
+  border-top: 1px solid rgba(255,255,255,0.06);
+  padding: 8px 16px; padding-bottom: max(8px, env(safe-area-inset-bottom));
+}
+.mobile-bar-inner {
+  display: flex; align-items: center; gap: 8px; max-width: 500px; margin: 0 auto;
+}
 .mobile-toggle {
-  display: none; position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%);
-  z-index: 50; background: rgba(30,30,50,0.9); backdrop-filter: blur(12px);
-  border-radius: 24px; padding: 4px; border: 1px solid rgba(255,255,255,0.1);
+  display: flex; border-radius: 20px; padding: 3px;
+  background: rgba(255,255,255,0.08); flex-shrink: 0;
 }
 .mobile-toggle button {
-  padding: 10px 24px; border: none; border-radius: 20px; font-size: 13px;
-  background: none; color: rgba(255,255,255,0.5); cursor: pointer;
+  padding: 8px 18px; border: none; border-radius: 18px; font-size: 12px;
+  background: none; color: rgba(255,255,255,0.4); cursor: pointer; transition: all 0.2s;
 }
 .mobile-toggle button.active { background: #e94560; color: #fff; }
+.mobile-mini-controls {
+  display: none; align-items: center; gap: 6px; margin-left: auto;
+}
+.mobile-mini-btn {
+  width: 36px; height: 36px; border-radius: 50%; border: none;
+  background: rgba(255,255,255,0.1); color: #fff; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+}
+.mobile-mini-btn:active { background: rgba(255,255,255,0.2); }
 
 @media (max-width: 768px) {
   .app { position: relative; }
@@ -1460,9 +1493,13 @@ body { touch-action: pan-y; }
   .vinyl-side { z-index: 1; }
   .mobile-view-vinyl .vinyl-side { display: flex; }
   .mobile-view-vinyl .playlist-side { display: none; }
+  .mobile-view-vinyl .mobile-mini-controls { display: none; }
   .mobile-view-playlist .vinyl-side { display: none; }
   .mobile-view-playlist .playlist-side { display: flex; flex-direction: column; }
-  .mobile-toggle { display: flex; z-index: 10; }
+  .mobile-view-playlist .mobile-mini-controls { display: flex; }
+  .mobile-bar { display: block; }
+  .playlist-side { padding-bottom: 70px; }
+  .vinyl-side { padding-bottom: 70px; }
   .vinyl-scene { width: min(80vw, 50vh); height: min(80vw, 50vh); }
   .track-title { max-width: 80vw; }
 }
@@ -1519,6 +1556,10 @@ body { touch-action: pan-y; }
       <button class="shuffle-btn" id="shufflePlayerBtn" onclick="toggleShuffle()" style="width:32px;height:32px" data-tip="Перемешать"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M10.59 9.17L5.41 4 4 5.41l5.17 5.17 1.42-1.41zM14.5 4l2.04 2.04L4 18.59 5.41 20 17.96 7.46 20 9.5V4h-5.5zm.33 9.41l-1.41 1.41 3.13 3.13L14.5 20H20v-5.5l-2.04 2.04-3.13-3.13z"/></svg></button>
     </div>
   </div>
+
+  <button class="sidebar-toggle" id="sidebarToggle" onclick="toggleSidebar()">
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" id="sidebarIcon"><path d="M15.41 7.41L14 6l-6 6 6 6 1.41-1.41L10.83 12z"/></svg>
+  </button>
 
   <!-- Right: Playlist -->
   <div class="playlist-side">
@@ -1653,7 +1694,7 @@ body { touch-action: pan-y; }
     <div class="playlist-header" style="display:flex;align-items:center;gap:8px">
       <span id="playlistHeader" style="flex:1">0 треков</span>
       <button class="shuffle-btn" id="shuffleListBtn" onclick="toggleShuffleFromList()" data-tip="Перемешать"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M10.59 9.17L5.41 4 4 5.41l5.17 5.17 1.42-1.41zM14.5 4l2.04 2.04L4 18.59 5.41 20 17.96 7.46 20 9.5V4h-5.5zm.33 9.41l-1.41 1.41 3.13 3.13L14.5 20H20v-5.5l-2.04 2.04-3.13-3.13z"/></svg></button>
-      <button class="folder-btn-icon" id="editBtn" onclick="startEdit()" data-tip="Редактировать порядок" style="display:none;width:28px;height:28px;font-size:13px">&#9998;</button>
+      <button class="shuffle-btn" id="editBtn" onclick="startEdit()" data-tip="Редактировать порядок" style="display:none"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 000-1.41l-2.34-2.34a1 1 0 00-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg></button>
       <div id="editControls" style="display:none;gap:6px">
         <button class="folder-btn folder-btn-primary" style="padding:4px 12px;font-size:11px" onclick="saveEdit()">Сохранить</button>
         <button class="folder-btn folder-btn-secondary" style="padding:4px 12px;font-size:11px" onclick="cancelEdit()">Отмена</button>
@@ -1665,9 +1706,17 @@ body { touch-action: pan-y; }
   </div>
 </div>
 
-<div class="mobile-toggle" id="mobileToggle">
-  <button id="btnVinyl" onclick="mobileShow('vinyl')">Винил</button>
-  <button class="active" id="btnPlaylist" onclick="mobileShow('playlist')">Треки</button>
+<div class="mobile-bar">
+  <div class="mobile-bar-inner">
+    <div class="mobile-toggle" id="mobileToggle">
+      <button id="btnVinyl" onclick="mobileShow('vinyl')">Винил</button>
+      <button class="active" id="btnPlaylist" onclick="mobileShow('playlist')">Треки</button>
+    </div>
+    <div class="mobile-mini-controls" id="mobileControls">
+      <button class="mobile-mini-btn" id="mobilePlayBtn" onclick="togglePlay()"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg></button>
+      <button class="mobile-mini-btn" onclick="nextTrack()"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M16 6h2v12h-2zM6 18l8.5-6L6 6z"/></svg></button>
+    </div>
+  </div>
 </div>
 
 <div class="toast" id="toast"></div>
@@ -2199,10 +2248,14 @@ function togglePlay() {
 
 function setPlayState(playing) {
   isPlaying = playing;
-  var btn = document.getElementById('playBtn');
   document.getElementById('playIcon').innerHTML = playing
     ? '<path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/>'
     : '<path d="M8 5v14l11-7z"/>';
+  // Sync mobile play button
+  var mb = document.getElementById('mobilePlayBtn');
+  if (mb) mb.innerHTML = playing
+    ? '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>'
+    : '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>';
 }
 
 var isShuffled = false;
@@ -3134,6 +3187,15 @@ function cancelVkDownload() {
 }
 
 // ── Mobile view toggle ──
+// ── Desktop sidebar toggle ──
+function toggleSidebar() {
+  var app = document.querySelector('.app');
+  var collapsed = app.classList.toggle('sidebar-collapsed');
+  document.getElementById('sidebarIcon').innerHTML = collapsed
+    ? '<path d="M8.59 16.59L10 18l6-6-6-6-1.41 1.41L13.17 12z"/>'
+    : '<path d="M15.41 7.41L14 6l-6 6 6 6 1.41-1.41L10.83 12z"/>';
+}
+
 function mobileShow(view) {
   document.body.classList.remove('mobile-view-vinyl', 'mobile-view-playlist');
   document.body.classList.add('mobile-view-' + view);
