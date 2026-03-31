@@ -133,17 +133,22 @@ def save_users(users):
         pass
 
 
-def create_user(username, password, is_admin=False):
+def create_user(username, password, is_admin=False, role="user"):
+    """role: 'admin', 'user', 'demo'"""
     users = load_users()
     if username in users:
         return False
-    # Create default folder inside MUSIC_ROOT
     music_root = get_music_root()
-    user_folder = str(Path(music_root) / username)
+    if role == "demo":
+        # Demo users share a common demo folder
+        user_folder = str(Path(music_root) / "_demo")
+    else:
+        user_folder = str(Path(music_root) / username)
     Path(user_folder).mkdir(parents=True, exist_ok=True)
     users[username] = {
         "password": _hash_pw(password),
         "is_admin": is_admin,
+        "role": role,  # 'admin', 'user', 'demo'
         "folders": [user_folder],
     }
     save_users(users)
@@ -1346,14 +1351,13 @@ body {
 .admin-pw-btn img { width: 14px; height: 14px; }
 
 /* ── Tooltips ── */
-[data-tip] { position: relative; }
-[data-tip]:hover::after {
-  content: attr(data-tip); position: absolute;
-  padding: 5px 10px; border-radius: 6px; background: #222; color: #ccc; font-size: 11px;
-  white-space: nowrap; pointer-events: none; z-index: 999;
+.tip-popup {
+  position: fixed; padding: 5px 10px; border-radius: 6px; background: #222; color: #ccc;
+  font-size: 11px; white-space: nowrap; pointer-events: none; z-index: 999;
   border: 1px solid rgba(255,255,255,0.1); box-shadow: 0 4px 12px rgba(0,0,0,0.5);
-  top: 100%; left: 50%; transform: translateX(-50%); margin-top: 6px;
+  opacity: 0; transition: opacity 0.15s;
 }
+.tip-popup.show { opacity: 1; }
 
 /* ── LAN/WAN links ── */
 .net-link {
@@ -1524,8 +1528,8 @@ body { touch-action: pan-y; }
         <select id="folderSelect" class="folder-select" style="flex:1" onchange="onFolderSelect(this.value)">
           <option value="">Выберите каталог</option>
         </select>
-        <button class="folder-btn-icon" onclick="toggleAddFolder()" data-tip="Добавить каталог">+</button>
-        <button class="folder-btn-icon" onclick="removeCurrentFolder()" data-tip="Удалить каталог">&times;</button>
+        <button class="folder-btn-icon" id="addFolderBtn" onclick="toggleAddFolder()" data-tip="Добавить каталог">+</button>
+        <button class="folder-btn-icon" id="removeFolderBtn" onclick="removeCurrentFolder()" data-tip="Удалить каталог">&times;</button>
         <button class="folder-btn-icon" onclick="openProfile()" data-tip="Профиль" id="profileBtn"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 12c2.7 0 4.8-2.1 4.8-4.8S14.7 2.4 12 2.4 7.2 4.5 7.2 7.2 9.3 12 12 12zm0 2.4c-3.2 0-9.6 1.6-9.6 4.8v2.4h19.2v-2.4c0-3.2-6.4-4.8-9.6-4.8z"/></svg></button>
         <button class="folder-btn-icon" onclick="openAdmin()" data-tip="Пользователи" id="adminBtn" style="display:none"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg></button>
       </div>
@@ -1538,7 +1542,7 @@ body { touch-action: pan-y; }
         </div>
       </div>
 
-      <div class="fp-row">
+      <div class="fp-row" id="metaVkRow">
         <button class="folder-btn folder-btn-secondary" style="flex:1" onclick="startMetaSearch()" data-tip="Поиск обложек, артистов и альбомов">Meta</button>
         <button class="folder-btn folder-btn-secondary" style="flex:1" onclick="openVkModal()" data-tip="Загрузка треков из VK Music">VK</button>
         <div id="networkToggles" style="display:none;align-items:center;gap:4px;flex-shrink:0">
@@ -1667,6 +1671,7 @@ body { touch-action: pan-y; }
 </div>
 
 <div class="toast" id="toast"></div>
+<div class="tip-popup" id="tipPopup"></div>
 
 <!-- WAN mode modal -->
 <div class="meta-overlay" id="wanModeOverlay" onclick="if(event.target===this){this.classList.remove('show');setToggle('wanToggle','wanDot',false)}">
@@ -1743,6 +1748,11 @@ body { touch-action: pan-y; }
       <div style="display:flex;gap:6px;margin-bottom:6px">
         <input type="text" id="newUserName" class="folder-path-input" placeholder="Логин" style="flex:1">
         <input type="password" id="newUserPw" class="folder-path-input" placeholder="Пароль" style="flex:1">
+        <select id="newUserRole" class="folder-select" style="width:auto;min-width:80px;padding:7px 24px 7px 8px;font-size:12px">
+          <option value="user">user</option>
+          <option value="admin">admin</option>
+          <option value="demo">demo</option>
+        </select>
       </div>
       <button class="folder-btn folder-btn-primary" style="width:100%" onclick="adminCreateUser()">Создать</button>
     </div>
@@ -2528,18 +2538,25 @@ audio.addEventListener('timeupdate', onTimeUpdate);
 // ── Config / Folders ──
 var currentUser = '';
 var isAdmin = false;
+var userRole = 'user';
 
 function loadConfig() {
   fetch('/api/config').then(function(r){return r.json()}).then(function(cfg) {
     if (cfg.error === 'unauthorized') { window.location.reload(); return; }
     currentUser = cfg.username || '';
     isAdmin = cfg.is_admin || false;
+    userRole = cfg.role || 'user';
     savedFolders = cfg.folders || [];
     renderFolderSelect();
     syncNetworkState();
-    // Show admin-only UI
+    // Show/hide UI based on role
+    var isDemo = userRole === 'demo';
     document.getElementById('adminBtn').style.display = isAdmin ? '' : 'none';
     document.getElementById('networkToggles').style.display = isAdmin ? 'flex' : 'none';
+    // Demo: hide add/remove folder, meta/vk row, edit button
+    document.getElementById('metaVkRow').style.display = isDemo ? 'none' : '';
+    document.getElementById('addFolderBtn').style.display = isDemo ? 'none' : '';
+    document.getElementById('removeFolderBtn').style.display = isDemo ? 'none' : '';
     if (cfg.last_folder) {
       document.getElementById('folderSelect').value = cfg.last_folder;
       loadFolder(cfg.last_folder);
@@ -3213,7 +3230,7 @@ function loadAdminUsers() {
       html += '<div style="padding:10px;border-bottom:1px solid rgba(255,255,255,0.06)">'
         + '<div style="display:flex;align-items:center;gap:8px">'
         + '<div style="flex:1"><b>' + esc(u.username) + '</b>'
-        + (u.is_admin ? ' <span style="color:#e94560;font-size:10px">admin</span>' : '') + '</div>'
+        + ' <span style="color:' + (u.role==='admin'?'#e94560':u.role==='demo'?'#e9a545':'#52b788') + ';font-size:10px">' + (u.role||'user') + '</span></div>'
         + '<button class="folder-btn-icon admin-pw-btn" onclick="adminChangePassword(\'' + esc(u.username) + '\')" title="Сменить пароль"><img src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIGZpbGw9IiM4ODgiIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZD0iTTEyLjY1IDEwYTYgNiAwIDEgMCAwIDRIMTd2M2gzdi0zaDJ2LTRoLTkuMzV6TTcgMTRhMiAyIDAgMSAxIDAtNCAyIDIgMCAwIDEgMCA0eiIvPjwvc3ZnPg=="></button>'
         + '<button class="folder-btn-icon" style="width:26px;height:26px;font-size:13px" onclick="adminAddFolder(\'' + esc(u.username) + '\')" title="Добавить каталог">+</button>'
         + (u.is_admin ? '' : '<button class="folder-btn-icon" style="width:26px;height:26px;font-size:13px;color:#e94560" onclick="adminDeleteUser(\'' + esc(u.username) + '\')" title="Удалить">&times;</button>')
@@ -3229,8 +3246,9 @@ function adminCreateUser() {
   var u = document.getElementById('newUserName').value.trim();
   var p = document.getElementById('newUserPw').value;
   if (!u || !p) { showToast('Заполните логин и пароль'); return; }
+  var role = document.getElementById('newUserRole').value;
   fetch('/api/admin/create_user', {method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({username: u, password: p})})
+    body: JSON.stringify({username: u, password: p, role: role})})
   .then(function(r){return r.json()}).then(function(d) {
     if (d.ok) { showToast('Пользователь создан'); document.getElementById('newUserName').value=''; document.getElementById('newUserPw').value=''; loadAdminUsers(); }
     else showToast(d.error || 'Ошибка');
@@ -3326,7 +3344,7 @@ function checkIfNumbered() {
     if (/^\d+\.\s/.test(tracks[i].file)) numbered++;
   }
   isNumberedCatalog = (numbered / tracks.length) > 0.8;
-  document.getElementById('editBtn').style.display = isNumberedCatalog ? '' : 'none';
+  document.getElementById('editBtn').style.display = (isNumberedCatalog && userRole !== 'demo') ? '' : 'none';
 }
 
 function startEdit() {
@@ -3514,6 +3532,27 @@ window.addEventListener('scroll', function() {
   window.scrollTo(0, 0);
 });
 
+// ── Tooltips (JS, position:fixed) ──
+(function() {
+  var tip = document.getElementById('tipPopup');
+  document.addEventListener('mouseover', function(e) {
+    var el = e.target.closest('[data-tip]');
+    if (!el) { tip.classList.remove('show'); return; }
+    tip.textContent = el.getAttribute('data-tip');
+    tip.classList.add('show');
+    var r = el.getBoundingClientRect();
+    var tw = tip.offsetWidth;
+    var left = r.left + r.width / 2 - tw / 2;
+    if (left < 4) left = 4;
+    if (left + tw > window.innerWidth - 4) left = window.innerWidth - tw - 4;
+    tip.style.left = left + 'px';
+    tip.style.top = (r.bottom + 6) + 'px';
+  });
+  document.addEventListener('mouseout', function(e) {
+    if (e.target.closest('[data-tip]')) tip.classList.remove('show');
+  });
+})();
+
 // Init background, media session, and load config
 initBgCanvas();
 initMediaSession();
@@ -3585,6 +3624,15 @@ function doSetup(){
 
 
 class Handler(BaseHTTPRequestHandler):
+    def _is_demo(self, udata):
+        return udata.get("role") == "demo" if udata else False
+
+    def _deny_demo(self, udata):
+        if self._is_demo(udata):
+            self._respond_json({"ok": False, "error": "Недоступно для демо-аккаунта."})
+            return True
+        return False
+
     def _get_user(self):
         """Извлекает текущего пользователя из cookie."""
         cookie_header = self.headers.get("Cookie", "")
@@ -3641,6 +3689,7 @@ class Handler(BaseHTTPRequestHandler):
                 "all_urls": all_urls,
                 "username": user,
                 "is_admin": udata.get("is_admin", False) if udata else False,
+                "role": udata.get("role", "user") if udata else "user",
                 "music_root": get_music_root(),
             })
 
@@ -3650,14 +3699,21 @@ class Handler(BaseHTTPRequestHandler):
             if not folder or not Path(folder).is_dir():
                 self._respond_json({"error": "Папка не найдена: " + folder})
                 return
-            # Non-admins restricted to MUSIC_ROOT
             is_admin_user = udata.get("is_admin", False) if udata else False
-            if not is_admin_user and not is_path_within(folder, get_music_root()):
+            is_demo = self._is_demo(udata)
+            # Demo users can only scan their assigned folders
+            if is_demo:
+                user_folders = get_user_folders(user)
+                if folder not in user_folders:
+                    self._respond_json({"error": "Недоступно для демо-аккаунта."})
+                    return
+            elif not is_admin_user and not is_path_within(folder, get_music_root()):
                 self._respond_json({"error": "Доступ запрещён. Каталог вне корневой папки музыки."})
                 return
             global MUSIC_DIR
             MUSIC_DIR = folder
-            add_user_folder(user, folder)
+            if not is_demo:
+                add_user_folder(user, folder)
             set_user_last_folder(user, folder)
             track_list = scan_library(folder)
             album_list = group_by_album(track_list)
@@ -3758,7 +3814,7 @@ class Handler(BaseHTTPRequestHandler):
             all_users = load_users()
             user_list = []
             for uname, ud in all_users.items():
-                user_list.append({"username": uname, "is_admin": ud.get("is_admin", False), "folders": ud.get("folders", [])})
+                user_list.append({"username": uname, "is_admin": ud.get("is_admin", False), "role": ud.get("role", "user"), "folders": ud.get("folders", [])})
             self._respond_json({"users": user_list})
 
         elif path.startswith("/api/stream/"):
@@ -3839,7 +3895,7 @@ class Handler(BaseHTTPRequestHandler):
                 set_music_root(mr)
             else:
                 set_music_root(str(Path.home() / "VinylMusic"))
-            create_user(u, p, is_admin=True)
+            create_user(u, p, is_admin=True, role="admin")
             token = create_session(u)
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -3921,6 +3977,7 @@ class Handler(BaseHTTPRequestHandler):
         udata = get_user_data(user)
 
         if path == "/api/meta/start":
+            if self._deny_demo(udata): return
             if meta_state["running"]:
                 self._respond_json({"ok": False, "already_running": True})
                 return
@@ -3941,6 +3998,7 @@ class Handler(BaseHTTPRequestHandler):
             self._respond_json({"ok": True})
 
         elif path == "/api/meta/single":
+            if self._deny_demo(udata): return
             folder = data.get("folder", MUSIC_DIR)
             filename = data.get("file", "")
             if not folder or not filename:
@@ -3989,11 +4047,13 @@ class Handler(BaseHTTPRequestHandler):
                 threading.Timer(0.3, _restart_server, args=["127.0.0.1"]).start()
 
         elif path == "/api/remove_folder":
+            if self._deny_demo(udata): return
             folder = data.get("path", "")
             remove_user_folder(user, folder)
             self._respond_json({"ok": True})
 
         elif path == "/api/vk/auth":
+            if self._deny_demo(udata): return
             raw = data.get("url", "")
             m = re.search(r'access_token=([A-Za-z0-9._-]+)', raw)
             token = m.group(1) if m else raw.strip()
@@ -4012,6 +4072,7 @@ class Handler(BaseHTTPRequestHandler):
             self._respond_json({"ok": True})
 
         elif path == "/api/vk/download":
+            if self._deny_demo(udata): return
             if vk_state["running"]:
                 self._respond_json({"ok": False, "already_running": True})
                 return
@@ -4042,6 +4103,7 @@ class Handler(BaseHTTPRequestHandler):
             self._respond_json({"ok": True})
 
         elif path == "/api/reorder":
+            if self._deny_demo(udata): return
             folder = data.get("folder", MUSIC_DIR)
             new_order = data.get("order", [])
             if not folder or not new_order:
@@ -4104,10 +4166,13 @@ class Handler(BaseHTTPRequestHandler):
                 self._respond_json({"ok": False, "error": "Нет доступа."})
                 return
             nu, np = data.get("username", "").strip(), data.get("password", "")
+            role = data.get("role", "user")
+            if role not in ("admin", "user", "demo"):
+                role = "user"
             if not nu or not np:
                 self._respond_json({"ok": False, "error": "Заполните все поля."})
                 return
-            if not create_user(nu, np):
+            if not create_user(nu, np, is_admin=(role == "admin"), role=role):
                 self._respond_json({"ok": False, "error": "Пользователь уже существует."})
                 return
             self._respond_json({"ok": True})
