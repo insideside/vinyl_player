@@ -1339,12 +1339,12 @@ body {
 .sidebar-toggle {
   display: none; position: absolute; right: 360px; top: 108px;
   z-index: 20; width: 30px; height: 56px; border: none; border-radius: 8px 0 0 8px;
-  background: rgba(255,255,255,0.06); color: rgba(255,255,255,0.3); cursor: pointer;
+  background: rgba(0,0,0,0.4); backdrop-filter: blur(20px); color: rgba(255,255,255,0.3); cursor: pointer;
   align-items: center; justify-content: center;
   transition: right 0.3s ease, background 0.15s;
   will-change: right;
 }
-.sidebar-toggle:hover { color: rgba(255,255,255,0.6); background: rgba(255,255,255,0.12); }
+.sidebar-toggle:hover { color: rgba(255,255,255,0.6); background: rgba(0,0,0,0.5); }
 .playlist-side {
   will-change: transform;
 }
