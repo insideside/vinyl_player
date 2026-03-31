@@ -1197,11 +1197,17 @@ body {
   transition: color 0.2s;
 }
 .playlist-tab.active { color: #e94560; border-bottom: 2px solid #e94560; }
-.playlist-list {
-  flex: 1; overflow-y: auto; padding: 4px 0; scroll-behavior: smooth;
+.tab-slider {
+  flex: 1; overflow: hidden; position: relative;
 }
-.playlist-list.tab-hidden, .coverflow-wrap.tab-hidden {
-  display: none;
+.tab-slider-inner {
+  display: flex; width: 200%; height: 100%;
+  transition: transform 0.3s ease;
+}
+.tab-slider-inner.show-albums { transform: translateX(-50%); }
+.playlist-list, .coverflow-wrap {
+  width: 50%; overflow-y: auto; padding: 4px 0; scroll-behavior: smooth;
+  flex-shrink: 0;
 }
 .playlist-item {
   display: flex; align-items: center; gap: 10px; padding: 8px 12px;
@@ -1478,16 +1484,23 @@ body { touch-action: pan-y; }
   pointer-events: auto; width: fit-content; margin: 0 auto;
 }
 .mobile-toggle {
-  display: flex; border-radius: 22px; padding: 3px; gap: 3px;
+  display: flex; border-radius: 22px; padding: 3px;
   background: rgba(255,255,255,0.08); backdrop-filter: blur(16px);
-  flex-shrink: 0;
+  flex-shrink: 0; position: relative;
 }
+.mobile-toggle-bg {
+  position: absolute; top: 3px; left: 3px; width: 40px; height: 40px;
+  border-radius: 20px; background: #e94560;
+  transition: transform 0.25s cubic-bezier(0.4,0,0.2,1);
+}
+.mobile-toggle-bg.right { transform: translateX(40px); }
 .mobile-toggle button {
   padding: 0; width: 40px; height: 40px; border: none; border-radius: 20px; font-size: 11px;
-  background: none; color: rgba(255,255,255,0.4); cursor: pointer; transition: all 0.2s;
+  background: none; color: rgba(255,255,255,0.4); cursor: pointer; transition: color 0.2s;
   display: flex; align-items: center; justify-content: center;
+  position: relative; z-index: 1;
 }
-.mobile-toggle button.active { background: #e94560; color: #fff; }
+.mobile-toggle button.active { color: #fff; }
 .mobile-mini-btn {
   padding: 0; width: 40px; height: 40px; border-radius: 50%; border: none;
   background: rgba(255,255,255,0.08); backdrop-filter: blur(16px);
@@ -1709,8 +1722,12 @@ body { touch-action: pan-y; }
       </div>
     </div>
 
-    <div class="playlist-list" id="trackList"></div>
-    <div class="coverflow-wrap tab-hidden" id="albumList"></div>
+    <div class="tab-slider">
+      <div class="tab-slider-inner" id="tabSlider">
+        <div class="playlist-list" id="trackList"></div>
+        <div class="coverflow-wrap" id="albumList"></div>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -1718,6 +1735,7 @@ body { touch-action: pan-y; }
   <div class="mobile-bar-inner">
     <button class="mobile-mini-btn" id="mobilePlayBtn" onclick="togglePlay()"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg></button>
     <div class="mobile-toggle" id="mobileToggle">
+      <div class="mobile-toggle-bg right" id="toggleBg"></div>
       <button id="btnVinyl" onclick="mobileShow('vinyl')"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="1.5"/><circle cx="12" cy="12" r="4" fill="currentColor"/></svg></button>
       <button class="active" id="btnPlaylist" onclick="mobileShow('playlist')"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M3 13h2v-2H3v2zm0 4h2v-2H3v2zm0-8h2V7H3v2zm4 4h14v-2H7v2zm0 4h14v-2H7v2zM7 7v2h14V7H7z"/></svg></button>
     </div>
@@ -2237,8 +2255,7 @@ function showTab(tab) {
   activeTab = tab;
   document.getElementById('tabTracks').className = 'playlist-tab' + (tab === 'tracks' ? ' active' : '');
   document.getElementById('tabAlbums').className = 'playlist-tab' + (tab === 'albums' ? ' active' : '');
-  document.getElementById('trackList').classList.toggle('tab-hidden', tab !== 'tracks');
-  document.getElementById('albumList').classList.toggle('tab-hidden', tab !== 'albums');
+  document.getElementById('tabSlider').classList.toggle('show-albums', tab === 'albums');
   if (tab === 'albums') {
     document.getElementById('playlistHeader').textContent = (filteredAlbums ? filteredAlbums.length + ' / ' : '') + albums.length + ' альбомов';
     document.getElementById('editBtn').style.display = 'none';
@@ -3271,6 +3288,7 @@ function mobileShow(view) {
   document.body.classList.add('mobile-view-' + view);
   document.getElementById('btnVinyl').classList.toggle('active', view === 'vinyl');
   document.getElementById('btnPlaylist').classList.toggle('active', view === 'playlist');
+  document.getElementById('toggleBg').classList.toggle('right', view === 'playlist');
 }
 
 // Set default mobile view
