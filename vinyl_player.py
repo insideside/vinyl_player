@@ -1135,16 +1135,16 @@ body {
 
 /* ── Track info ── */
 .track-info {
-  text-align: center; margin-top: 28px;
+  text-align: center; margin-top: 28px; height: 52px;
 }
 .track-title {
   font-size: 22px; font-weight: 600; color: #fff;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 50vw;
-  transition: opacity 0.3s ease;
+  transition: opacity 0.3s ease; line-height: 28px;
 }
 .track-artist {
-  font-size: 15px; color: rgba(255,255,255,0.5); margin-top: 4px;
-  transition: opacity 0.3s ease;
+  font-size: 15px; color: rgba(255,255,255,0.5); margin-top: 2px;
+  transition: opacity 0.3s ease; line-height: 20px; min-height: 20px;
 }
 .vinyl-cover-img { width: 100%; height: 100%; object-fit: cover; transition: opacity 0.4s ease; }
 
