@@ -1327,15 +1327,15 @@ body {
 
 /* ── Sidebar toggle (desktop) ── */
 .sidebar-toggle {
-  display: none; position: absolute; right: 368px; top: 50%; transform: translateY(-50%);
-  z-index: 5; width: 24px; height: 48px; border: none; border-radius: 8px 0 0 8px;
-  background: rgba(0,0,0,0.4); color: rgba(255,255,255,0.4); cursor: pointer;
-  align-items: center; justify-content: center; backdrop-filter: blur(12px);
-  transition: right 0.3s ease;
+  display: none; position: absolute; right: 360px; top: 108px;
+  z-index: 5; width: 20px; height: 56px; border: none; border-radius: 6px 0 0 6px;
+  background: rgba(255,255,255,0.06); color: rgba(255,255,255,0.3); cursor: pointer;
+  align-items: center; justify-content: center;
+  transition: right 0.3s ease, background 0.15s;
 }
-.sidebar-toggle:hover { color: rgba(255,255,255,0.7); background: rgba(0,0,0,0.6); }
+.sidebar-toggle:hover { color: rgba(255,255,255,0.6); background: rgba(255,255,255,0.12); }
 .sidebar-collapsed .playlist-side { width: 0; opacity: 0; overflow: hidden; padding: 0; border: none; }
-.sidebar-collapsed .sidebar-toggle { right: 0; border-radius: 8px 0 0 8px; }
+.sidebar-collapsed .sidebar-toggle { right: 0; }
 @media (min-width: 769px) {
   .sidebar-toggle { display: flex; }
 }
@@ -1558,7 +1558,7 @@ body { touch-action: pan-y; }
   </div>
 
   <button class="sidebar-toggle" id="sidebarToggle" onclick="toggleSidebar()">
-    <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" id="sidebarIcon"><path d="M15.41 7.41L14 6l-6 6 6 6 1.41-1.41L10.83 12z"/></svg>
+    <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor" id="sidebarIcon"><path d="M8.59 16.59L10 18l6-6-6-6-1.41 1.41L13.17 12z"/></svg>
   </button>
 
   <!-- Right: Playlist -->
@@ -3191,9 +3191,10 @@ function cancelVkDownload() {
 function toggleSidebar() {
   var app = document.querySelector('.app');
   var collapsed = app.classList.toggle('sidebar-collapsed');
+  // Collapsed = arrow left (open), Visible = arrow right (close)
   document.getElementById('sidebarIcon').innerHTML = collapsed
-    ? '<path d="M8.59 16.59L10 18l6-6-6-6-1.41 1.41L13.17 12z"/>'
-    : '<path d="M15.41 7.41L14 6l-6 6 6 6 1.41-1.41L10.83 12z"/>';
+    ? '<path d="M15.41 7.41L14 6l-6 6 6 6 1.41-1.41L10.83 12z"/>'
+    : '<path d="M8.59 16.59L10 18l6-6-6-6-1.41 1.41L13.17 12z"/>';
 }
 
 function mobileShow(view) {
