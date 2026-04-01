@@ -2548,7 +2548,7 @@ body { overflow: hidden; touch-action: none; position: fixed; width: 100%; heigh
     </div>
   </div>
 </div>
-<audio id="audioEl"></audio>
+<video id="audioEl" playsinline style="display:none"></video>
 
 <script>
 // ── iOS PWA audio session fix ──
