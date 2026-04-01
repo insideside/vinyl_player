@@ -3060,12 +3060,30 @@ audio.addEventListener('error', function() {
   var e = audio.error;
   dbg('AUDIO ERR code=' + (e?e.code:'?') + ' msg=' + (e?e.message:'?') + ' src=' + (audio.src||'').slice(0,50));
 });
-
-// Track actual playback state
 audio.addEventListener('playing', function() { dbg('EVENT: playing, time=' + audio.currentTime.toFixed(1)); });
 audio.addEventListener('pause', function() { dbg('EVENT: pause, time=' + audio.currentTime.toFixed(1)); });
 audio.addEventListener('stalled', function() { dbg('EVENT: stalled'); });
-audio.addEventListener('waiting', function() { dbg('EVENT: waiting'); });
+
+// iOS PWA audio session fix: AudioContext.resume() in user gesture
+var _acx = null;
+var _acxConnected = false;
+function ensureAudioContext() {
+  if (!_acx) {
+    _acx = new (window.AudioContext || window.webkitAudioContext)();
+    dbg('AudioContext created, state=' + _acx.state);
+  }
+  if (!_acxConnected) {
+    try {
+      var src = _acx.createMediaElementSource(audio);
+      src.connect(_acx.destination);
+      _acxConnected = true;
+      dbg('AudioContext connected to <audio>');
+    } catch(e) { dbg('AudioContext connect err: ' + e.message); }
+  }
+  if (_acx.state === 'suspended') {
+    _acx.resume().then(function() { dbg('AudioContext resumed'); });
+  }
+}
 
 function selectTrack(i, autoplay) {
   if (i < 0 || i >= tracks.length) return;
@@ -3076,8 +3094,9 @@ function selectTrack(i, autoplay) {
   vinylAngle = 0;
   vinylSpeed = 0;
 
-  // Always use direct server URL + play() in user gesture (activates iOS audio session)
-  // SW does NOT intercept /api/stream/ — goes straight to server
+  // Activate iOS audio session via AudioContext (must be in user gesture)
+  ensureAudioContext();
+
   var streamUrl = '/api/stream/' + encodeURIComponent(t.file);
   if (_blobUrlCache[t.file]) {
     dbg('→ blob URL');
@@ -3088,13 +3107,10 @@ function selectTrack(i, autoplay) {
   }
   if (autoplay) {
     var p = audio.play();
-    if (p&&p.then) p.then(function(){dbg('play OK')}).catch(function(e){dbg('play FAIL: '+e.message)});
+    if (p&&p.then) p.then(function(){dbg('play OK, time=' + audio.currentTime.toFixed(1))}).catch(function(e){dbg('play FAIL: '+e.message)});
     setPlayState(true);
   }
-  // Pre-build blob URLs for nearby tracks (for offline + faster next)
   if (isTrackCached(t.file)) prepareBlobUrl(t.file);
-  setTimeout(prepareNearbyBlobs, 200);
-  // Pre-build blob URLs for nearby tracks
   setTimeout(prepareNearbyBlobs, 200);
   var titleEl = document.getElementById('trackTitle');
   var artistEl = document.getElementById('trackArtist');
