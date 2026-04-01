@@ -2551,32 +2551,9 @@ body { overflow: hidden; touch-action: none; position: fixed; width: 100%; heigh
 <audio id="audioEl"></audio>
 
 <script>
-// ── iOS PWA audio session fix: must run FIRST, before anything else ──
-// iOS standalone PWA: audio.play() resolves but no sound. AudioContext.resume() alone
-// doesn't activate the system audio session. Playing an actual AudioBufferSourceNode does.
-(function(){
-  var done = false;
-  function unlock() {
-    if (done) return;
-    done = true;
-    try {
-      var ctx = new (window.AudioContext || window.webkitAudioContext)();
-      // Play a tiny buffer through AudioContext to activate system audio session
-      var buf = ctx.createBuffer(1, 1, 22050);
-      var src = ctx.createBufferSource();
-      src.buffer = buf;
-      src.connect(ctx.destination);
-      src.start(0);
-      if (ctx.state === 'suspended') ctx.resume();
-      window._pwaAudioCtx = ctx;
-      if (typeof dbg === 'function') dbg('ACX buffer played, state=' + ctx.state);
-    } catch(e) { if (typeof dbg === 'function') dbg('ACX err: ' + e.message); }
-    document.removeEventListener('touchstart', unlock, true);
-    document.removeEventListener('click', unlock, true);
-  }
-  document.addEventListener('touchstart', unlock, true);
-  document.addEventListener('click', unlock, true);
-})();
+// ── iOS PWA audio fix ──
+// iOS standalone PWA cannot activate audio session on its own.
+// Detect: if play() fires 'playing' but time doesn't advance, show prompt.
 // ── Debug: logs sent to server console ──
 var _dbgQueue = [];
 var _dbgTimer2 = null;
@@ -3090,6 +3067,15 @@ audio.addEventListener('playing', function() { dbg('EVENT: playing, time=' + aud
 audio.addEventListener('pause', function() { dbg('EVENT: pause, time=' + audio.currentTime.toFixed(1)); });
 audio.addEventListener('stalled', function() { dbg('EVENT: stalled'); });
 
+var _pwaFixShown = false;
+function showPwaAudioFix() {
+  if (_pwaFixShown) return;
+  _pwaFixShown = true;
+  // Open a page in Safari that plays silence and redirects back
+  // Safari activates the system audio session, then PWA can play
+  var url = location.origin + '/pwa-audio-fix';
+  window.location.href = url;
+}
 
 function selectTrack(i, autoplay) {
   if (i < 0 || i >= tracks.length) return;
@@ -3110,7 +3096,18 @@ function selectTrack(i, autoplay) {
   }
   if (autoplay) {
     var p = audio.play();
-    if (p&&p.then) p.then(function(){dbg('play OK, time=' + audio.currentTime.toFixed(1))}).catch(function(e){dbg('play FAIL: '+e.message)});
+    if (p&&p.then) p.then(function(){
+      dbg('play OK, time=' + audio.currentTime.toFixed(1));
+      // iOS PWA audio session check: if playing but time stuck at 0
+      if (window.navigator.standalone) {
+        setTimeout(function() {
+          if (audio.currentTime < 0.1 && !audio.paused) {
+            dbg('PWA audio stuck — opening Safari to activate session');
+            showPwaAudioFix();
+          }
+        }, 1500);
+      }
+    }).catch(function(e){dbg('play FAIL: '+e.message)});
     setPlayState(true);
   }
   if (isTrackCached(t.file)) prepareBlobUrl(t.file);
@@ -5943,6 +5940,30 @@ class Handler(BaseHTTPRequestHandler):
         path = parsed.path
 
         # Reset page — clears SW cache, not intercepted by SW
+        if path == "/pwa-audio-fix":
+            # Opens in Safari (not PWA), plays silence to activate system audio session
+            self._respond(200, "text/html", b"""<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">
+<title>Audio</title><style>body{background:#111;color:#eee;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;flex-direction:column;gap:12px}
+</style></head><body><p style="color:rgba(255,255,255,0.4);font-size:14px">Activating audio...</p>
+<script>
+var ctx = new (window.AudioContext || window.webkitAudioContext)();
+var osc = ctx.createOscillator();
+var gain = ctx.createGain();
+gain.gain.value = 0.001;
+osc.connect(gain);
+gain.connect(ctx.destination);
+osc.start(0);
+osc.stop(ctx.currentTime + 0.5);
+ctx.resume();
+// Also play via audio element
+var a = new Audio();
+a.src = 'data:audio/wav;base64,UklGRiYAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQIAAAAA';
+a.play().catch(function(){});
+setTimeout(function(){ window.close(); }, 2000);
+document.body.innerHTML += '<p style="color:rgba(255,255,255,0.3);font-size:12px">You can close this tab</p>';
+</script></body></html>""")
+            return
+
         if path == "/reset":
             self._respond(200, "text/html", b"""<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Reset</title>
 <style>body{background:#111;color:#eee;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0}
