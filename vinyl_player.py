@@ -6379,6 +6379,15 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(body_bytes)
             return
 
+        # Debug logging — no auth needed
+        if path == "/api/dbg":
+            lines = data.get("lines", [])
+            ip = self.client_address[0] if self.client_address else '?'
+            for line in lines:
+                print("\033[36m[{}]\033[0m {}".format(ip, line), flush=True)
+            self._respond_json({"ok": True})
+            return
+
         # All other POST endpoints require auth
         user = self._get_user()
         if not user:
@@ -6504,13 +6513,6 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception: pass
                 threading.Timer(1.0, _restart_server, args=["127.0.0.1"]).start()
 
-        elif path == "/api/dbg":
-            # Debug: print client logs to server console
-            lines = data.get("lines", [])
-            ip = self.client_address[0] if self.client_address else '?'
-            for line in lines:
-                print("\033[36m[{}]\033[0m {}".format(ip, line))
-            self._respond_json({"ok": True})
 
         elif path == "/api/remove_folder":
             if self._deny_demo(udata): return
