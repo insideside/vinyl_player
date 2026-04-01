@@ -2272,6 +2272,7 @@ body { overflow: hidden; touch-action: none; position: fixed; width: 100%; heigh
     <div style="display:flex;gap:6px;margin-top:8px;flex-shrink:0">
       <button class="folder-btn folder-btn-primary" style="flex:1" onclick="savePlEdit()">Сохранить</button>
       <button class="folder-btn folder-btn-secondary" style="flex:1" onclick="document.getElementById('plEditOverlay').classList.remove('show')">Отмена</button>
+      <button class="folder-btn folder-btn-secondary" id="plDeleteBtn" style="color:#e94560;flex-shrink:0;padding:8px 12px" onclick="deletePlEdit()" data-tip="Удалить плейлист">&#10005;</button>
     </div>
   </div>
 </div>
@@ -4450,6 +4451,7 @@ function createPlaylist() {
   plEditTracks = [];
   document.getElementById('plEditName').value = '';
   document.getElementById('plEditTitle').textContent = 'Новый плейлист';
+  document.getElementById('plDeleteBtn').style.display = 'none';
   renderPlEditTracks();
   document.getElementById('plEditOverlay').classList.add('show');
 }
@@ -4461,6 +4463,7 @@ function editPlaylist(id) {
   plEditTracks = pl.tracks.slice();
   document.getElementById('plEditName').value = pl.name;
   document.getElementById('plEditTitle').textContent = 'Редактировать';
+  document.getElementById('plDeleteBtn').style.display = '';
   renderPlEditTracks();
   document.getElementById('plEditOverlay').classList.add('show');
 }
@@ -4525,6 +4528,24 @@ function confirmPlAdd() {
   // Keep order but sync with checkboxes
   document.getElementById('plAddOverlay').classList.remove('show');
   renderPlEditTracks();
+}
+
+function deletePlEdit() {
+  if (!plEditId) return;
+  var pl = userPlaylists.find(function(p){return p.id===plEditId});
+  var name = pl ? pl.name : 'плейлист';
+  showConfirm('Удалить плейлист «' + name + '»?', function() {
+    var folder = document.getElementById('folderSelect').value;
+    fetch('/api/playlists', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({folder: folder, action: 'delete', id: plEditId})})
+    .then(function(r){return r.json()}).then(function(d) {
+      if (d.ok) {
+        showToast('Плейлист удалён');
+        document.getElementById('plEditOverlay').classList.remove('show');
+        loadUserPlaylists();
+      } else showToast(d.error);
+    });
+  }, 'Удалить');
 }
 
 function savePlEdit() {
