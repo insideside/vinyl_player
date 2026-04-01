@@ -836,6 +836,26 @@ def group_by_album(tracks):
     return list(albums.values())
 
 
+# ──────────────────── Playlists ────────────────────
+
+def _playlists_file(music_dir):
+    return Path(music_dir) / ".vinyl_playlists.json"
+
+
+def load_playlists(music_dir):
+    p = _playlists_file(music_dir)
+    if p.exists():
+        try:
+            return json.loads(p.read_text())
+        except Exception:
+            pass
+    return []
+
+
+def save_playlists(music_dir, playlists):
+    _playlists_file(music_dir).write_text(json.dumps(playlists, ensure_ascii=False, indent=2))
+
+
 # ──────────────────── Metadata lookup ────────────────────
 
 _meta_states = {}  # username -> state dict
@@ -1550,13 +1570,17 @@ body {
   flex: 1; overflow: hidden; position: relative;
 }
 .tab-slider-inner {
-  display: flex; width: 200%; height: 100%;
-  transition: transform 0.3s ease;
+  height: 100%; position: relative;
 }
-.tab-slider-inner.show-albums { transform: translateX(-50%); }
 .playlist-list, .coverflow-wrap {
-  width: 50%; overflow-y: auto; padding: 4px 0; scroll-behavior: smooth;
-  flex-shrink: 0;
+  position: absolute; inset: 0; overflow-y: auto; padding: 4px 0; scroll-behavior: smooth;
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+.tab-panel-hidden {
+  opacity: 0; transform: translateX(20px); pointer-events: none; z-index: 0;
+}
+.tab-panel-visible {
+  opacity: 1; transform: translateX(0); z-index: 1;
 }
 .playlist-item {
   display: flex; align-items: center; gap: 10px; padding: 8px 12px;
@@ -2001,6 +2025,7 @@ body { overflow: hidden; touch-action: none; position: fixed; width: 100%; heigh
     <div class="playlist-tabs">
       <button class="playlist-tab active" id="tabTracks" onclick="showTab('tracks')">Треки</button>
       <button class="playlist-tab" id="tabAlbums" onclick="showTab('albums')">Альбомы</button>
+      <button class="playlist-tab" id="tabPlaylists" onclick="showTab('playlists')">Плейлисты</button>
     </div>
 
     <div class="playlist-header" style="display:flex;align-items:center;gap:8px">
@@ -2016,8 +2041,9 @@ body { overflow: hidden; touch-action: none; position: fixed; width: 100%; heigh
 
     <div class="tab-slider">
       <div class="tab-slider-inner" id="tabSlider">
-        <div class="playlist-list" id="trackList"></div>
-        <div class="coverflow-wrap" id="albumList"></div>
+        <div class="playlist-list tab-panel-visible" id="trackList"></div>
+        <div class="coverflow-wrap tab-panel-hidden" id="albumList"></div>
+        <div class="coverflow-wrap tab-panel-hidden" id="playlistsList"></div>
       </div>
     </div>
   </div>
@@ -2229,6 +2255,34 @@ body { overflow: hidden; touch-action: none; position: fixed; width: 100%; heigh
       <button class="folder-btn folder-btn-primary" style="width:100%" onclick="startWanMode('static')">Подключить</button>
     </div>
     <button class="folder-btn folder-btn-secondary" style="width:100%;margin-top:10px" onclick="document.getElementById('wanModeOverlay').classList.remove('show');setToggle('wanToggle','wanDot',false)">Отмена</button>
+  </div>
+</div>
+
+<!-- Playlist edit modal -->
+<div class="meta-overlay" id="plEditOverlay" onclick="if(event.target===this)this.classList.remove('show')">
+  <div class="meta-modal" style="width:min(480px,92vw);max-height:85vh;display:flex;flex-direction:column;overflow:hidden">
+    <div style="display:flex;align-items:center;gap:8px;flex-shrink:0">
+      <h3 id="plEditTitle" style="flex:1">Плейлист</h3>
+    </div>
+    <input type="text" id="plEditName" class="folder-path-input" style="margin:8px 0;flex-shrink:0" placeholder="Название плейлиста">
+    <div style="display:flex;gap:6px;margin-bottom:8px;flex-shrink:0">
+      <button class="folder-btn folder-btn-secondary" style="flex:1;font-size:11px" onclick="plAddTracks()">+ Добавить треки</button>
+    </div>
+    <div id="plEditTracks" style="flex:1;overflow-y:auto;min-height:0;border:1px solid rgba(255,255,255,0.06);border-radius:8px"></div>
+    <div style="display:flex;gap:6px;margin-top:8px;flex-shrink:0">
+      <button class="folder-btn folder-btn-primary" style="flex:1" onclick="savePlEdit()">Сохранить</button>
+      <button class="folder-btn folder-btn-secondary" style="flex:1" onclick="document.getElementById('plEditOverlay').classList.remove('show')">Отмена</button>
+    </div>
+  </div>
+</div>
+
+<!-- Playlist add tracks modal -->
+<div class="meta-overlay" id="plAddOverlay" onclick="if(event.target===this)this.classList.remove('show')" style="z-index:110">
+  <div class="meta-modal" style="width:min(440px,90vw);max-height:80vh;display:flex;flex-direction:column;overflow:hidden">
+    <h3>Выбрать треки</h3>
+    <input type="text" id="plAddSearch" class="folder-path-input" style="margin:6px 0;flex-shrink:0" placeholder="Поиск..." oninput="filterPlAddTracks(this.value)">
+    <div id="plAddList" style="flex:1;overflow-y:auto;min-height:0"></div>
+    <button class="folder-btn folder-btn-primary" style="width:100%;margin-top:8px;flex-shrink:0" onclick="confirmPlAdd()">Добавить выбранные</button>
   </div>
 </div>
 
@@ -2791,26 +2845,27 @@ function toggleAlbum(i) {
 
 function showTab(tab) {
   activeTab = tab;
-  document.getElementById('tabTracks').className = 'playlist-tab' + (tab === 'tracks' ? ' active' : '');
-  document.getElementById('tabAlbums').className = 'playlist-tab' + (tab === 'albums' ? ' active' : '');
-  // Hide scrollbar on leaving panel, show on entering
-  var tl = document.getElementById('trackList');
-  var al = document.getElementById('albumList');
-  if (tab === 'albums') {
-    tl.style.overflowY = 'hidden';
-    al.style.overflowY = '';
-  } else {
-    al.style.overflowY = 'hidden';
-    tl.style.overflowY = '';
+  var tabs = ['tracks', 'albums', 'playlists'];
+  var panels = {tracks: 'trackList', albums: 'albumList', playlists: 'playlistsList'};
+  for (var i = 0; i < tabs.length; i++) {
+    var btn = document.getElementById('tab' + tabs[i].charAt(0).toUpperCase() + tabs[i].slice(1));
+    if (btn) btn.className = 'playlist-tab' + (tabs[i] === tab ? ' active' : '');
+    var panel = document.getElementById(panels[tabs[i]]);
+    if (panel) {
+      panel.className = panel.className.replace(/tab-panel-\w+/g, '').trim() + (tabs[i] === tab ? ' tab-panel-visible' : ' tab-panel-hidden');
+    }
   }
-  document.getElementById('tabSlider').classList.toggle('show-albums', tab === 'albums');
   if (tab === 'albums') {
     document.getElementById('playlistHeader').textContent = (filteredAlbums ? filteredAlbums.length + ' / ' : '') + albums.length + ' альбомов';
     document.getElementById('editBtn').style.display = 'none';
     if (isEditMode) cancelEdit();
+  } else if (tab === 'playlists') {
+    document.getElementById('editBtn').style.display = 'none';
+    if (isEditMode) cancelEdit();
+    loadUserPlaylists();
   } else {
     document.getElementById('playlistHeader').textContent = (filteredTracks ? filteredTracks.length + ' / ' : '') + tracks.length + ' треков';
-    document.getElementById('editBtn').style.display = isNumberedCatalog ? '' : 'none';
+    document.getElementById('editBtn').style.display = (isNumberedCatalog && userRole !== 'demo') ? '' : 'none';
   }
 }
 
@@ -4304,6 +4359,167 @@ function loadAdminUsers() {
   });
 }
 
+// ── Playlists ──
+var userPlaylists = [];
+var plEditId = null;
+var plEditTracks = [];
+
+function loadUserPlaylists() {
+  var folder = document.getElementById('folderSelect').value;
+  if (!folder) return;
+  fetch('/api/playlists', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({folder: folder, action: 'list'})})
+  .then(function(r){return r.json()}).then(function(d) {
+    userPlaylists = d.playlists || [];
+    renderPlaylists();
+    document.getElementById('playlistHeader').textContent = userPlaylists.length + ' плейлистов';
+  });
+}
+
+function renderPlaylists() {
+  var html = '<div style="padding:8px 12px"><button class="folder-btn folder-btn-secondary" style="width:100%;font-size:12px" onclick="createPlaylist()">+ Создать плейлист</button></div>';
+  for (var i = 0; i < userPlaylists.length; i++) {
+    var pl = userPlaylists[i];
+    var coverHtml = buildPlCover(pl);
+    html += '<div class="album-card" onclick="playPlaylist(\'' + pl.id + '\')">'
+      + '<div class="album-cover" style="position:relative;overflow:hidden">' + coverHtml + '</div>'
+      + '<div class="album-info"><div class="album-name">' + esc(pl.name) + '</div>'
+      + '<div class="album-count">' + pl.tracks.length + ' треков</div></div>'
+      + '<button class="track-edit-btn" onclick="event.stopPropagation();editPlaylist(\'' + pl.id + '\')"><svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 000-1.41l-2.34-2.34a1 1 0 00-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg></button>'
+      + '</div>';
+  }
+  document.getElementById('playlistsList').innerHTML = html;
+}
+
+function buildPlCover(pl) {
+  // 4 covers from last 4 tracks
+  var covers = [];
+  for (var i = pl.tracks.length - 1; i >= 0 && covers.length < 4; i--) {
+    var file = pl.tracks[i];
+    var t = tracks.find(function(tr){return tr.file === file});
+    if (t && t.has_cover) covers.push('/api/cover/' + encodeURIComponent(t.file));
+  }
+  if (covers.length === 0) return '<div style="width:100%;height:100%;background:#333;display:flex;align-items:center;justify-content:center;color:rgba(255,255,255,0.2);font-size:20px">&#9835;</div>';
+  if (covers.length < 4) return '<img src="' + covers[0] + '" style="width:100%;height:100%;object-fit:cover">';
+  return '<div style="display:grid;grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr;width:100%;height:100%">'
+    + covers.map(function(c){return '<img src="'+c+'" style="width:100%;height:100%;object-fit:cover">'}).join('')
+    + '</div>';
+}
+
+function createPlaylist() {
+  plEditId = null;
+  plEditTracks = [];
+  document.getElementById('plEditName').value = '';
+  document.getElementById('plEditTitle').textContent = 'Новый плейлист';
+  renderPlEditTracks();
+  document.getElementById('plEditOverlay').classList.add('show');
+}
+
+function editPlaylist(id) {
+  var pl = userPlaylists.find(function(p){return p.id===id});
+  if (!pl) return;
+  plEditId = id;
+  plEditTracks = pl.tracks.slice();
+  document.getElementById('plEditName').value = pl.name;
+  document.getElementById('plEditTitle').textContent = 'Редактировать';
+  renderPlEditTracks();
+  document.getElementById('plEditOverlay').classList.add('show');
+}
+
+function renderPlEditTracks() {
+  var html = '';
+  for (var i = 0; i < plEditTracks.length; i++) {
+    var file = plEditTracks[i];
+    var t = tracks.find(function(tr){return tr.file === file});
+    var name = t ? esc(t.title) : esc(file);
+    var artist = t ? esc(t.artist) : '';
+    html += '<div class="playlist-item" draggable="true" data-pi="'+i+'" ondragstart="pleDragStart(event,'+i+')" ondragover="pleDragOver(event,'+i+')" ondrop="pleDrop(event,'+i+')" ondragend="pleDragEnd(event)">'
+      + '<span class="drag-handle" style="cursor:grab;color:rgba(255,255,255,0.2)">&#8801;</span>'
+      + '<div class="info" style="flex:1;min-width:0"><div class="name" style="font-size:12px">' + name + '</div>'
+      + (artist ? '<div class="artist" style="font-size:11px">' + artist + '</div>' : '') + '</div>'
+      + '<button class="track-edit-btn" onclick="plEditTracks.splice('+i+',1);renderPlEditTracks()" style="color:#e94560">&times;</button></div>';
+  }
+  if (!html) html = '<div style="padding:16px;text-align:center;color:rgba(255,255,255,0.2);font-size:12px">Добавьте треки</div>';
+  document.getElementById('plEditTracks').innerHTML = html;
+}
+
+var pleDragIdx = null;
+function pleDragStart(e,i){pleDragIdx=i;e.target.closest('.playlist-item').style.opacity='0.4';}
+function pleDragEnd(e){pleDragIdx=null;e.target.closest('.playlist-item').style.opacity='';}
+function pleDragOver(e,i){e.preventDefault();}
+function pleDrop(e,t){e.preventDefault();if(pleDragIdx===null||pleDragIdx===t)return;var item=plEditTracks.splice(pleDragIdx,1)[0];plEditTracks.splice(t,0,item);pleDragIdx=null;renderPlEditTracks();}
+
+function plAddTracks() {
+  var html = '';
+  for (var i = 0; i < tracks.length; i++) {
+    var t = tracks[i];
+    var inPl = plEditTracks.indexOf(t.file) >= 0;
+    html += '<label class="playlist-item pl-add-item" data-search="' + esc(t.title+' '+t.artist).toLowerCase() + '" style="cursor:pointer">'
+      + '<input type="checkbox" value="' + esc(t.file) + '"' + (inPl ? ' checked' : '') + ' style="accent-color:#e94560;flex-shrink:0">'
+      + '<div class="info" style="flex:1;min-width:0"><div class="name" style="font-size:12px">' + esc(t.title) + '</div>'
+      + '<div class="artist" style="font-size:11px">' + esc(t.artist) + '</div></div></label>';
+  }
+  document.getElementById('plAddList').innerHTML = html;
+  document.getElementById('plAddSearch').value = '';
+  document.getElementById('plAddOverlay').classList.add('show');
+}
+
+function filterPlAddTracks(q) {
+  q = q.toLowerCase();
+  var items = document.querySelectorAll('.pl-add-item');
+  for (var i = 0; i < items.length; i++) {
+    items[i].style.display = !q || items[i].getAttribute('data-search').indexOf(q) >= 0 ? '' : 'none';
+  }
+}
+
+function confirmPlAdd() {
+  var checks = document.querySelectorAll('#plAddList input:checked');
+  var files = [];
+  for (var i = 0; i < checks.length; i++) files.push(checks[i].value);
+  // Add new files that aren't already in plEditTracks
+  for (var j = 0; j < files.length; j++) {
+    if (plEditTracks.indexOf(files[j]) < 0) plEditTracks.push(files[j]);
+  }
+  // Remove unchecked
+  var checkedSet = {};
+  for (var k = 0; k < files.length; k++) checkedSet[files[k]] = true;
+  // Keep order but sync with checkboxes
+  document.getElementById('plAddOverlay').classList.remove('show');
+  renderPlEditTracks();
+}
+
+function savePlEdit() {
+  var folder = document.getElementById('folderSelect').value;
+  var name = document.getElementById('plEditName').value.trim() || 'Плейлист';
+  var action = plEditId ? 'update' : 'create';
+  var body = {folder: folder, action: action, name: name, tracks: plEditTracks};
+  if (plEditId) body.id = plEditId;
+  fetch('/api/playlists', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)})
+  .then(function(r){return r.json()}).then(function(d) {
+    if (d.ok) {
+      showToast(plEditId ? 'Плейлист обновлён' : 'Плейлист создан');
+      document.getElementById('plEditOverlay').classList.remove('show');
+      loadUserPlaylists();
+    } else showToast(d.error);
+  });
+}
+
+function playPlaylist(id) {
+  var pl = userPlaylists.find(function(p){return p.id===id});
+  if (!pl || !pl.tracks.length) return;
+  // Build play queue from playlist tracks
+  playQueue = [];
+  for (var i = 0; i < pl.tracks.length; i++) {
+    var idx = tracks.findIndex(function(t){return t.file===pl.tracks[i]});
+    if (idx >= 0) playQueue.push(idx);
+  }
+  if (playQueue.length) {
+    playQueuePos = 0;
+    selectTrack(playQueue[0], true);
+    showToast('Играет: ' + pl.name);
+  }
+}
+
 function showImportHelp() {
   document.getElementById('importHelpOverlay').classList.add('show');
 }
@@ -5704,6 +5920,50 @@ class Handler(BaseHTTPRequestHandler):
                 self._respond_json({"ok": True, "new_file": new_name})
             except Exception:
                 self._respond_json({"ok": False, "error": "Ошибка переименования."})
+
+        elif path == "/api/playlists":
+            # CRUD for playlists
+            if self._deny_demo(udata): return
+            folder = data.get("folder", _user_music_dirs.get(user, ""))
+            action = data.get("action", "")
+            if not folder:
+                self._respond_json({"ok": False, "error": "Нет каталога."})
+                return
+
+            playlists = load_playlists(folder)
+
+            if action == "list":
+                self._respond_json({"ok": True, "playlists": playlists})
+
+            elif action == "create":
+                name = data.get("name", "").strip() or "Новый плейлист"
+                track_files = data.get("tracks", [])
+                pl = {"id": secrets.token_hex(8), "name": name, "tracks": track_files}
+                playlists.append(pl)
+                save_playlists(folder, playlists)
+                self._respond_json({"ok": True, "playlist": pl})
+
+            elif action == "update":
+                pl_id = data.get("id", "")
+                for pl in playlists:
+                    if pl["id"] == pl_id:
+                        if "name" in data:
+                            pl["name"] = data["name"]
+                        if "tracks" in data:
+                            pl["tracks"] = data["tracks"]
+                        save_playlists(folder, playlists)
+                        self._respond_json({"ok": True, "playlist": pl})
+                        return
+                self._respond_json({"ok": False, "error": "Плейлист не найден."})
+
+            elif action == "delete":
+                pl_id = data.get("id", "")
+                playlists = [p for p in playlists if p["id"] != pl_id]
+                save_playlists(folder, playlists)
+                self._respond_json({"ok": True})
+
+            else:
+                self._respond_json({"ok": False, "error": "Неизвестное действие."})
 
         elif path == "/api/reorder":
             if self._deny_demo(udata): return
