@@ -6506,8 +6506,13 @@ class Handler(BaseHTTPRequestHandler):
                 all_ips = get_all_local_ips()
                 lan_url = "{}://{}:{}".format(proto, local_ip, SERVER_PORT)
                 all_urls = ["{}://{}:{}".format(proto, ip, SERVER_PORT) for ip in all_ips]
-                self._respond_json({"ok": True, "public": True, "lan_url": lan_url, "ip": local_ip, "all_urls": all_urls, "https": https_ok})
-                threading.Timer(0.3, _restart_server, args=["0.0.0.0"]).start()
+                resp = {"ok": True, "public": True, "lan_url": lan_url, "ip": local_ip, "all_urls": all_urls, "https": https_ok}
+                print("LAN ON: responding with", resp)
+                self._respond_json(resp)
+                try: self.wfile.flush()
+                except Exception: pass
+                print("LAN ON: response sent, restarting in 1s as", proto)
+                threading.Timer(1.0, _restart_server, args=["0.0.0.0"]).start()
             else:
                 if _use_https:
                     _use_https = False
@@ -6515,7 +6520,9 @@ class Handler(BaseHTTPRequestHandler):
                     s["https"] = False
                     save_settings(s)
                 self._respond_json({"ok": True, "public": False})
-                threading.Timer(0.3, _restart_server, args=["127.0.0.1"]).start()
+                try: self.wfile.flush()
+                except Exception: pass
+                threading.Timer(1.0, _restart_server, args=["127.0.0.1"]).start()
 
         elif path == "/api/remove_folder":
             if self._deny_demo(udata): return
