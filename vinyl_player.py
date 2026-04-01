@@ -2551,6 +2551,35 @@ body { overflow: hidden; touch-action: none; position: fixed; width: 100%; heigh
 <audio id="audioEl"></audio>
 
 <script>
+// ── Debug log — triple-tap track title to show ──
+var _dbgLog = [];
+var _dbgEl = null;
+var _dbgVisible = false;
+var _dbgTaps = 0;
+var _dbgTimer = null;
+function dbg(msg) {
+  var ts = new Date().toTimeString().slice(0,8);
+  var line = ts + ' ' + msg;
+  _dbgLog.push(line);
+  if (_dbgLog.length > 100) _dbgLog.shift();
+  if (_dbgEl && _dbgVisible) { _dbgEl.textContent = _dbgLog.join('\n'); _dbgEl.scrollTop = _dbgEl.scrollHeight; }
+  console.log('[dbg] ' + line);
+}
+function initDebugPanel() {
+  _dbgEl = document.createElement('pre');
+  _dbgEl.style.cssText = 'display:none;position:fixed;top:0;left:0;right:0;bottom:0;z-index:99999;background:rgba(0,0,0,0.93);color:#0f0;font:10px/1.4 monospace;padding:10px;overflow:auto;margin:0;white-space:pre-wrap;word-break:break-all;-webkit-overflow-scrolling:touch';
+  _dbgEl.onclick = function() { _dbgVisible = false; _dbgEl.style.display = 'none'; };
+  document.body.appendChild(_dbgEl);
+  var el = document.getElementById('trackTitle');
+  if (el) el.addEventListener('click', function() {
+    _dbgTaps++; clearTimeout(_dbgTimer);
+    _dbgTimer = setTimeout(function() { _dbgTaps = 0; }, 500);
+    if (_dbgTaps >= 3) { _dbgTaps = 0; _dbgVisible = !_dbgVisible; _dbgEl.style.display = _dbgVisible ? '' : 'none'; if (_dbgVisible) { _dbgEl.textContent = _dbgLog.join('\n'); _dbgEl.scrollTop = _dbgEl.scrollHeight; } }
+  });
+}
+dbg('init proto=' + location.protocol + ' host=' + location.hostname + ' standalone=' + !!window.navigator.standalone);
+// ── End debug ──
+
 function _d(s){return decodeURIComponent(escape(atob(s.split('').reverse().join(''))));}
 var _n=_d("==wYpNXdtBSZkl2clRWaz5Wa");
 // iOS doesn't support audio.volume — hide slider
@@ -3047,14 +3076,17 @@ var _audioUnlocked = false;
 function loadTrackBlob(file, trackIdx, autoplay) {
   var t0 = Date.now();
   if (isTrackCached(file)) {
+    dbg('loadBlob: IDB read...');
     getCachedAudio(file, function(buf) {
-      if (currentIdx !== trackIdx) { return; }
+      dbg('loadBlob: IDB ' + (Date.now()-t0) + 'ms buf=' + (buf ? (buf.byteLength/1024|0)+'K' : 'null'));
+      if (currentIdx !== trackIdx) { dbg('loadBlob: track changed'); return; }
       if (buf) {
         var url = makeBlobUrl(buf, file);
         _blobUrlCache[file] = url;
         audio.src = url;
         if (autoplay) {
           var p = audio.play();
+          if (p&&p.then) p.then(function(){dbg('play OK (IDB)')}).catch(function(e){dbg('play FAIL (IDB): '+e.message)});
         }
       } else {
         delete cachedFiles[file];
@@ -3062,6 +3094,7 @@ function loadTrackBlob(file, trackIdx, autoplay) {
       }
     });
   } else {
+    dbg('loadBlob: fetch server...');
     fetchTrackBlob(file, trackIdx, autoplay);
   }
 }
@@ -3069,17 +3102,21 @@ function loadTrackBlob(file, trackIdx, autoplay) {
 function fetchTrackBlob(file, trackIdx, autoplay) {
   var t0 = Date.now();
   fetch('/api/stream/' + encodeURIComponent(file)).then(function(r) {
+    dbg('fetchBlob: ' + r.status + ' ' + (Date.now()-t0) + 'ms');
     if (!r.ok) throw new Error('status ' + r.status);
     return r.arrayBuffer();
   }).then(function(buf) {
-    if (currentIdx !== trackIdx) { return; }
+    dbg('fetchBlob: got ' + (buf.byteLength/1024|0) + 'K ' + (Date.now()-t0) + 'ms');
+    if (currentIdx !== trackIdx) { dbg('fetchBlob: track changed'); return; }
     var url = makeBlobUrl(buf, file);
     _blobUrlCache[file] = url;
     audio.src = url;
     if (autoplay) {
       var p = audio.play();
+      if (p&&p.then) p.then(function(){dbg('play OK (fetch)')}).catch(function(e){dbg('play FAIL (fetch): '+e.message)});
     }
   }).catch(function(e) {
+    dbg('fetchBlob FAIL: ' + e.message + ' ' + (Date.now()-t0) + 'ms');
     if (currentIdx !== trackIdx) return;
     setPlayState(false);
   });
@@ -3087,28 +3124,35 @@ function fetchTrackBlob(file, trackIdx, autoplay) {
 
 audio.addEventListener('error', function() {
   var e = audio.error;
+  dbg('AUDIO ERR code=' + (e?e.code:'?') + ' msg=' + (e?e.message:'?') + ' src=' + (audio.src||'').slice(0,50));
 });
 
 function selectTrack(i, autoplay) {
   if (i < 0 || i >= tracks.length) return;
   currentIdx = i;
   var t = tracks[i];
+  dbg('select #' + i + ' auto=' + autoplay + ' blob=' + !!_blobUrlCache[t.file] + ' cached=' + isTrackCached(t.file) + ' unlocked=' + _audioUnlocked);
 
   vinylAngle = 0;
   vinylSpeed = 0;
 
   if (_blobUrlCache[t.file]) {
+    dbg('→ blob URL');
     audio.src = _blobUrlCache[t.file];
     if (autoplay) {
       var p = audio.play();
+      if (p&&p.then) p.then(function(){dbg('play OK (blob)')}).catch(function(e){dbg('play FAIL (blob): '+e.message)});
       setPlayState(true); _audioUnlocked = true;
     }
   } else {
     if (autoplay && !_audioUnlocked) {
+      dbg('→ unlock silent WAV');
       audio.src = SILENT_WAV;
       var p2 = audio.play();
+      if (p2&&p2.then) p2.then(function(){dbg('unlock OK')}).catch(function(e){dbg('unlock FAIL: '+e.message)});
       _audioUnlocked = true;
     }
+    dbg('→ loadTrackBlob');
     if (autoplay) setPlayState(true);
     loadTrackBlob(t.file, i, autoplay);
   }
@@ -3565,24 +3609,27 @@ function showOfflineBanner(show) {
 
 function loadConfig() {
   var t0 = Date.now();
+  dbg('loadConfig start');
   var hadCache = false;
   try {
     var saved = localStorage.getItem('_vc_config');
     if (saved) {
       var cached = JSON.parse(saved);
+      dbg('loadConfig: LS hit folder=' + (cached.last_folder||'?').split('/').pop());
       applyConfig(cached);
       if (cached.last_folder) {
         document.getElementById('folderSelect').value = cached.last_folder;
         loadFolderCacheFirst(cached.last_folder);
       }
       hadCache = true;
-    } else {
     }
-  } catch(e){ }
+  } catch(e){}
   if (!hadCache) showLoadingIndicator();
+  dbg('loadConfig: fetching server...');
   fetch('/api/config').then(function(r){return r.json()}).then(function(cfg) {
-    if (cfg.error === 'unauthorized') { window.location.reload(); return; }
-    if (cfg.error === 'offline') { if (!hadCache) enterOfflineMode(); return; }
+    dbg('loadConfig: server ' + (Date.now()-t0) + 'ms');
+    if (cfg.error === 'unauthorized') { dbg('loadConfig: unauth'); window.location.reload(); return; }
+    if (cfg.error === 'offline') { dbg('loadConfig: offline'); if (!hadCache) enterOfflineMode(); return; }
     _isOffline = false;
     showOfflineBanner(false);
     try { localStorage.setItem('_vc_config', JSON.stringify(cfg)); } catch(e){}
@@ -5781,7 +5828,9 @@ openCacheDB(function() { refreshCachedList(); });
 
 // Register Service Worker for offline app shell (HTTPS or localhost only)
 if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1')) {
+  dbg('SW registering...');
   navigator.serviceWorker.register('/sw.js').then(function(reg) {
+    dbg('SW registered active=' + !!reg.active + ' waiting=' + !!reg.waiting);
     if (reg.active) {
       warmAppCache();
     } else {
@@ -5792,14 +5841,12 @@ if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.
         window.location.reload();
       }
     });
-    // Log update events
     reg.addEventListener('updatefound', function() {
-      var nw = reg.installing;
-      if (nw) nw.addEventListener('statechange', function() {
-      });
+      dbg('SW update found');
     });
-  });
+  }).catch(function(e) { dbg('SW fail: ' + e.message); });
 } else {
+  dbg('SW skip: proto=' + location.protocol + ' host=' + location.hostname);
 }
 function warmAppCache() {
   if (!('caches' in window)) return;
@@ -5836,6 +5883,7 @@ window.addEventListener('offline', function() {
   if (!_isOffline) enterOfflineMode();
 });
 
+initDebugPanel();
 loadConfig();
 </script>
 </body>
