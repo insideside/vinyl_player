@@ -5239,20 +5239,34 @@ function startCacheAll() {
   beginCaching(files);
 }
 
+var cacheTotalCount = 0;
+
 function beginCaching(files) {
+  if (!navigator.serviceWorker || !navigator.serviceWorker.controller) {
+    showToast('Service Worker не активен. Перезагрузите страницу.');
+    return;
+  }
   cacheQueue = files.slice();
+  cacheTotalCount = files.length;
   cachingActive = true;
+  showToast('Кэширование: 0/' + cacheTotalCount);
   updateCacheBtn();
   cacheNextInQueue();
 }
 
 function cacheNextInQueue() {
   if (!cachingActive || !cacheQueue.length) {
+    var wasCaching = cachingActive;
     cachingActive = false;
     updateCacheBtn();
-    if (!cacheQueue.length && cachingActive === false) { showToast('Кэширование завершено'); refreshCachedList(); }
+    if (wasCaching) {
+      showToast('Кэширование завершено');
+      refreshCachedList();
+    }
     return;
   }
+  var done = cacheTotalCount - cacheQueue.length;
+  showToast('Кэширование: ' + done + '/' + cacheTotalCount);
   var file = cacheQueue.shift();
   updateCacheBtn();
   cacheTrack(file);
@@ -5263,12 +5277,17 @@ function stopCacheAll() {
   cachingActive = false;
   updateCacheBtn();
   showToast('Кэширование остановлено');
+  refreshCachedList();
 }
 
 function updateCacheBtn() {
-  var btn = document.getElementById('downloadCatalogBtn');
+  var btn = document.getElementById('cacheBtn');
   if (!btn) return;
-  // Reuse the download button for cache
+  if (cachingActive) {
+    btn.classList.add('active');
+  } else {
+    btn.classList.remove('active');
+  }
 }
 
 function cachePlaylist(plId) {
