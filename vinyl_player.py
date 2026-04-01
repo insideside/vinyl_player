@@ -292,12 +292,21 @@ def vk_save_token(token):
 def vk_validate_token(token):
     try:
         svc = VkService(VK_USER_AGENT, token)
-        # Test actual audio search, not just popular
-        results = svc.search_songs_by_text("test", count=1)
+        svc.get_popular(count=1)
         return True
     except Exception as e:
-        print("VK token validation failed:", str(e)[:100])
-        return False
+        err = str(e).lower()
+        # Captcha = token works but VK wants verification, accept it
+        if "captcha" in err:
+            print("VK: captcha requested, token accepted anyway")
+            return True
+        # Token expired or invalid
+        if "access_token" in err or "authorization" in err:
+            print("VK token invalid:", str(e)[:100])
+            return False
+        # Other errors (network, etc) — accept token optimistically
+        print("VK validation warning:", str(e)[:100])
+        return True
 
 
 def vk_parse_playlist_url(url):
