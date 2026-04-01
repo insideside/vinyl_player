@@ -18,6 +18,8 @@ Music/
 .vk_music_token.json
 .vinyl_meta_done.json
 .vinyl_sessions.json
+.vinyl_cert.pem
+.vinyl_key.pem
 config_vk.ini
 
 # Build artifacts

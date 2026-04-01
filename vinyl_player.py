@@ -10,6 +10,9 @@ import json
 import mimetypes
 import os
 import re
+import socket
+import ssl
+import subprocess
 import sys
 import threading
 import time
@@ -1357,123 +1360,97 @@ def metadata_apply(music_dir, proposals, username=""):
 
 # ──────────────────── HTML ────────────────────
 
-SW_JS = """
-var CACHE_APP = 'app-v1';
-var CACHE_AUDIO = 'audio-v1';
+SW_JS = r"""
+var CACHE_APP = 'app-BUILD_HASH';
 
 self.addEventListener('install', function(e) {
   e.waitUntil(self.skipWaiting());
 });
 
 self.addEventListener('activate', function(e) {
-  e.waitUntil(self.clients.claim());
+  e.waitUntil(
+    caches.keys().then(function(names) {
+      var hadOld = false;
+      return Promise.all(names.filter(function(n) {
+        if (n.startsWith('app-') && n !== CACHE_APP) { hadOld = true; return true; }
+        return false;
+      }).map(function(n) { return caches.delete(n); })).then(function() { return hadOld; });
+    }).then(function(hadOld) {
+      return self.clients.claim().then(function() {
+        if (hadOld) {
+          // App was updated — force navigate all windows to reload with new code
+          // Uses WindowClient.navigate() which doesn't need client-side listener
+          return self.clients.matchAll({type:'window'}).then(function(cls) {
+            cls.forEach(function(c) {
+              if (c.url && c.navigate) c.navigate(c.url);
+            });
+          });
+        }
+      });
+    })
+  );
 });
+
+// Helper: open IndexedDB from Service Worker
+function openIDB() {
+  return new Promise(function(resolve, reject) {
+    var req = indexedDB.open('vinylCache', 1);
+    req.onupgradeneeded = function(e) {
+      var db = e.target.result;
+      if (!db.objectStoreNames.contains('audio')) db.createObjectStore('audio');
+    };
+    req.onsuccess = function(e) { resolve(e.target.result); };
+    req.onerror = function() { reject(); };
+  });
+}
+
+function getFromIDB(key) {
+  return openIDB().then(function(db) {
+    return new Promise(function(resolve, reject) {
+      var tx = db.transaction('audio', 'readonly');
+      var req = tx.objectStore('audio').get(key);
+      req.onsuccess = function() { resolve(req.result || null); };
+      req.onerror = function() { resolve(null); };
+    });
+  }).catch(function() { return null; });
+}
+
+var OFFLINE_FALLBACK = '<html><body style="background:#111;color:#eee;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0"><div style="text-align:center"><h2>Offline</h2><p>Server unavailable, no cached page.</p></div></body></html>';
 
 self.addEventListener('fetch', function(e) {
   var url = new URL(e.request.url);
 
-  // Audio streams — serve from audio cache if available
-  if (url.pathname.startsWith('/api/stream/')) {
-    e.respondWith(
-      caches.open(CACHE_AUDIO).then(function(cache) {
-        return cache.match(e.request).then(function(cached) {
-          if (cached) return cached;
-          return fetch(e.request).then(function(resp) {
-            // Don't auto-cache streams — only explicit cacheTrack calls
-            return resp;
-          }).catch(function() {
-            return new Response('Offline', {status: 503});
-          });
-        });
-      })
-    );
+  // Audio streams and covers — do NOT intercept, let browser handle directly.
+  // Offline playback is handled client-side via IndexedDB blob URLs.
+  // Intercepting audio breaks iOS PWA standalone mode (Range request issues).
+  if (url.pathname.startsWith('/api/stream/') || url.pathname.startsWith('/api/cover/')) {
     return;
   }
 
-  // Cover images — cache on first load
-  if (url.pathname.startsWith('/api/cover/')) {
-    e.respondWith(
-      caches.open(CACHE_APP).then(function(cache) {
-        return cache.match(e.request).then(function(cached) {
-          if (cached) return cached;
-          return fetch(e.request).then(function(resp) {
-            if (resp.ok) cache.put(e.request, resp.clone());
-            return resp;
-          }).catch(function() {
-            return new Response('', {status: 404});
-          });
-        });
-      })
-    );
-    return;
-  }
-
-  // App shell — network first, fallback to cache
+  // App shell — stale-while-revalidate: instant from cache, update in background
   if (url.pathname === '/' || url.pathname === '/index.html') {
     e.respondWith(
-      fetch(e.request).then(function(resp) {
-        var clone = resp.clone();
-        caches.open(CACHE_APP).then(function(c) { c.put(e.request, clone); });
-        return resp;
-      }).catch(function() {
-        return caches.match(e.request);
+      caches.open(CACHE_APP).then(function(cache) {
+        return cache.match('/').then(function(cached) {
+          var fetchPromise = fetch(e.request).then(function(resp) {
+            if (resp.ok) cache.put('/', resp.clone());
+            return resp;
+          });
+          return cached || fetchPromise.catch(function() {
+            return new Response(OFFLINE_FALLBACK, {headers:{'Content-Type':'text/html'}});
+          });
+        });
       })
     );
     return;
   }
 
-  // API calls — network only (except when offline)
+  // API calls — network only, return offline JSON on failure
   if (url.pathname.startsWith('/api/')) {
     e.respondWith(fetch(e.request).catch(function() {
       return new Response(JSON.stringify({error:'offline'}), {headers:{'Content-Type':'application/json'}});
     }));
     return;
-  }
-});
-
-// Message API for explicit track caching
-self.addEventListener('message', function(e) {
-  if (e.data.action === 'cacheTrack') {
-    caches.open(CACHE_AUDIO).then(function(cache) {
-      fetch(e.data.url).then(function(resp) {
-        if (resp.ok) {
-          cache.put(e.data.url, resp).then(function() {
-            e.source.postMessage({action:'cached', url: e.data.url});
-          });
-        } else {
-          e.source.postMessage({action:'cacheFailed', url: e.data.url});
-        }
-      }).catch(function() {
-        e.source.postMessage({action:'cacheFailed', url: e.data.url});
-      });
-    });
-  } else if (e.data.action === 'uncacheTrack') {
-    caches.open(CACHE_AUDIO).then(function(cache) {
-      cache.delete(e.data.url).then(function() {
-        e.source.postMessage({action:'uncached', url: e.data.url});
-      });
-    });
-  } else if (e.data.action === 'getCachedList') {
-    caches.open(CACHE_AUDIO).then(function(cache) {
-      cache.keys().then(function(keys) {
-        var urls = keys.map(function(k) { return new URL(k.url).pathname; });
-        e.source.postMessage({action:'cachedList', urls: urls});
-      });
-    });
-  } else if (e.data.action === 'getCacheSize') {
-    caches.open(CACHE_AUDIO).then(function(cache) {
-      cache.keys().then(function(keys) {
-        var total = 0;
-        Promise.all(keys.map(function(k) {
-          return cache.match(k).then(function(r) {
-            var len = r.headers.get('content-length');
-            if (len) total += parseInt(len);
-          });
-        })).then(function() {
-          e.source.postMessage({action:'cacheSize', size: total, count: keys.length});
-        });
-      });
-    });
   }
 });
 """
@@ -1740,6 +1717,7 @@ body {
 }
 .album-card:hover { background: rgba(255,255,255,0.05); }
 .album-card.active { background: rgba(233,69,96,0.12); }
+.album-card.pl-drag-over { background: rgba(233,69,96,0.18); box-shadow: inset 0 0 0 1px rgba(233,69,96,0.4); }
 .album-tracks {
   overflow: hidden; max-height: 0;
   transition: max-height 0.35s ease-out, opacity 0.25s ease;
@@ -2035,6 +2013,8 @@ body { overflow: hidden; touch-action: none; position: fixed; width: 100%; heigh
   }
 }
 .playlist-header span { cursor: pointer; }
+.loading-spinner { width:28px;height:28px;border:3px solid rgba(255,255,255,0.1);border-top-color:#e94560;border-radius:50%;animation:lspin .7s linear infinite; }
+@keyframes lspin { to { transform:rotate(360deg); } }
 </style>
 </head>
 <body>
@@ -2426,6 +2406,11 @@ body { overflow: hidden; touch-action: none; position: fixed; width: 100%; heigh
     <label style="display:flex;align-items:center;gap:6px;color:rgba(255,255,255,0.5);cursor:pointer;font-size:12px;margin-bottom:12px">
       <input type="checkbox" id="trackEditMeta" style="accent-color:#e94560"> Найти Meta-данные после сохранения
     </label>
+    <div id="trackEditCacheRow" style="display:none;align-items:center;gap:8px;margin-bottom:12px;padding:8px 10px;background:rgba(255,255,255,0.04);border-radius:8px">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="#52b788"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>
+      <span style="font-size:12px;color:rgba(255,255,255,0.5);flex:1">Закэшировано</span>
+      <button class="folder-btn folder-btn-secondary" style="padding:4px 10px;font-size:11px" onclick="uncacheEditTrack()">Удалить из кэша</button>
+    </div>
     <div style="display:flex;gap:6px">
       <button class="folder-btn folder-btn-primary" style="flex:1" onclick="saveTrackEdit()">Сохранить</button>
       <button class="folder-btn folder-btn-secondary" style="flex:1" onclick="document.getElementById('trackEditOverlay').classList.remove('show')">Отмена</button>
@@ -2458,6 +2443,13 @@ body { overflow: hidden; touch-action: none; position: fixed; width: 100%; heigh
     <div class="pw-field"><input type="password" id="profOldPw" placeholder="Текущий пароль"><button class="pw-eye" onclick="togglePwVis('profOldPw',this)"><img src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIGZpbGw9IiM4ODgiIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZD0iTTEyIDQuNUM3IDQuNSAyLjczIDcuNjEgMSAxMmMxLjczIDQuMzkgNiA3LjUgMTEgNy41czkuMjctMy4xMSAxMS03LjVjLTEuNzMtNC4zOS02LTcuNS0xMS03LjV6TTEyIDE3Yy0yLjc2IDAtNS0yLjI0LTUtNXMyLjI0LTUgNS01IDUgMi4yNCA1IDUtMi4yNCA1LTUgNXptMC04Yy0xLjY2IDAtMyAxLjM0LTMgM3MxLjM0IDMgMyAzIDMtMS4zNCAzLTMtMS4zNC0zLTMtM3oiLz48L3N2Zz4="></button></div>
     <div class="pw-field" style="margin-top:6px"><input type="password" id="profNewPw" placeholder="Новый пароль"><button class="pw-eye" onclick="togglePwVis('profNewPw',this)"><img src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIGZpbGw9IiM4ODgiIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZD0iTTEyIDQuNUM3IDQuNSAyLjczIDcuNjEgMSAxMmMxLjczIDQuMzkgNiA3LjUgMTEgNy41czkuMjctMy4xMSAxMS03LjVjLTEuNzMtNC4zOS02LTcuNS0xMS03LjV6TTEyIDE3Yy0yLjc2IDAtNS0yLjI0LTUtNXMyLjI0LTUgNS01IDUgMi4yNCA1IDUtMi4yNCA1LTUgNXptMC04Yy0xLjY2IDAtMyAxLjM0LTMgM3MxLjM0IDMgMyAzIDMtMS4zNCAzLTMtMS4zNC0zLTMtM3oiLz48L3N2Zz4="></button></div>
     <button class="folder-btn folder-btn-primary" style="width:100%;margin-top:12px" onclick="changeMyPassword()">Сменить пароль</button>
+    <div style="margin-top:16px;padding-top:12px;border-top:1px solid rgba(255,255,255,0.06)">
+      <div style="font-size:12px;color:rgba(255,255,255,0.4);margin-bottom:8px">Офлайн-кэш</div>
+      <div style="display:flex;align-items:center;gap:8px">
+        <span style="font-size:12px;color:rgba(255,255,255,0.5);flex:1" id="profileCacheInfo"></span>
+        <button class="folder-btn folder-btn-secondary" style="padding:6px 12px;font-size:12px;color:#e94560" onclick="clearAllCache()">Очистить кэш</button>
+      </div>
+    </div>
     <div style="display:flex;gap:8px;margin-top:16px;padding-top:12px;border-top:1px solid rgba(255,255,255,0.06)">
       <button class="folder-btn folder-btn-secondary" style="flex:1" onclick="doLogout()">Выйти</button>
       <button class="folder-btn folder-btn-secondary" style="flex:1" onclick="document.getElementById('profileOverlay').classList.remove('show')">Закрыть</button>
@@ -2600,6 +2592,8 @@ function prefetchNext() {
   var nextIdx = playQueue[nextPos];
   if (nextIdx < 0 || nextIdx >= tracks.length) return;
   var nextFile = tracks[nextIdx].file;
+  // Skip prefetch if already in IndexedDB cache
+  if (isTrackCached(nextFile)) return;
   var url = '/api/stream/' + encodeURIComponent(nextFile);
   // Use <link rel=prefetch> to warm browser cache without creating audio conflicts
   if (prefetchLink) prefetchLink.remove();
@@ -2880,15 +2874,7 @@ function formatTime(s) {
 
 function renderTracks() {
   var html = '';
-  var indices = filteredTracks || [];
-  if (!filteredTracks) {
-    indices = [];
-    for (var j = 0; j < tracks.length; j++) indices.push(j);
-  }
-  // Filter cached only
-  if (showCachedOnly) {
-    indices = indices.filter(function(idx) { return isTrackCached(tracks[idx].file); });
-  }
+  var indices = getVisibleIndices();
   for (var ii = 0; ii < indices.length; ii++) {
     var i = indices[ii];
     var t = tracks[i];
@@ -2905,12 +2891,15 @@ function renderTracks() {
         + '<div class="info"><div class="name">' + esc(t.title) + '</div>'
         + '<div class="artist">' + esc(t.artist) + '</div></div></div>';
     } else {
-      html += '<div class="playlist-item' + (i === currentIdx ? ' active' : '') + '" onclick="playFromList(' + i + ')">'
+      var offDisabled = _isOffline && !isTrackCached(t.file);
+      html += '<div class="playlist-item' + (i === currentIdx ? ' active' : '') + (offDisabled ? ' disabled' : '') + '"'
+        + (offDisabled ? '' : ' onclick="playFromList(' + i + ')"')
+        + (offDisabled ? ' style="opacity:0.3;pointer-events:none"' : '') + '>'
         + '<div class="cover-thumb">' + coverHtml + '</div>'
         + '<div class="info"><div class="name">' + esc(t.title) + '</div>'
         + '<div class="artist">' + esc(t.artist) + '</div></div>'
         + (isTrackCached(t.file) ? '<span style="width:6px;height:6px;border-radius:50%;background:#52b788;flex-shrink:0" data-tip="В кэше"></span>' : '')
-        + (userRole !== 'demo' ? '<button class="track-edit-btn" onclick="event.stopPropagation();openTrackEdit(' + i + ')" data-tip="Редактировать"><svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 000-1.41l-2.34-2.34a1 1 0 00-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg></button>' : '')
+        + (!offDisabled && userRole !== 'demo' ? '<button class="track-edit-btn" onclick="event.stopPropagation();openTrackEdit(' + i + ')" data-tip="Редактировать"><svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 000-1.41l-2.34-2.34a1 1 0 00-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg></button>' : '')
         + '</div>';
     }
   }
@@ -2931,22 +2920,48 @@ function renderAlbums() {
       ? '<img src="/api/cover/' + encodeURIComponent(alb.cover_file) + '" loading="lazy">'
       : '';
     var isExp = expandedAlbum === a;
+    // Check if all album tracks are cached
+    var albCached = 0;
+    for (var ci = 0; ci < alb.tracks.length; ci++) {
+      if (isTrackCached(tracks[alb.tracks[ci]].file)) albCached++;
+    }
+    var allCached = albCached === alb.tracks.length;
+    var cacheIcon = allCached
+      ? '<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>'
+      : '<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>';
     html += '<div class="album-card' + (isExp ? ' active' : '') + '" onclick="toggleAlbum(' + a + ')">'
       + '<div class="album-cover">' + coverHtml + '</div>'
       + '<div class="album-info"><div class="album-name">' + esc(alb.name) + '</div>'
       + '<div class="album-artist">' + esc(alb.artist) + '</div>'
-      + '<div class="album-count">' + alb.tracks.length + ' треков</div>'
-      + '</div></div>';
+      + '<div class="album-count">' + alb.tracks.length + ' треков'
+      + (albCached > 0 ? ' <span style="color:rgba(255,255,255,0.3)">(' + albCached + ' в кэше)</span>' : '')
+      + '</div>'
+      + '</div>'
+      + '<button class="shuffle-btn" style="margin-left:auto;flex-shrink:0;opacity:0.5" onclick="event.stopPropagation();cacheAlbum(' + a + ')" data-tip="' + (allCached ? 'Альбом в кэше' : 'Кэшировать альбом') + '">' + cacheIcon + '</button>'
+      + '</div>';
     html += '<div class="album-tracks' + (isExp ? ' open' : '') + '" id="albumTracks_' + a + '">';
     for (var ti = 0; ti < alb.tracks.length; ti++) {
       var idx = alb.tracks[ti];
       var t = tracks[idx];
+      var cachedDot = isTrackCached(t.file) ? '<span style="width:6px;height:6px;border-radius:50%;background:#52b788;flex-shrink:0;margin-left:auto" data-tip="В кэше"></span>' : '';
       html += '<div class="playlist-item' + (idx === currentIdx ? ' active' : '') + '" onclick="event.stopPropagation();playFromAlbum(' + a + ',' + idx + ')" style="padding-left:36px">'
-        + '<div class="info"><div class="name">' + esc(t.title) + '</div></div></div>';
+        + '<div class="info"><div class="name">' + esc(t.title) + '</div></div>' + cachedDot + '</div>';
     }
     html += '</div>';
   }
   document.getElementById('albumList').innerHTML = html;
+}
+
+function cacheAlbum(albumIdx) {
+  var alb = albums[albumIdx];
+  if (!alb) return;
+  var files = [];
+  for (var i = 0; i < alb.tracks.length; i++) {
+    var f = tracks[alb.tracks[i]].file;
+    if (!isTrackCached(f)) files.push(f);
+  }
+  if (!files.length) { showToast('Альбом уже в кэше'); return; }
+  beginCaching(files);
 }
 
 function toggleAlbum(i) {
@@ -2984,6 +2999,10 @@ function showTab(tab) {
       panel.className = panel.className.replace(/tab-panel-\w+/g, '').trim() + (tabs[i] === tab ? ' tab-panel-visible' : ' tab-panel-hidden');
     }
   }
+  // Show cache buttons only on tracks tab
+  var showCache = tab === 'tracks';
+  document.getElementById('cacheBtn').style.display = showCache ? '' : 'none';
+  document.getElementById('cachedOnlyBtn').style.display = showCache ? '' : 'none';
   if (tab === 'albums') {
     document.getElementById('playlistHeader').textContent = (filteredAlbums ? filteredAlbums.length + ' / ' : '') + albums.length + ' альбомов';
     document.getElementById('editBtn').style.display = 'none';
@@ -2998,6 +3017,75 @@ function showTab(tab) {
   }
 }
 
+// ── Blob URL pre-cache (keeps ready-to-use blob URLs in memory for instant playback) ──
+var _blobUrlCache = {}; // file -> blob URL
+
+function makeBlobUrl(buf, file) {
+  var ext = file.split('.').pop().toLowerCase();
+  var mimeMap = {mp3:'audio/mpeg',flac:'audio/flac',m4a:'audio/mp4',ogg:'audio/ogg',wav:'audio/wav',aac:'audio/aac',opus:'audio/ogg'};
+  return URL.createObjectURL(new Blob([buf], {type: mimeMap[ext] || 'audio/mpeg'}));
+}
+
+function prepareBlobUrl(file) {
+  if (_blobUrlCache[file] || !isTrackCached(file)) return;
+  getCachedAudio(file, function(buf) {
+    if (!buf) { delete cachedFiles[file]; return; }
+    _blobUrlCache[file] = makeBlobUrl(buf, file);
+  });
+}
+
+function prepareNearbyBlobs() {
+  if (playQueue.length === 0) return;
+  var startPos = playQueuePos >= 0 ? playQueuePos : 0;
+  var positions = [startPos, startPos + 1, startPos + 2, startPos - 1];
+  for (var p = 0; p < positions.length; p++) {
+    var pos = positions[p];
+    if (pos < 0) pos = playQueue.length - 1;
+    if (pos >= playQueue.length) pos = 0;
+    var idx = playQueue[pos];
+    if (idx >= 0 && idx < tracks.length) prepareBlobUrl(tracks[idx].file);
+  }
+}
+
+// Silent WAV for iOS audio unlock (46 bytes: 1 sample of silence)
+var SILENT_WAV = 'data:audio/wav;base64,UklGRiYAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQIAAAAA';
+var _audioUnlocked = false;
+
+function loadTrackBlob(file, trackIdx, autoplay) {
+  if (isTrackCached(file)) {
+    getCachedAudio(file, function(buf) {
+      if (currentIdx !== trackIdx) return;
+      if (buf) {
+        var url = makeBlobUrl(buf, file);
+        _blobUrlCache[file] = url;
+        audio.src = url;
+        if (autoplay) audio.play();
+      } else {
+        delete cachedFiles[file];
+        fetchTrackBlob(file, trackIdx, autoplay);
+      }
+    });
+  } else {
+    fetchTrackBlob(file, trackIdx, autoplay);
+  }
+}
+
+function fetchTrackBlob(file, trackIdx, autoplay) {
+  fetch('/api/stream/' + encodeURIComponent(file)).then(function(r) {
+    if (!r.ok) throw new Error('fetch');
+    return r.arrayBuffer();
+  }).then(function(buf) {
+    if (currentIdx !== trackIdx) return;
+    var url = makeBlobUrl(buf, file);
+    _blobUrlCache[file] = url;
+    audio.src = url;
+    if (autoplay) audio.play();
+  }).catch(function() {
+    if (currentIdx !== trackIdx) return;
+    setPlayState(false);
+  });
+}
+
 function selectTrack(i, autoplay) {
   if (i < 0 || i >= tracks.length) return;
   currentIdx = i;
@@ -3006,7 +3094,22 @@ function selectTrack(i, autoplay) {
   vinylAngle = 0;
   vinylSpeed = 0;
 
-  audio.src = '/api/stream/' + encodeURIComponent(t.file);
+  if (_blobUrlCache[t.file]) {
+    // Blob URL ready — instant playback (works everywhere)
+    audio.src = _blobUrlCache[t.file];
+    if (autoplay) { audio.play(); setPlayState(true); _audioUnlocked = true; }
+  } else {
+    // Need to load audio — unlock iOS audio on first tap with silent WAV
+    if (autoplay && !_audioUnlocked) {
+      audio.src = SILENT_WAV;
+      audio.play();
+      _audioUnlocked = true;
+    }
+    if (autoplay) setPlayState(true);
+    loadTrackBlob(t.file, i, autoplay);
+  }
+  // Pre-build blob URLs for nearby tracks
+  setTimeout(prepareNearbyBlobs, 200);
   var titleEl = document.getElementById('trackTitle');
   var artistEl = document.getElementById('trackArtist');
   // Fade out, swap text, fade in
@@ -3021,10 +3124,30 @@ function selectTrack(i, autoplay) {
 
   var img = document.getElementById('vinylCover');
   if (t.has_cover) {
-    img.src = '/api/cover/' + encodeURIComponent(t.file);
-    img.style.display = '';
-    document.getElementById('vinylPlaceholder').style.display = 'none';
-    img.onload = function() { extractColor(img); };
+    var coverUrl = '/api/cover/' + encodeURIComponent(t.file);
+    if (isTrackCached(t.file)) {
+      getCachedCover(t.file, function(buf) {
+        if (buf) {
+          var blob = new Blob([buf]);
+          if (img._coverUrl) URL.revokeObjectURL(img._coverUrl);
+          img._coverUrl = URL.createObjectURL(blob);
+          img.src = img._coverUrl;
+        } else if (!_isOffline) {
+          img.src = coverUrl;
+        }
+        img.style.display = '';
+        document.getElementById('vinylPlaceholder').style.display = 'none';
+        img.onload = function() { extractColor(img); };
+      });
+    } else if (!_isOffline) {
+      img.src = coverUrl;
+      img.style.display = '';
+      document.getElementById('vinylPlaceholder').style.display = 'none';
+      img.onload = function() { extractColor(img); };
+    } else {
+      img.style.display = 'none';
+      document.getElementById('vinylPlaceholder').style.display = '';
+    }
   } else {
     img.style.display = 'none';
     document.getElementById('vinylPlaceholder').style.display = '';
@@ -3036,11 +3159,6 @@ function selectTrack(i, autoplay) {
   updateMediaSession(t);
   autoMetaForTrack(t);
   showMobileControls();
-
-  if (autoplay) {
-    audio.play();
-    setPlayState(true);
-  }
   // Prefetch next track in queue
   setTimeout(prefetchNext, 500);
 }
@@ -3081,10 +3199,10 @@ function showMobileControls() {
 var isShuffled = false;
 
 function buildDefaultQueue() {
-  playQueue = [];
-  for (var i = 0; i < tracks.length; i++) playQueue.push(i);
+  playQueue = getVisibleIndices();
   playQueuePos = -1;
   if (isShuffled) shuffleArray(playQueue);
+  setTimeout(prepareNearbyBlobs, 100);
 }
 
 function shuffleArray(arr) {
@@ -3114,16 +3232,27 @@ function toggleShuffle() {
   }
 }
 
+function getVisibleIndices() {
+  var indices = filteredTracks;
+  if (!indices) {
+    indices = [];
+    for (var j = 0; j < tracks.length; j++) indices.push(j);
+  }
+  if (showCachedOnly) {
+    indices = indices.filter(function(idx) { return isTrackCached(tracks[idx].file); });
+  }
+  return indices;
+}
+
 function toggleShuffleFromList() {
   if (!isShuffled) {
     isShuffled = true;
     syncShuffleUI();
-    var indices = [];
-    for (var i = 0; i < tracks.length; i++) indices.push(i);
+    var indices = getVisibleIndices();
     shuffleArray(indices);
     playQueue = indices;
     playQueuePos = 0;
-    selectTrack(playQueue[0], true);
+    if (playQueue.length) selectTrack(playQueue[0], true);
   } else {
     toggleShuffle();
   }
@@ -3137,12 +3266,8 @@ function syncShuffleUI() {
 }
 
 function playFromList(trackIdx) {
-  // Build queue from current visible list (search results or all tracks)
-  var indices = filteredTracks;
-  if (!indices) {
-    indices = [];
-    for (var j = 0; j < tracks.length; j++) indices.push(j);
-  }
+  // Build queue from current visible list respecting cachedOnly filter
+  var indices = getVisibleIndices();
   playQueue = indices.slice();
   playQueuePos = playQueue.indexOf(trackIdx);
   if (playQueuePos < 0) playQueuePos = 0;
@@ -3279,25 +3404,32 @@ function resizeBgCanvas() {
   bgCvs.height = Math.floor(window.innerHeight / 2);
 }
 
+var _bgLastFrame = 0;
+
 function drawBg(t) {
-  if (!bgCtx) { requestAnimationFrame(drawBg); return; }
+  requestAnimationFrame(drawBg);
+  if (!bgCtx) return;
+  // Throttle to ~30fps (33ms) and skip when page is hidden
+  if (t - _bgLastFrame < 33 || document.hidden) return;
+  _bgLastFrame = t;
+
   var w = bgCvs.width, h = bgCvs.height;
   var s = t * 0.0002;
 
   // Lerp base color
-  bgBaseR += (bgTargetR - bgBaseR) * 0.02;
-  bgBaseG += (bgTargetG - bgBaseG) * 0.02;
-  bgBaseB += (bgTargetB - bgBaseB) * 0.02;
+  bgBaseR += (bgTargetR - bgBaseR) * 0.04;
+  bgBaseG += (bgTargetG - bgBaseG) * 0.04;
+  bgBaseB += (bgTargetB - bgBaseB) * 0.04;
 
   bgCtx.fillStyle = 'rgb('+Math.round(bgBaseR)+','+Math.round(bgBaseG)+','+Math.round(bgBaseB)+')';
   bgCtx.fillRect(0, 0, w, h);
 
+  var maxDim = Math.max(w, h);
   for (var i = 0; i < bgOrbs.length; i++) {
     var o = bgOrbs[i];
-    // Wider, slower movement
     var cx = (o.x + Math.sin(s * (0.7 + i * 0.4) + i * 1.5) * 0.25) * w;
     var cy = (o.y + Math.cos(s * (0.5 + i * 0.3) + i * 2.5) * 0.2) * h;
-    var radius = o.r * Math.max(w, h);
+    var radius = o.r * maxDim;
 
     var grad = bgCtx.createRadialGradient(cx, cy, 0, cx, cy, radius);
     grad.addColorStop(0, 'rgba('+o.cr+','+o.cg+','+o.cb+','+o.a+')');
@@ -3306,8 +3438,6 @@ function drawBg(t) {
     bgCtx.fillStyle = grad;
     bgCtx.fillRect(0, 0, w, h);
   }
-
-  requestAnimationFrame(drawBg);
 }
 
 function setBgPlaying(r, g, b) {
@@ -3398,29 +3528,90 @@ var currentUser = '';
 var isAdmin = false;
 var userRole = 'user';
 
+var _isOffline = false;
+
+function applyConfig(cfg) {
+  currentUser = cfg.username || '';
+  isAdmin = cfg.is_admin || false;
+  userRole = cfg.role || 'user';
+  savedFolders = cfg.folders || [];
+  renderFolderSelect();
+  if (!_isOffline) syncNetworkState();
+  var isDemo = userRole === 'demo';
+  var isLocalhost = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
+  document.getElementById('adminBtn').style.display = isAdmin ? '' : 'none';
+  document.getElementById('networkToggles').style.display = (isAdmin && !_isOffline && isLocalhost) ? 'flex' : 'none';
+  document.getElementById('downloadCatalogBtn').style.display = (isAdmin && !_isOffline) ? '' : 'none';
+  document.getElementById('metaVkRow').style.display = (isDemo || _isOffline) ? 'none' : '';
+  document.getElementById('addFolderBtn').style.display = (isDemo || _isOffline) ? 'none' : '';
+  document.getElementById('removeFolderBtn').style.display = (isDemo || _isOffline) ? 'none' : '';
+}
+
+function showOfflineBanner(show) {
+  var banner = document.getElementById('offlineBanner');
+  if (!banner) {
+    banner = document.createElement('div');
+    banner.id = 'offlineBanner';
+    banner.style.cssText = 'position:fixed;bottom:72px;left:50%;transform:translateX(-50%);z-index:9999;background:rgba(30,30,30,0.85);color:rgba(255,255,255,0.6);text-align:center;padding:6px 16px;font-size:11px;border-radius:20px;pointer-events:none;transition:opacity .3s;backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);border:1px solid rgba(255,255,255,0.08);';
+    banner.textContent = 'Офлайн — только кэшированные треки';
+    document.body.appendChild(banner);
+  }
+  banner.style.opacity = show ? '1' : '0';
+}
+
 function loadConfig() {
+  // Instant: restore from cache first so UI is not empty
+  var hadCache = false;
+  try {
+    var saved = localStorage.getItem('_vc_config');
+    if (saved) {
+      var cached = JSON.parse(saved);
+      applyConfig(cached);
+      if (cached.last_folder) {
+        document.getElementById('folderSelect').value = cached.last_folder;
+        loadFolderCacheFirst(cached.last_folder);
+      }
+      hadCache = true;
+    }
+  } catch(e){}
+  if (!hadCache) showLoadingIndicator();
+  // Then fetch fresh data from server
   fetch('/api/config').then(function(r){return r.json()}).then(function(cfg) {
     if (cfg.error === 'unauthorized') { window.location.reload(); return; }
-    currentUser = cfg.username || '';
-    isAdmin = cfg.is_admin || false;
-    userRole = cfg.role || 'user';
-    savedFolders = cfg.folders || [];
-    renderFolderSelect();
-    syncNetworkState();
-    // Show/hide UI based on role
-    var isDemo = userRole === 'demo';
-    document.getElementById('adminBtn').style.display = isAdmin ? '' : 'none';
-    document.getElementById('networkToggles').style.display = isAdmin ? 'flex' : 'none';
-    document.getElementById('downloadCatalogBtn').style.display = isAdmin ? '' : 'none';
-    // Demo: hide add/remove folder, meta/vk row, edit button
-    document.getElementById('metaVkRow').style.display = isDemo ? 'none' : '';
-    document.getElementById('addFolderBtn').style.display = isDemo ? 'none' : '';
-    document.getElementById('removeFolderBtn').style.display = isDemo ? 'none' : '';
+    if (cfg.error === 'offline') { if (!hadCache) enterOfflineMode(); return; }
+    _isOffline = false;
+    showOfflineBanner(false);
+    try { localStorage.setItem('_vc_config', JSON.stringify(cfg)); } catch(e){}
+    applyConfig(cfg);
     if (cfg.last_folder) {
       document.getElementById('folderSelect').value = cfg.last_folder;
       loadFolder(cfg.last_folder);
     }
+  }).catch(function() {
+    if (!hadCache) enterOfflineMode();
   });
+}
+
+function showLoadingIndicator() {
+  document.getElementById('trackList').innerHTML = '<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:40px 20px;color:rgba(255,255,255,0.3)">'
+    + '<div class="loading-spinner"></div><div style="margin-top:12px;font-size:13px">Загрузка...</div></div>';
+}
+
+function enterOfflineMode() {
+  _isOffline = true;
+  showOfflineBanner(true);
+  // Restore config from localStorage
+  try {
+    var saved = localStorage.getItem('_vc_config');
+    if (saved) {
+      var cfg = JSON.parse(saved);
+      applyConfig(cfg);
+      if (cfg.last_folder) {
+        document.getElementById('folderSelect').value = cfg.last_folder;
+        loadFolderOffline(cfg.last_folder);
+      }
+    }
+  } catch(e){}
 }
 
 function renderFolderSelect() {
@@ -3533,40 +3724,88 @@ function closeConfirm() {
   document.getElementById('confirmOverlay').classList.remove('show');
 }
 
+function applyFolderData(data) {
+  tracks = data.tracks;
+  albums = data.albums;
+  filteredTracks = null;
+  filteredAlbums = null;
+  document.getElementById('searchInput').value = '';
+  document.getElementById('searchClear').classList.remove('show');
+  isEditMode = false;
+  document.getElementById('editControls').style.display = 'none';
+  if (_isOffline) {
+    // In offline mode, force cached-only view
+    showCachedOnly = true;
+    var btn = document.getElementById('cachedOnlyBtn');
+    if (btn) btn.classList.add('active');
+  }
+  renderTracks();
+  renderAlbums();
+  checkIfNumbered();
+  buildDefaultQueue();
+  // Prefetch playlists for offline (even if not on playlists tab)
+  if (!_isOffline) {
+    var folder = document.getElementById('folderSelect').value;
+    if (folder) {
+      fetch('/api/playlists', {method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({folder: folder, action: 'list'})})
+      .then(function(r){return r.json()}).then(function(d) {
+        if (d.playlists) try { localStorage.setItem('_vc_playlists_' + folder, JSON.stringify(d.playlists)); } catch(e){}
+      }).catch(function(){});
+    }
+  }
+  if (activeTab === 'albums') {
+    document.getElementById('playlistHeader').textContent = albums.length + ' альбомов';
+  } else {
+    var vis = getVisibleIndices();
+    document.getElementById('playlistHeader').textContent = (_isOffline ? vis.length + ' из ' : '') + tracks.length + ' треков';
+  }
+}
+
+function loadFolderCacheFirst(path) {
+  // Show cached data instantly, then update from server
+  try {
+    var saved = localStorage.getItem('_vc_folder_' + path);
+    if (saved) {
+      applyFolderData(JSON.parse(saved));
+      return;
+    }
+  } catch(e){}
+  showLoadingIndicator();
+}
+
 function loadFolder(path, retries) {
   if (!path) return;
-  if (retries === undefined) retries = 3;
-  document.getElementById('playlistHeader').textContent = 'Загрузка...';
+  if (_isOffline) { loadFolderOffline(path); return; }
+  if (retries === undefined) retries = 2;
+  // Show loading only if no cached data visible
+  if (!tracks.length) showLoadingIndicator();
   fetch('/api/scan?path=' + encodeURIComponent(path))
     .then(function(r) { return r.json(); })
     .then(function(data) {
       if (data.error) {
+        if (data.error === 'offline') { if (!tracks.length) enterOfflineMode(); return; }
         if (retries > 0) { setTimeout(function(){ loadFolder(path, retries - 1); }, 1000); return; }
         showToast(data.error); return;
       }
-      tracks = data.tracks;
-      albums = data.albums;
-      filteredTracks = null;
-      filteredAlbums = null;
-      document.getElementById('searchInput').value = '';
-      document.getElementById('searchClear').classList.remove('show');
-      isEditMode = false;
-      document.getElementById('editControls').style.display = 'none';
-      renderTracks();
-      renderAlbums();
-      checkIfNumbered();
-      buildDefaultQueue();
-      if (activeTab === 'albums') {
-        document.getElementById('playlistHeader').textContent = albums.length + ' альбомов';
-      } else {
-        document.getElementById('playlistHeader').textContent = tracks.length + ' треков';
-      }
-      // Don't auto-select first track — show idle state
+      try { localStorage.setItem('_vc_folder_' + path, JSON.stringify(data)); } catch(e){}
+      applyFolderData(data);
     })
     .catch(function() {
       if (retries > 0) { setTimeout(function(){ loadFolder(path, retries - 1); }, 1000); }
-      else { document.getElementById('playlistHeader').textContent = 'Ошибка загрузки'; }
+      else if (!tracks.length) { enterOfflineMode(); }
     });
+}
+
+function loadFolderOffline(path) {
+  try {
+    var saved = localStorage.getItem('_vc_folder_' + path);
+    if (saved) {
+      applyFolderData(JSON.parse(saved));
+      return;
+    }
+  } catch(e){}
+  document.getElementById('playlistHeader').textContent = 'Нет кэшированных данных';
 }
 
 // ── Network state sync ──
@@ -3600,6 +3839,9 @@ function syncNetworkState() {
         lanPart += ' <a href="' + cfg.all_urls[u] + '" target="_blank" class="net-link">' + cfg.all_urls[u] + '</a>';
       }
       parts.push(lanPart);
+      if (cfg.all_urls[0] && cfg.all_urls[0].indexOf('https') === 0) {
+        parts.push('<span style="color:rgba(255,255,255,0.25)"><a href="/cert.pem" class="net-link" style="color:rgba(255,255,255,0.35)">Скачать сертификат</a> для устройств</span>');
+      }
     }
 
     if (parts.length) {
@@ -4421,6 +4663,9 @@ function openProfile() {
   document.getElementById('profileUser').textContent = 'Пользователь: ' + currentUser;
   document.getElementById('profOldPw').value = '';
   document.getElementById('profNewPw').value = '';
+  // Show cache stats
+  var count = Object.keys(cachedFiles).length;
+  document.getElementById('profileCacheInfo').textContent = count ? count + ' треков в кэше' : 'Кэш пуст';
   document.getElementById('profileOverlay').classList.add('show');
 }
 
@@ -4496,10 +4741,20 @@ var plEditTracks = [];
 function loadUserPlaylists() {
   var folder = document.getElementById('folderSelect').value;
   if (!folder) return;
+  if (_isOffline) {
+    try {
+      var saved = localStorage.getItem('_vc_playlists_' + folder);
+      if (saved) { userPlaylists = JSON.parse(saved); }
+    } catch(e){}
+    renderPlaylists();
+    document.getElementById('playlistHeader').textContent = userPlaylists.length + ' плейлистов';
+    return;
+  }
   fetch('/api/playlists', {method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({folder: folder, action: 'list'})})
   .then(function(r){return r.json()}).then(function(d) {
     userPlaylists = d.playlists || [];
+    try { localStorage.setItem('_vc_playlists_' + folder, JSON.stringify(userPlaylists)); } catch(e){}
     renderPlaylists();
     document.getElementById('playlistHeader').textContent = userPlaylists.length + ' плейлистов';
   });
@@ -4516,7 +4771,7 @@ function renderPlaylists() {
     var pl = userPlaylists[i];
     var isExp = expandedPlaylist === pl.id;
     var coverHtml = buildPlCover(pl);
-    html += '<div class="album-card' + (isExp ? ' active' : '') + '" onclick="togglePlaylistExpand(\'' + pl.id + '\')">'
+    html += '<div class="album-card pl-drag-card' + (isExp ? ' active' : '') + '" data-plid="' + pl.id + '" data-plidx="' + i + '" draggable="true" onclick="togglePlaylistExpand(\'' + pl.id + '\')">'
       + '<div class="album-cover" style="position:relative;overflow:hidden">' + coverHtml + '</div>'
       + '<div class="album-info"><div class="album-name">' + esc(pl.name) + '</div>'
       + '<div class="album-count">' + pl.tracks.length + ' треков</div></div>'
@@ -4532,19 +4787,161 @@ function renderPlaylists() {
         var t = tracks.find(function(tr){return tr.file===file});
         if (!t) continue;
         var trackIdx = tracks.indexOf(t);
-        html += '<div class="playlist-item' + (trackIdx === currentIdx ? ' active' : '') + '" onclick="event.stopPropagation();playFromPlaylist(\'' + pl.id + '\',' + ti + ')" style="padding-left:20px">'
+        var plCachedDot = isTrackCached(file) ? '<span style="width:5px;height:5px;border-radius:50%;background:#52b788;flex-shrink:0;margin-left:auto"></span>' : '';
+        var plOffDis = _isOffline && !isTrackCached(file);
+        html += '<div class="playlist-item' + (trackIdx === currentIdx ? ' active' : '') + '"'
+          + (plOffDis ? ' style="padding-left:20px;opacity:0.3;pointer-events:none"' : ' style="padding-left:20px"')
+          + (plOffDis ? '' : ' onclick="event.stopPropagation();playFromPlaylist(\'' + pl.id + '\',' + ti + ')"') + '>'
           + '<div class="info"><div class="name" style="font-size:12px">' + esc(t.title) + '</div>'
-          + '<div class="artist" style="font-size:11px">' + esc(t.artist) + '</div></div></div>';
+          + '<div class="artist" style="font-size:11px">' + esc(t.artist) + '</div></div>' + plCachedDot + '</div>';
       }
     }
     html += '</div>';
   }
   document.getElementById('playlistsList').innerHTML = html;
+  initPlDrag();
 }
 
 function togglePlaylistExpand(id) {
   expandedPlaylist = expandedPlaylist === id ? null : id;
   renderPlaylists();
+}
+
+// ── Playlist drag-and-drop reorder (desktop + mobile long-press) ──
+var _plDragIdx = null;
+var _plDragEl = null;
+var _plTouchTimer = null;
+var _plTouchDragging = false;
+var _plGhost = null;
+var _plCards = [];
+
+function initPlDrag() {
+  _plCards = Array.from(document.querySelectorAll('.pl-drag-card'));
+  // Container-level dragover/drop to catch drops between cards (on album-tracks divs)
+  var container = document.getElementById('playlistsList');
+  container.ondragover = function(e) { e.preventDefault(); };
+  container.ondrop = function(e) {
+    e.preventDefault();
+    _plCards.forEach(function(c){c.classList.remove('pl-drag-over')});
+    if (_plDragIdx === null) return;
+    // Find nearest card by Y position
+    var y = e.clientY;
+    var toIdx = _plDragIdx;
+    for (var ci = 0; ci < _plCards.length; ci++) {
+      var rect = _plCards[ci].getBoundingClientRect();
+      if (y >= rect.top && y <= rect.bottom) { toIdx = parseInt(_plCards[ci].dataset.plidx); break; }
+      if (y < rect.top) { toIdx = parseInt(_plCards[ci].dataset.plidx); break; }
+    }
+    if (_plDragIdx !== toIdx) plReorder(_plDragIdx, toIdx);
+    _plDragIdx = null;
+  };
+  _plCards.forEach(function(card) {
+    // Desktop drag
+    card.addEventListener('dragstart', function(e) {
+      _plDragIdx = parseInt(card.dataset.plidx);
+      card.style.opacity = '0.4';
+      e.dataTransfer.effectAllowed = 'move';
+    });
+    card.addEventListener('dragend', function() {
+      card.style.opacity = '';
+      _plDragIdx = null;
+      _plCards.forEach(function(c){c.classList.remove('pl-drag-over')});
+    });
+    card.addEventListener('dragover', function(e) { e.preventDefault(); });
+    card.addEventListener('dragenter', function(e) {
+      e.preventDefault();
+      _plCards.forEach(function(c){c.classList.remove('pl-drag-over')});
+      card.classList.add('pl-drag-over');
+    });
+    card.addEventListener('drop', function(e) {
+      e.preventDefault();
+      card.classList.remove('pl-drag-over');
+      var toIdx = parseInt(card.dataset.plidx);
+      if (_plDragIdx !== null && _plDragIdx !== toIdx) {
+        plReorder(_plDragIdx, toIdx);
+      }
+      _plDragIdx = null;
+    });
+    // Mobile long-press drag
+    card.addEventListener('touchstart', function(e) {
+      if (e.touches.length !== 1) return;
+      var startY = e.touches[0].clientY;
+      _plTouchDragging = false;
+      _plDragIdx = parseInt(card.dataset.plidx);
+      _plTouchTimer = setTimeout(function() {
+        _plTouchDragging = true;
+        _plDragEl = card;
+        card.style.opacity = '0.4';
+        // Create ghost element
+        _plGhost = document.createElement('div');
+        _plGhost.textContent = card.querySelector('.album-name').textContent;
+        _plGhost.style.cssText = 'position:fixed;left:16px;padding:8px 16px;background:#e94560;color:#fff;border-radius:8px;font-size:13px;pointer-events:none;z-index:9999;transition:none;';
+        _plGhost.style.top = startY + 'px';
+        document.body.appendChild(_plGhost);
+      }, 400);
+    }, {passive: true});
+    card.addEventListener('touchmove', function(e) {
+      if (!_plTouchDragging) {
+        clearTimeout(_plTouchTimer);
+        return;
+      }
+      e.preventDefault();
+      var touch = e.touches[0];
+      if (_plGhost) _plGhost.style.top = touch.clientY + 'px';
+      // Find card under finger
+      _plCards.forEach(function(c){c.classList.remove('pl-drag-over')});
+      var el = document.elementFromPoint(touch.clientX, touch.clientY);
+      if (el) {
+        var target = el.closest('.pl-drag-card');
+        if (target) target.classList.add('pl-drag-over');
+      }
+    }, {passive: false});
+    card.addEventListener('touchend', function(e) {
+      clearTimeout(_plTouchTimer);
+      if (!_plTouchDragging) { _plDragIdx = null; return; }
+      _plTouchDragging = false;
+      if (_plDragEl) _plDragEl.style.opacity = '';
+      _plDragEl = null;
+      if (_plGhost) { _plGhost.remove(); _plGhost = null; }
+      _plCards.forEach(function(c){c.classList.remove('pl-drag-over')});
+      // Find drop target
+      if (e.changedTouches.length) {
+        var touch = e.changedTouches[0];
+        var el = document.elementFromPoint(touch.clientX, touch.clientY);
+        if (el) {
+          var target = el.closest('.pl-drag-card');
+          if (target) {
+            var toIdx = parseInt(target.dataset.plidx);
+            if (_plDragIdx !== null && _plDragIdx !== toIdx) {
+              plReorder(_plDragIdx, toIdx);
+            }
+          }
+        }
+      }
+      _plDragIdx = null;
+    });
+    card.addEventListener('touchcancel', function() {
+      clearTimeout(_plTouchTimer);
+      _plTouchDragging = false;
+      if (_plDragEl) _plDragEl.style.opacity = '';
+      _plDragEl = null;
+      if (_plGhost) { _plGhost.remove(); _plGhost = null; }
+      _plCards.forEach(function(c){c.classList.remove('pl-drag-over')});
+      _plDragIdx = null;
+    });
+  });
+}
+
+function plReorder(fromIdx, toIdx) {
+  var item = userPlaylists.splice(fromIdx, 1)[0];
+  userPlaylists.splice(toIdx, 0, item);
+  expandedPlaylist = null;
+  renderPlaylists();
+  // Save to server
+  var order = userPlaylists.map(function(p){return p.id});
+  var folder = document.getElementById('folderSelect').value;
+  fetch('/api/playlists', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({folder: folder, action: 'reorder', order: order})});
 }
 
 function playFromPlaylist(plId, trackIndex) {
@@ -5082,8 +5479,30 @@ function openTrackEdit(idx) {
     document.getElementById('trackEditOrder').value = '';
     hint.textContent = '(нет номера — введите чтобы назначить)';
   }
+  // Show cache status
+  var cacheRow = document.getElementById('trackEditCacheRow');
+  cacheRow.style.display = isTrackCached(t.file) ? 'flex' : 'none';
   document.getElementById('trackEditOverlay').classList.add('show');
   document.getElementById('trackEditTitle').focus();
+}
+
+function uncacheEditTrack() {
+  if (editingTrackIdx < 0 || editingTrackIdx >= tracks.length) return;
+  var file = tracks[editingTrackIdx].file;
+  // Remove audio and cover from cache
+  openCacheDB(function(db) {
+    var tx = db.transaction('audio', 'readwrite');
+    var store = tx.objectStore('audio');
+    store.delete(file);
+    store.delete('cover:' + file);
+    tx.oncomplete = function() {
+      delete cachedFiles[file];
+      document.getElementById('trackEditCacheRow').style.display = 'none';
+      renderTracks();
+      renderAlbums();
+      showToast('Удалено из кэша');
+    };
+  });
 }
 
 function saveTrackEdit() {
@@ -5168,58 +5587,119 @@ function scrollTracklistTop() {
 })();
 
 // Init background, media session, and load config
-// ── Service Worker & Cache ──
-var cachedUrls = {};
-var cacheDownloading = false;
+// ── Offline Cache via IndexedDB (works on HTTP, LAN, WAN) ──
+var cachedFiles = {};
+var cacheQueue = [];
+var cachingActive = false;
+var cacheTotalCount = 0;
+var showCachedOnly = false;
+var _cacheDB = null;
 var _isIOSDevice = /iPad|iPhone|iPod/.test(navigator.userAgent) || (/Mac/.test(navigator.userAgent) && navigator.maxTouchPoints > 1);
 
-if ('serviceWorker' in navigator) {
-  navigator.serviceWorker.register('/sw.js').then(function() {
-    refreshCachedList();
-  });
-  navigator.serviceWorker.addEventListener('message', function(e) {
-    if (e.data.action === 'cachedList') {
-      cachedUrls = {};
-      for (var i = 0; i < e.data.urls.length; i++) cachedUrls[e.data.urls[i]] = true;
-      if (typeof renderTracks === 'function' && activeTab === 'tracks') renderTracks();
-    } else if (e.data.action === 'cached') {
-      cachedUrls[new URL(e.data.url, location.origin).pathname] = true;
-      cacheNextInQueue();
-    } else if (e.data.action === 'cacheFailed') {
-      cacheNextInQueue();
-    } else if (e.data.action === 'uncached') {
-      delete cachedUrls[new URL(e.data.url, location.origin).pathname];
-      if (typeof renderTracks === 'function') renderTracks();
-    } else if (e.data.action === 'cacheSize') {
-      showToast('Кэш: ' + e.data.count + ' треков, ' + (e.data.size / 1024 / 1024).toFixed(1) + ' МБ');
-    }
-  });
+function openCacheDB(cb) {
+  if (_cacheDB) { cb(_cacheDB); return; }
+  var req = indexedDB.open('vinylCache', 1);
+  req.onupgradeneeded = function(e) {
+    var db = e.target.result;
+    if (!db.objectStoreNames.contains('audio')) db.createObjectStore('audio');
+  };
+  req.onsuccess = function(e) { _cacheDB = e.target.result; cb(_cacheDB); };
+  req.onerror = function() { showToast('Не удалось открыть кэш'); };
 }
 
 function refreshCachedList() {
-  if (navigator.serviceWorker.controller) {
-    navigator.serviceWorker.controller.postMessage({action: 'getCachedList'});
-  }
+  openCacheDB(function(db) {
+    var tx = db.transaction('audio', 'readonly');
+    var store = tx.objectStore('audio');
+    var req = store.getAllKeys();
+    req.onsuccess = function() {
+      cachedFiles = {};
+      for (var i = 0; i < req.result.length; i++) if (req.result[i].indexOf('cover:') !== 0) cachedFiles[req.result[i]] = true;
+      if (typeof renderTracks === 'function') renderTracks();
+      // Pre-build blob URLs for ALL cached tracks (critical for iOS PWA)
+      preloadAllCachedBlobs();
+    };
+  });
 }
 
-var cacheQueue = [];
-var cachingActive = false;
-var showCachedOnly = false;
+function preloadAllCachedBlobs() {
+  var files = Object.keys(cachedFiles);
+  var idx = 0;
+  function next() {
+    if (idx >= files.length) return;
+    var file = files[idx++];
+    if (_blobUrlCache[file]) { next(); return; }
+    getCachedAudio(file, function(buf) {
+      if (buf) _blobUrlCache[file] = makeBlobUrl(buf, file);
+      // Small delay between reads to avoid blocking UI
+      setTimeout(next, 10);
+    });
+  }
+  next();
+}
 
-function cacheTrack(file) {
-  if (!navigator.serviceWorker.controller) return;
+function isTrackCached(file) { return !!cachedFiles[file]; }
+
+function cacheTrack(file, onDone) {
   var url = '/api/stream/' + encodeURIComponent(file);
-  navigator.serviceWorker.controller.postMessage({action: 'cacheTrack', url: url});
+  fetch(url).then(function(r) {
+    if (!r.ok) throw new Error('fetch failed');
+    return r.arrayBuffer();
+  }).then(function(buf) {
+    openCacheDB(function(db) {
+      var tx = db.transaction('audio', 'readwrite');
+      tx.objectStore('audio').put(buf, file);
+      tx.oncomplete = function() {
+        cachedFiles[file] = true;
+        // Also cache cover art if available
+        cacheCover(file);
+        if (onDone) onDone(true);
+      };
+      tx.onerror = function() { if (onDone) onDone(false); };
+    });
+  }).catch(function() { if (onDone) onDone(false); });
+}
+
+function cacheCover(file) {
+  var url = '/api/cover/' + encodeURIComponent(file);
+  fetch(url).then(function(r) {
+    if (!r.ok) return;
+    return r.arrayBuffer();
+  }).then(function(buf) {
+    if (!buf) return;
+    openCacheDB(function(db) {
+      var tx = db.transaction('audio', 'readwrite');
+      tx.objectStore('audio').put(buf, 'cover:' + file);
+    });
+  }).catch(function() {});
+}
+
+function getCachedCover(file, cb) {
+  openCacheDB(function(db) {
+    var tx = db.transaction('audio', 'readonly');
+    var req = tx.objectStore('audio').get('cover:' + file);
+    req.onsuccess = function() { cb(req.result || null); };
+    req.onerror = function() { cb(null); };
+  });
 }
 
 function uncacheTrack(file) {
-  if (!navigator.serviceWorker.controller) return;
-  var url = '/api/stream/' + encodeURIComponent(file);
-  navigator.serviceWorker.controller.postMessage({action: 'uncacheTrack', url: url});
+  openCacheDB(function(db) {
+    var tx = db.transaction('audio', 'readwrite');
+    var store = tx.objectStore('audio');
+    store.delete(file);
+    store.delete('cover:' + file);
+    tx.oncomplete = function() { delete cachedFiles[file]; renderTracks(); renderAlbums(); showToast('Удалено из кэша'); };
+  });
 }
 
-function isTrackCached(file) {
-  return cachedUrls['/api/stream/' + encodeURIComponent(file)] || false;
+function getCachedAudio(file, cb) {
+  openCacheDB(function(db) {
+    var tx = db.transaction('audio', 'readonly');
+    var req = tx.objectStore('audio').get(file);
+    req.onsuccess = function() { cb(req.result || null); };
+    req.onerror = function() { cb(null); };
+  });
 }
 
 function startCacheAll() {
@@ -5229,9 +5709,8 @@ function startCacheAll() {
     if (!isTrackCached(tracks[i].file)) files.push(tracks[i].file);
   }
   if (!files.length) { showToast('Все треки уже в кэше'); return; }
-  // iOS warning
   if (_isIOSDevice && files.length > 100) {
-    showConfirm('На iOS кэш ограничен ~1 ГБ и может быть очищен через 7 дней без использования. Загрузить ' + files.length + ' треков?', function() {
+    showConfirm('На iOS кэш ограничен ~1 ГБ и может быть очищен через 7 дней. Загрузить ' + files.length + ' треков?', function() {
       beginCaching(files);
     }, 'Загрузить');
     return;
@@ -5239,13 +5718,7 @@ function startCacheAll() {
   beginCaching(files);
 }
 
-var cacheTotalCount = 0;
-
 function beginCaching(files) {
-  if (!navigator.serviceWorker || !navigator.serviceWorker.controller) {
-    showToast('Service Worker не активен. Перезагрузите страницу.');
-    return;
-  }
   cacheQueue = files.slice();
   cacheTotalCount = files.length;
   cachingActive = true;
@@ -5256,20 +5729,17 @@ function beginCaching(files) {
 
 function cacheNextInQueue() {
   if (!cachingActive || !cacheQueue.length) {
-    var wasCaching = cachingActive;
+    var was = cachingActive;
     cachingActive = false;
     updateCacheBtn();
-    if (wasCaching) {
-      showToast('Кэширование завершено');
-      refreshCachedList();
-    }
+    if (was) { showToast('Кэширование завершено'); refreshCachedList(); }
     return;
   }
   var done = cacheTotalCount - cacheQueue.length;
   showToast('Кэширование: ' + done + '/' + cacheTotalCount);
   var file = cacheQueue.shift();
   updateCacheBtn();
-  cacheTrack(file);
+  cacheTrack(file, function() { cacheNextInQueue(); });
 }
 
 function stopCacheAll() {
@@ -5282,12 +5752,7 @@ function stopCacheAll() {
 
 function updateCacheBtn() {
   var btn = document.getElementById('cacheBtn');
-  if (!btn) return;
-  if (cachingActive) {
-    btn.classList.add('active');
-  } else {
-    btn.classList.remove('active');
-  }
+  if (btn) btn.classList.toggle('active', cachingActive);
 }
 
 function cachePlaylist(plId) {
@@ -5305,10 +5770,79 @@ function toggleCachedOnly() {
   renderTracks();
 }
 
+function clearAllCache() {
+  var count = Object.keys(cachedFiles).length;
+  if (!count) { showToast('Кэш пуст'); return; }
+  showConfirm('Удалить все закэшированные треки (' + count + ')?', function() {
+    openCacheDB(function(db) {
+      var tx = db.transaction('audio', 'readwrite');
+      tx.objectStore('audio').clear();
+      tx.oncomplete = function() {
+        cachedFiles = {};
+        renderTracks();
+        renderAlbums();
+        document.getElementById('profileCacheInfo').textContent = 'Кэш пуст';
+        showToast('Кэш очищен');
+      };
+    });
+  }, 'Удалить');
+}
+
+// Init cache on load
+openCacheDB(function() { refreshCachedList(); });
+
+// Register Service Worker for offline app shell (HTTPS or localhost only)
+if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1')) {
+  navigator.serviceWorker.register('/sw.js').then(function(reg) {
+    // After SW activates, ensure current page is cached (with auth cookies)
+    if (reg.active) {
+      warmAppCache();
+    } else {
+      navigator.serviceWorker.ready.then(function() { warmAppCache(); });
+    }
+    // Listen for SW telling us to reload (after update)
+    navigator.serviceWorker.addEventListener('message', function(e) {
+      if (e.data && e.data.action === 'reload') {
+        window.location.reload();
+      }
+    });
+  }).catch(function(){});
+}
+function warmAppCache() {
+  if (!('caches' in window)) return;
+  caches.open('app-APP_BUILD_HASH').then(function(cache) {
+    cache.match('/').then(function(r) {
+      if (!r) {
+        // No cached page yet — fetch with credentials and store
+        fetch('/', {credentials:'same-origin'}).then(function(resp) {
+          if (resp.ok) cache.put('/', resp);
+        });
+      }
+    });
+  });
+}
+
 initBgCanvas();
 // Hide volume slider on iOS (audio.volume is read-only)
 if(_isIOS){var vw=document.querySelector('.volume-wrap input[type=range]');if(vw)vw.style.display='none';var vs=document.querySelector('.volume-wrap span');if(vs)vs.style.display='none';}
 initMediaSession();
+
+// Detect online/offline transitions
+window.addEventListener('online', function() {
+  if (_isOffline) {
+    _isOffline = false;
+    showOfflineBanner(false);
+    showCachedOnly = false;
+    var btn = document.getElementById('cachedOnlyBtn');
+    if (btn) btn.classList.remove('active');
+    loadConfig();
+    showToast('Подключение восстановлено');
+  }
+});
+window.addEventListener('offline', function() {
+  if (!_isOffline) enterOfflineMode();
+});
+
 loadConfig();
 </script>
 </body>
@@ -5423,11 +5957,29 @@ class Handler(BaseHTTPRequestHandler):
             if not users or not user:
                 self._respond(200, "text/html", LOGIN_PAGE.encode("utf-8"))
                 return
-            page = HTML_PAGE.replace("PORT_PLACEHOLDER", str(SERVER_PORT))
+            build_hash = hashlib.md5(HTML_PAGE.encode()).hexdigest()[:8]
+            page = HTML_PAGE.replace("PORT_PLACEHOLDER", str(SERVER_PORT)).replace("APP_BUILD_HASH", build_hash)
             self._respond(200, "text/html", page.encode("utf-8"))
 
         elif path == "/sw.js":
-            self._respond(200, "application/javascript", SW_JS.encode("utf-8"))
+            # Inject build hash so SW updates when app changes
+            build_hash = hashlib.md5(HTML_PAGE.encode()).hexdigest()[:8]
+            sw_code = SW_JS.replace("BUILD_HASH", build_hash)
+            self._respond(200, "application/javascript", sw_code.encode("utf-8"))
+            return
+
+        elif path == "/cert.pem":
+            # Download CA cert for installing on devices (trust self-signed)
+            if CERT_FILE.exists():
+                cert_data = CERT_FILE.read_bytes()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/x-pem-file")
+                self.send_header("Content-Disposition", "attachment; filename=\"insideside-music.pem\"")
+                self.send_header("Content-Length", str(len(cert_data)))
+                self.end_headers()
+                self.wfile.write(cert_data)
+            else:
+                self._respond(404, "text/plain", b"No cert")
             return
 
         if not user:
@@ -5440,8 +5992,9 @@ class Handler(BaseHTTPRequestHandler):
             folders = get_user_folders(user)
             last = get_user_last_folder(user)
             local_ip = get_local_ip()
-            lan_url = "http://{}:{}".format(local_ip, SERVER_PORT) if IS_PUBLIC else None
-            all_urls = ["http://{}:{}".format(ip, SERVER_PORT) for ip in get_all_local_ips()] if IS_PUBLIC else []
+            proto = "https" if _use_https else "http"
+            lan_url = "{}://{}:{}".format(proto, local_ip, SERVER_PORT) if IS_PUBLIC else None
+            all_urls = ["{}://{}:{}".format(proto, ip, SERVER_PORT) for ip in get_all_local_ips()] if IS_PUBLIC else []
             self._respond_json({
                 "folders": folders,
                 "last_folder": last,
@@ -5534,6 +6087,8 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/wan/status":
             active = _tunnel_proc is not None and _tunnel_proc.poll() is None
             self._respond_json({"active": active, "url": _tunnel_url})
+
+
 
         elif path == "/api/admin/download_catalog":
             # Admin-only: ZIP catalog to temp file, stream it
@@ -5868,16 +6423,31 @@ class Handler(BaseHTTPRequestHandler):
                 self._respond_json({"ok": False, "error": "Нет доступа."})
                 return
             enabled = data.get("enabled", False)
-            global IS_PUBLIC
+            global IS_PUBLIC, _use_https
             IS_PUBLIC = enabled
             local_ip = get_local_ip()
             if enabled:
+                # Auto-enable HTTPS for LAN (needed for SW offline shell)
+                https_ok = _use_https
+                if not _use_https:
+                    if _generate_self_signed_cert():
+                        _use_https = True
+                        https_ok = True
+                        s = load_settings()
+                        s["https"] = True
+                        save_settings(s)
+                proto = "https" if https_ok else "http"
                 all_ips = get_all_local_ips()
-                lan_url = "http://{}:{}".format(local_ip, SERVER_PORT)
-                all_urls = ["http://{}:{}".format(ip, SERVER_PORT) for ip in all_ips]
-                self._respond_json({"ok": True, "public": True, "lan_url": lan_url, "ip": local_ip, "all_urls": all_urls})
+                lan_url = "{}://{}:{}".format(proto, local_ip, SERVER_PORT)
+                all_urls = ["{}://{}:{}".format(proto, ip, SERVER_PORT) for ip in all_ips]
+                self._respond_json({"ok": True, "public": True, "lan_url": lan_url, "ip": local_ip, "all_urls": all_urls, "https": https_ok})
                 threading.Timer(0.3, _restart_server, args=["0.0.0.0"]).start()
             else:
+                if _use_https:
+                    _use_https = False
+                    s = load_settings()
+                    s["https"] = False
+                    save_settings(s)
                 self._respond_json({"ok": True, "public": False})
                 threading.Timer(0.3, _restart_server, args=["127.0.0.1"]).start()
 
@@ -6295,6 +6865,21 @@ class Handler(BaseHTTPRequestHandler):
                 save_playlists(folder, playlists)
                 self._respond_json({"ok": True})
 
+            elif action == "reorder":
+                order = data.get("order", [])  # list of playlist IDs in new order
+                if order:
+                    by_id = {p["id"]: p for p in playlists}
+                    reordered = [by_id[pid] for pid in order if pid in by_id]
+                    # Append any playlists not in the order list
+                    seen = set(order)
+                    for p in playlists:
+                        if p["id"] not in seen:
+                            reordered.append(p)
+                    save_playlists(folder, reordered)
+                    self._respond_json({"ok": True})
+                else:
+                    self._respond_json({"ok": False, "error": "Пустой порядок."})
+
             else:
                 self._respond_json({"ok": False, "error": "Неизвестное действие."})
 
@@ -6464,9 +7049,13 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         pass
 
+    def handle(self):
+        try:
+            super().handle()
+        except (ConnectionResetError, BrokenPipeError, ssl.SSLError, OSError):
+            pass  # Client disconnected during SSL handshake or request
 
-import socket
-import subprocess
+
 import signal
 
 _tunnel_proc = None
@@ -6585,6 +7174,55 @@ def stop_tunnel():
         pass
 
 
+CERT_FILE = Path.home() / ".vinyl_cert.pem"
+KEY_FILE = Path.home() / ".vinyl_key.pem"
+_use_https = False
+
+
+def _cert_covers_current_ips():
+    """Check if existing cert SAN covers all current local IPs."""
+    if not CERT_FILE.exists():
+        return False
+    try:
+        out = subprocess.check_output(
+            ["openssl", "x509", "-in", str(CERT_FILE), "-noout", "-ext", "subjectAltName"],
+            stderr=subprocess.DEVNULL, timeout=5
+        ).decode()
+        current_ips = set(get_all_local_ips()) | {"127.0.0.1"}
+        for ip in current_ips:
+            if "IP Address:" + ip not in out:
+                return False
+        return True
+    except Exception:
+        return False
+
+
+def _generate_self_signed_cert(force=False):
+    """Генерирует self-signed сертификат для HTTPS (LAN/offline)."""
+    if not force and CERT_FILE.exists() and KEY_FILE.exists():
+        # Check if cert covers current IPs
+        if _cert_covers_current_ips():
+            return True
+        print("HTTPS: IP изменился, перегенерирую сертификат...")
+    try:
+        san_ips = list(set(["127.0.0.1"] + get_all_local_ips()))
+        # Add common private ranges to avoid regeneration on IP changes
+        san_entries = ",".join("IP:" + ip for ip in san_ips) + ",DNS:localhost"
+        subprocess.run([
+            "openssl", "req", "-x509", "-newkey", "rsa:2048",
+            "-keyout", str(KEY_FILE), "-out", str(CERT_FILE),
+            "-days", "3650", "-nodes",
+            "-subj", "/CN=insideside-music",
+            "-addext", "subjectAltName=" + san_entries
+        ], capture_output=True, timeout=10, check=True)
+        os.chmod(str(KEY_FILE), 0o600)
+        os.chmod(str(CERT_FILE), 0o600)
+        return True
+    except Exception as ex:
+        print(f"HTTPS: не удалось создать сертификат: {ex}")
+        return False
+
+
 class ReusableHTTPServer(HTTPServer):
     allow_reuse_address = True
 
@@ -6637,8 +7275,8 @@ def get_local_ip():
 
 
 def _start_server(bind_addr):
-    """Запускает HTTP-сервер в фоновом потоке."""
-    global _server, _server_thread
+    """Запускает HTTP/HTTPS-сервер в фоновом потоке."""
+    global _server, _server_thread, _use_https
     with _server_lock:
         if _server:
             try:
@@ -6649,6 +7287,11 @@ def _start_server(bind_addr):
             _server = None
         time.sleep(0.5)  # дать порту освободиться
         srv = ReusableHTTPServer((bind_addr, SERVER_PORT), Handler)
+        # Wrap with SSL if HTTPS enabled and cert exists
+        if _use_https and CERT_FILE.exists() and KEY_FILE.exists():
+            ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            ctx.load_cert_chain(str(CERT_FILE), str(KEY_FILE))
+            srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
         _server = srv
     _server_thread = threading.Thread(target=srv.serve_forever, daemon=True)
     _server_thread.start()
@@ -6660,7 +7303,7 @@ def _restart_server(bind_addr):
 
 
 def main():
-    global IS_PUBLIC
+    global IS_PUBLIC, _use_https
     _load_sessions()
     public = "--public" in sys.argv
     IS_PUBLIC = public
@@ -6673,19 +7316,26 @@ def main():
         bind_addr = "0.0.0.0"
         print("Restoring WAN static: http://{}:{}".format(s["wan_ip"], s.get("wan_port", SERVER_PORT)))
 
+    # Auto-restore HTTPS setting
+    if s.get("https"):
+        if _generate_self_signed_cert():
+            _use_https = True
+            print("HTTPS enabled")
+
     _start_server(bind_addr)
 
     # Apply saved WAN after server starts
     if s.get("wan_mode") == "static" and s.get("wan_ip"):
         set_wan_static(s["wan_ip"], s.get("wan_port", str(SERVER_PORT)))
 
-    url = "http://127.0.0.1:{}".format(SERVER_PORT)
+    proto = "https" if _use_https else "http"
+    url = "{}://127.0.0.1:{}".format(proto, SERVER_PORT)
     import base64 as _b64
     _an = _b64.b64decode("aW5zaWRlc2lkZSBtdXNpYw==").decode()
     print(_an + ": " + url)
     if public or IS_PUBLIC:
         local_ip = get_local_ip()
-        print("LAN: http://{}:{}".format(local_ip, SERVER_PORT))
+        print("LAN: {}://{}:{}".format(proto, local_ip, SERVER_PORT))
     print("Ctrl+C для остановки")
     webbrowser.open(url)
 
