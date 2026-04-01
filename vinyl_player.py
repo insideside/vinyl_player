@@ -3797,7 +3797,7 @@ function renderImpMatches() {
         + '<input type="checkbox" checked class="imp-check" data-idx="'+i+'" style="accent-color:#e94560;margin-top:2px;flex-shrink:0">'
         + '<div class="orig"><div>'+esc(m.original_artist)+' — '+esc(m.original_title)+'</div></div>'
         + '<div class="vk"><div>'+esc(m.vk_artist)+' — '+esc(m.vk_title)+' <span style="color:rgba(255,255,255,0.2)">'+dur+'</span></div>'
-        + '<button class="folder-btn folder-btn-secondary" style="padding:2px 6px;font-size:10px;margin-top:2px" onclick="reSearchTrack('+i+')">другой</button></div>'
+        + '<button class="folder-btn folder-btn-secondary" style="padding:2px 6px;font-size:10px;margin-top:2px" onclick="reSearchTrack('+i+')">найти другую версию</button></div>'
         + '<span class="drag-handle" style="cursor:grab;color:rgba(255,255,255,0.15)">≡</span></div>';
     } else {
       html += '<div class="imp-match" style="opacity:0.4">'
