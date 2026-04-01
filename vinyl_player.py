@@ -6004,6 +6004,28 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path
 
+        # Reset page — clears SW cache, not intercepted by SW
+        if path == "/reset":
+            self._respond(200, "text/html", b"""<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Reset</title>
+<style>body{background:#111;color:#eee;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0}
+.box{text-align:center;padding:20px}h2{color:#e94560}p{color:rgba(255,255,255,0.5);font-size:14px;margin:12px 0}</style></head>
+<body><div class="box"><h2>Reset</h2><p id="s">Clearing cache...</p></div>
+<script>
+(async function(){
+  var s=document.getElementById('s');
+  try{
+    var regs=await navigator.serviceWorker.getRegistrations();
+    for(var r of regs) await r.unregister();
+    s.textContent='SW unregistered ('+regs.length+')...';
+    var names=await caches.keys();
+    for(var n of names) await caches.delete(n);
+    s.textContent='Caches cleared ('+names.length+'). Redirecting...';
+  }catch(e){s.textContent='Error: '+e.message;}
+  setTimeout(function(){window.location.href='/';},1500);
+})();
+</script></body></html>""")
+            return
+
         # Auth check
         if path.startswith("/api/auth/"):
             return self._handle_auth_get(path, parsed)
