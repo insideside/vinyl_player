@@ -1357,6 +1357,127 @@ def metadata_apply(music_dir, proposals, username=""):
 
 # ──────────────────── HTML ────────────────────
 
+SW_JS = """
+var CACHE_APP = 'app-v1';
+var CACHE_AUDIO = 'audio-v1';
+
+self.addEventListener('install', function(e) {
+  e.waitUntil(self.skipWaiting());
+});
+
+self.addEventListener('activate', function(e) {
+  e.waitUntil(self.clients.claim());
+});
+
+self.addEventListener('fetch', function(e) {
+  var url = new URL(e.request.url);
+
+  // Audio streams — serve from audio cache if available
+  if (url.pathname.startsWith('/api/stream/')) {
+    e.respondWith(
+      caches.open(CACHE_AUDIO).then(function(cache) {
+        return cache.match(e.request).then(function(cached) {
+          if (cached) return cached;
+          return fetch(e.request).then(function(resp) {
+            // Don't auto-cache streams — only explicit cacheTrack calls
+            return resp;
+          }).catch(function() {
+            return new Response('Offline', {status: 503});
+          });
+        });
+      })
+    );
+    return;
+  }
+
+  // Cover images — cache on first load
+  if (url.pathname.startsWith('/api/cover/')) {
+    e.respondWith(
+      caches.open(CACHE_APP).then(function(cache) {
+        return cache.match(e.request).then(function(cached) {
+          if (cached) return cached;
+          return fetch(e.request).then(function(resp) {
+            if (resp.ok) cache.put(e.request, resp.clone());
+            return resp;
+          }).catch(function() {
+            return new Response('', {status: 404});
+          });
+        });
+      })
+    );
+    return;
+  }
+
+  // App shell — network first, fallback to cache
+  if (url.pathname === '/' || url.pathname === '/index.html') {
+    e.respondWith(
+      fetch(e.request).then(function(resp) {
+        var clone = resp.clone();
+        caches.open(CACHE_APP).then(function(c) { c.put(e.request, clone); });
+        return resp;
+      }).catch(function() {
+        return caches.match(e.request);
+      })
+    );
+    return;
+  }
+
+  // API calls — network only (except when offline)
+  if (url.pathname.startsWith('/api/')) {
+    e.respondWith(fetch(e.request).catch(function() {
+      return new Response(JSON.stringify({error:'offline'}), {headers:{'Content-Type':'application/json'}});
+    }));
+    return;
+  }
+});
+
+// Message API for explicit track caching
+self.addEventListener('message', function(e) {
+  if (e.data.action === 'cacheTrack') {
+    caches.open(CACHE_AUDIO).then(function(cache) {
+      fetch(e.data.url).then(function(resp) {
+        if (resp.ok) {
+          cache.put(e.data.url, resp).then(function() {
+            e.source.postMessage({action:'cached', url: e.data.url});
+          });
+        } else {
+          e.source.postMessage({action:'cacheFailed', url: e.data.url});
+        }
+      }).catch(function() {
+        e.source.postMessage({action:'cacheFailed', url: e.data.url});
+      });
+    });
+  } else if (e.data.action === 'uncacheTrack') {
+    caches.open(CACHE_AUDIO).then(function(cache) {
+      cache.delete(e.data.url).then(function() {
+        e.source.postMessage({action:'uncached', url: e.data.url});
+      });
+    });
+  } else if (e.data.action === 'getCachedList') {
+    caches.open(CACHE_AUDIO).then(function(cache) {
+      cache.keys().then(function(keys) {
+        var urls = keys.map(function(k) { return new URL(k.url).pathname; });
+        e.source.postMessage({action:'cachedList', urls: urls});
+      });
+    });
+  } else if (e.data.action === 'getCacheSize') {
+    caches.open(CACHE_AUDIO).then(function(cache) {
+      cache.keys().then(function(keys) {
+        var total = 0;
+        Promise.all(keys.map(function(k) {
+          return cache.match(k).then(function(r) {
+            var len = r.headers.get('content-length');
+            if (len) total += parseInt(len);
+          });
+        })).then(function() {
+          e.source.postMessage({action:'cacheSize', size: total, count: keys.length});
+        });
+      });
+    });
+  }
+});
+"""
+
 HTML_PAGE = r"""<!DOCTYPE html>
 <html lang="ru">
 <head>
@@ -2030,6 +2151,8 @@ body { overflow: hidden; touch-action: none; position: fixed; width: 100%; heigh
 
     <div class="playlist-header" style="display:flex;align-items:center;gap:8px">
       <button class="shuffle-btn" id="downloadCatalogBtn" onclick="downloadCatalog()" data-tip="Скачать каталог" style="display:none"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg></button>
+      <button class="shuffle-btn" id="cacheBtn" onclick="startCacheAll()" data-tip="Кэшировать для офлайн"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.49 2 2 6.49 2 12s4.49 10 10 10 10-4.49 10-10S17.51 2 12 2zm-1 14.5v-9l6 4.5-6 4.5z"/></svg></button>
+      <button class="shuffle-btn" id="cachedOnlyBtn" onclick="toggleCachedOnly()" data-tip="Только кэш"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg></button>
       <span id="playlistHeader" style="flex:1;cursor:pointer" onclick="scrollTracklistTop()">0 треков</span>
       <button class="shuffle-btn" id="shuffleListBtn" onclick="toggleShuffleFromList()" data-tip="Перемешать"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M10.59 9.17L5.41 4 4 5.41l5.17 5.17 1.42-1.41zM14.5 4l2.04 2.04L4 18.59 5.41 20 17.96 7.46 20 9.5V4h-5.5zm.33 9.41l-1.41 1.41 3.13 3.13L14.5 20H20v-5.5l-2.04 2.04-3.13-3.13z"/></svg></button>
       <button class="shuffle-btn" id="editBtn" onclick="startEdit()" data-tip="Редактировать порядок" style="display:none"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 000-1.41l-2.34-2.34a1 1 0 00-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg></button>
@@ -2762,6 +2885,10 @@ function renderTracks() {
     indices = [];
     for (var j = 0; j < tracks.length; j++) indices.push(j);
   }
+  // Filter cached only
+  if (showCachedOnly) {
+    indices = indices.filter(function(idx) { return isTrackCached(tracks[idx].file); });
+  }
   for (var ii = 0; ii < indices.length; ii++) {
     var i = indices[ii];
     var t = tracks[i];
@@ -2782,6 +2909,7 @@ function renderTracks() {
         + '<div class="cover-thumb">' + coverHtml + '</div>'
         + '<div class="info"><div class="name">' + esc(t.title) + '</div>'
         + '<div class="artist">' + esc(t.artist) + '</div></div>'
+        + (isTrackCached(t.file) ? '<span style="width:6px;height:6px;border-radius:50%;background:#52b788;flex-shrink:0" data-tip="В кэше"></span>' : '')
         + (userRole !== 'demo' ? '<button class="track-edit-btn" onclick="event.stopPropagation();openTrackEdit(' + i + ')" data-tip="Редактировать"><svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 000-1.41l-2.34-2.34a1 1 0 00-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg></button>' : '')
         + '</div>';
     }
@@ -4380,7 +4508,10 @@ function loadUserPlaylists() {
 var expandedPlaylist = null;
 
 function renderPlaylists() {
-  var html = '<div style="padding:8px 12px"><button class="folder-btn folder-btn-secondary" style="width:100%;font-size:12px" onclick="createPlaylist()">+ Создать плейлист</button></div>';
+  var html = '';
+  if (userRole !== 'demo') {
+    html += '<div style="padding:8px 12px"><button class="folder-btn folder-btn-secondary" style="width:100%;font-size:12px" onclick="createPlaylist()">+ Создать плейлист</button></div>';
+  }
   for (var i = 0; i < userPlaylists.length; i++) {
     var pl = userPlaylists[i];
     var isExp = expandedPlaylist === pl.id;
@@ -4389,7 +4520,8 @@ function renderPlaylists() {
       + '<div class="album-cover" style="position:relative;overflow:hidden">' + coverHtml + '</div>'
       + '<div class="album-info"><div class="album-name">' + esc(pl.name) + '</div>'
       + '<div class="album-count">' + pl.tracks.length + ' треков</div></div>'
-      + '<button class="track-edit-btn" onclick="event.stopPropagation();editPlaylist(\'' + pl.id + '\')"><svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 000-1.41l-2.34-2.34a1 1 0 00-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg></button>'
+      + '<button class="track-edit-btn" onclick="event.stopPropagation();cachePlaylist(\'' + pl.id + '\')" data-tip="Кэшировать"><svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg></button>'
+      + (userRole !== 'demo' ? '<button class="track-edit-btn" onclick="event.stopPropagation();editPlaylist(\'' + pl.id + '\')"><svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 000-1.41l-2.34-2.34a1 1 0 00-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg></button>' : '')
       + '</div>';
     // Expanded track list
     html += '<div class="album-tracks' + (isExp ? ' open' : '') + '">';
@@ -5036,6 +5168,124 @@ function scrollTracklistTop() {
 })();
 
 // Init background, media session, and load config
+// ── Service Worker & Cache ──
+var cachedUrls = {};
+var cacheDownloading = false;
+var _isIOSDevice = /iPad|iPhone|iPod/.test(navigator.userAgent) || (/Mac/.test(navigator.userAgent) && navigator.maxTouchPoints > 1);
+
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('/sw.js').then(function() {
+    refreshCachedList();
+  });
+  navigator.serviceWorker.addEventListener('message', function(e) {
+    if (e.data.action === 'cachedList') {
+      cachedUrls = {};
+      for (var i = 0; i < e.data.urls.length; i++) cachedUrls[e.data.urls[i]] = true;
+      if (typeof renderTracks === 'function' && activeTab === 'tracks') renderTracks();
+    } else if (e.data.action === 'cached') {
+      cachedUrls[new URL(e.data.url, location.origin).pathname] = true;
+      cacheNextInQueue();
+    } else if (e.data.action === 'cacheFailed') {
+      cacheNextInQueue();
+    } else if (e.data.action === 'uncached') {
+      delete cachedUrls[new URL(e.data.url, location.origin).pathname];
+      if (typeof renderTracks === 'function') renderTracks();
+    } else if (e.data.action === 'cacheSize') {
+      showToast('Кэш: ' + e.data.count + ' треков, ' + (e.data.size / 1024 / 1024).toFixed(1) + ' МБ');
+    }
+  });
+}
+
+function refreshCachedList() {
+  if (navigator.serviceWorker.controller) {
+    navigator.serviceWorker.controller.postMessage({action: 'getCachedList'});
+  }
+}
+
+var cacheQueue = [];
+var cachingActive = false;
+var showCachedOnly = false;
+
+function cacheTrack(file) {
+  if (!navigator.serviceWorker.controller) return;
+  var url = '/api/stream/' + encodeURIComponent(file);
+  navigator.serviceWorker.controller.postMessage({action: 'cacheTrack', url: url});
+}
+
+function uncacheTrack(file) {
+  if (!navigator.serviceWorker.controller) return;
+  var url = '/api/stream/' + encodeURIComponent(file);
+  navigator.serviceWorker.controller.postMessage({action: 'uncacheTrack', url: url});
+}
+
+function isTrackCached(file) {
+  return cachedUrls['/api/stream/' + encodeURIComponent(file)] || false;
+}
+
+function startCacheAll() {
+  if (cachingActive) { stopCacheAll(); return; }
+  var files = [];
+  for (var i = 0; i < tracks.length; i++) {
+    if (!isTrackCached(tracks[i].file)) files.push(tracks[i].file);
+  }
+  if (!files.length) { showToast('Все треки уже в кэше'); return; }
+  // iOS warning
+  if (_isIOSDevice && files.length > 100) {
+    showConfirm('На iOS кэш ограничен ~1 ГБ и может быть очищен через 7 дней без использования. Загрузить ' + files.length + ' треков?', function() {
+      beginCaching(files);
+    }, 'Загрузить');
+    return;
+  }
+  beginCaching(files);
+}
+
+function beginCaching(files) {
+  cacheQueue = files.slice();
+  cachingActive = true;
+  updateCacheBtn();
+  cacheNextInQueue();
+}
+
+function cacheNextInQueue() {
+  if (!cachingActive || !cacheQueue.length) {
+    cachingActive = false;
+    updateCacheBtn();
+    if (!cacheQueue.length && cachingActive === false) { showToast('Кэширование завершено'); refreshCachedList(); }
+    return;
+  }
+  var file = cacheQueue.shift();
+  updateCacheBtn();
+  cacheTrack(file);
+}
+
+function stopCacheAll() {
+  cacheQueue = [];
+  cachingActive = false;
+  updateCacheBtn();
+  showToast('Кэширование остановлено');
+}
+
+function updateCacheBtn() {
+  var btn = document.getElementById('downloadCatalogBtn');
+  if (!btn) return;
+  // Reuse the download button for cache
+}
+
+function cachePlaylist(plId) {
+  var pl = userPlaylists.find(function(p){return p.id===plId});
+  if (!pl) return;
+  var files = pl.tracks.filter(function(f) { return !isTrackCached(f); });
+  if (!files.length) { showToast('Плейлист уже в кэше'); return; }
+  beginCaching(files);
+}
+
+function toggleCachedOnly() {
+  showCachedOnly = !showCachedOnly;
+  var btn = document.getElementById('cachedOnlyBtn');
+  if (btn) btn.classList.toggle('active', showCachedOnly);
+  renderTracks();
+}
+
 initBgCanvas();
 // Hide volume slider on iOS (audio.volume is read-only)
 if(_isIOS){var vw=document.querySelector('.volume-wrap input[type=range]');if(vw)vw.style.display='none';var vs=document.querySelector('.volume-wrap span');if(vs)vs.style.display='none';}
@@ -5156,6 +5406,9 @@ class Handler(BaseHTTPRequestHandler):
                 return
             page = HTML_PAGE.replace("PORT_PLACEHOLDER", str(SERVER_PORT))
             self._respond(200, "text/html", page.encode("utf-8"))
+
+        elif path == "/sw.js":
+            self._respond(200, "application/javascript", SW_JS.encode("utf-8"))
             return
 
         if not user:
@@ -5982,8 +6235,6 @@ class Handler(BaseHTTPRequestHandler):
                 self._respond_json({"ok": False, "error": "Ошибка переименования."})
 
         elif path == "/api/playlists":
-            # CRUD for playlists
-            if self._deny_demo(udata): return
             folder = data.get("folder", _user_music_dirs.get(user, ""))
             action = data.get("action", "")
             if not folder:
@@ -5995,7 +6246,10 @@ class Handler(BaseHTTPRequestHandler):
             if action == "list":
                 self._respond_json({"ok": True, "playlists": playlists})
 
-            elif action == "create":
+            elif action in ("create", "update", "delete"):
+                if self._deny_demo(udata): return
+
+            if action == "create":
                 name = data.get("name", "").strip() or "Новый плейлист"
                 track_files = data.get("tracks", [])
                 pl = {"id": secrets.token_hex(8), "name": name, "tracks": track_files}
