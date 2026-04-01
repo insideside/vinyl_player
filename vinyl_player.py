@@ -2064,10 +2064,50 @@ body { overflow: hidden; touch-action: none; position: fixed; width: 100%; heigh
   </div>
 </div>
 
+<!-- Import help modal -->
+<div class="meta-overlay" id="importHelpOverlay" onclick="if(event.target===this)this.classList.remove('show')" style="z-index:110">
+  <div class="meta-modal" style="width:min(500px,92vw);max-height:85vh;overflow-y:auto">
+    <h3>Как работает загрузка</h3>
+    <div style="font-size:12px;color:rgba(255,255,255,0.6);line-height:1.6">
+      <p style="margin-bottom:10px"><b style="color:#e94560">Авторизация VK</b> — необходима для любого способа загрузки. Треки скачиваются из VK Music. Нажмите «Войти», авторизуйтесь в браузере, скопируйте URL и вставьте в поле.</p>
+
+      <p style="margin-bottom:6px"><b style="color:#eee">Источники:</b></p>
+      <ul style="margin:0 0 10px 16px;color:rgba(255,255,255,0.5)">
+        <li><b>VK</b> — ссылки на плейлисты VK Music, прямая загрузка</li>
+        <li><b>Яндекс / Spotify / Apple / SoundCloud</b> — вставьте ссылку на публичный плейлист. Система получит список треков и найдёт их в VK</li>
+        <li><b>Поиск</b> — ручной поиск трека по названию в VK</li>
+      </ul>
+
+      <p style="margin-bottom:6px"><b style="color:#eee">Сопоставление треков:</b></p>
+      <p style="margin-bottom:10px;color:rgba(255,255,255,0.5)">Для внешних площадок система автоматически ищет каждый трек в VK. Вы увидите таблицу: оригинал → найденное в VK. Можно снять галку с неверных совпадений или нажать «найти другую версию» для повторного поиска.</p>
+
+      <p style="margin-bottom:6px"><b style="color:#eee">Настройки размещения:</b></p>
+      <ul style="margin:0 0 10px 16px;color:rgba(255,255,255,0.5)">
+        <li><b>В начало</b> — новые треки получат номера 1, 2, 3..., существующие сдвинутся</li>
+        <li><b>В конец</b> — новые треки добавятся после последнего трека в каталоге</li>
+        <li><b>Как в плейлисте / Обратный</b> — порядок загрузки из VK плейлиста</li>
+      </ul>
+
+      <p style="margin-bottom:6px"><b style="color:#eee">Очередь и порядок:</b></p>
+      <p style="margin-bottom:10px;color:rgba(255,255,255,0.5)">В поиске и при импорте можно собрать очередь из нескольких треков, перетаскивая их для изменения порядка. Треки загрузятся именно в этом порядке.</p>
+
+      <p style="margin-bottom:6px"><b style="color:#eee">Meta-данные:</b></p>
+      <p style="margin-bottom:10px;color:rgba(255,255,255,0.5)">Флажок «Meta» запустит поиск обложек и информации об альбоме после загрузки (Deezer, iTunes, Genius, Last.fm, MusicBrainz).</p>
+
+      <p style="margin-bottom:6px"><b style="color:#e9a545">Ограничения VK:</b></p>
+      <p style="color:rgba(255,255,255,0.5)">При частых запросах VK может включить captcha. В этом случае загрузка остановится, уже найденные треки можно скачать сразу. Кнопка «Повторить поиск» станет доступна через 15 минут для ненайденных треков.</p>
+    </div>
+    <button class="folder-btn folder-btn-secondary" style="width:100%;margin-top:12px" onclick="document.getElementById('importHelpOverlay').classList.remove('show')">Понятно</button>
+  </div>
+</div>
+
 <!-- Import modal -->
 <div class="meta-overlay" id="vkOverlay">
   <div class="meta-modal" style="width:min(560px,94vw);max-height:90vh;display:flex;flex-direction:column;overflow:hidden">
-    <h3 style="flex-shrink:0">Загрузка треков</h3>
+    <div style="display:flex;align-items:center;gap:8px;flex-shrink:0">
+      <h3 style="flex:1">Загрузка треков</h3>
+      <button onclick="showImportHelp()" style="width:24px;height:24px;border:none;border-radius:50%;background:rgba(255,255,255,0.08);color:rgba(255,255,255,0.3);cursor:pointer;font-size:13px;font-weight:700;flex-shrink:0;display:flex;align-items:center;justify-content:center">?</button>
+    </div>
     <div id="vkAuthSection" style="flex-shrink:0">
       <div id="vkAuthStatus" style="font-size:12px;color:rgba(255,255,255,0.4);margin-bottom:6px"></div>
       <div id="vkAuthForm" style="display:none;margin-bottom:8px">
@@ -2272,12 +2312,44 @@ body { overflow: hidden; touch-action: none; position: fixed; width: 100%; heigh
           <option value="admin">Администратор</option>
           <option value="demo">Демо</option>
         </select>
+        <button onclick="showRolesHelp()" style="width:24px;height:24px;border:none;border-radius:50%;background:rgba(255,255,255,0.08);color:rgba(255,255,255,0.3);cursor:pointer;font-size:13px;font-weight:700;flex-shrink:0;display:flex;align-items:center;justify-content:center">?</button>
       </div>
       <button class="folder-btn folder-btn-primary" style="width:100%" onclick="adminCreateUser()">Создать</button>
     </div>
     <div style="display:flex;justify-content:flex-end;margin-top:12px">
       <button class="folder-btn folder-btn-secondary" onclick="document.getElementById('adminOverlay').classList.remove('show')">Закрыть</button>
     </div>
+  </div>
+</div>
+
+<!-- Roles help modal -->
+<div class="meta-overlay" id="rolesHelpOverlay" onclick="if(event.target===this)this.classList.remove('show')">
+  <div class="meta-modal" style="width:min(480px,92vw);max-height:85vh;overflow-y:auto">
+    <h3>Роли пользователей</h3>
+    <table style="width:100%;border-collapse:collapse;font-size:12px;margin:12px 0">
+      <tr style="border-bottom:1px solid rgba(255,255,255,0.1)">
+        <th style="text-align:left;padding:6px 8px;color:rgba(255,255,255,0.5)">Возможность</th>
+        <th style="padding:6px 8px;color:#e94560">Админ</th>
+        <th style="padding:6px 8px;color:#52b788">Пользователь</th>
+        <th style="padding:6px 8px;color:#e9a545">Демо</th>
+      </tr>
+      <tr style="border-bottom:1px solid rgba(255,255,255,0.04)"><td style="padding:6px 8px">Слушать музыку</td><td style="text-align:center">✓</td><td style="text-align:center">✓</td><td style="text-align:center">✓</td></tr>
+      <tr style="border-bottom:1px solid rgba(255,255,255,0.04)"><td style="padding:6px 8px">Поиск по трекам</td><td style="text-align:center">✓</td><td style="text-align:center">✓</td><td style="text-align:center">✓</td></tr>
+      <tr style="border-bottom:1px solid rgba(255,255,255,0.04)"><td style="padding:6px 8px">Свои каталоги</td><td style="text-align:center;color:rgba(255,255,255,0.4)">любые</td><td style="text-align:center;color:rgba(255,255,255,0.4)">в MUSIC_ROOT</td><td style="text-align:center;color:rgba(255,255,255,0.4)">фиксированный</td></tr>
+      <tr style="border-bottom:1px solid rgba(255,255,255,0.04)"><td style="padding:6px 8px">Добавлять каталоги</td><td style="text-align:center">✓</td><td style="text-align:center">✓</td><td style="text-align:center;color:rgba(255,255,255,0.15)">—</td></tr>
+      <tr style="border-bottom:1px solid rgba(255,255,255,0.04)"><td style="padding:6px 8px">Поиск мета-данных</td><td style="text-align:center">✓</td><td style="text-align:center">✓</td><td style="text-align:center;color:rgba(255,255,255,0.15)">—</td></tr>
+      <tr style="border-bottom:1px solid rgba(255,255,255,0.04)"><td style="padding:6px 8px">Импорт из VK / площадок</td><td style="text-align:center">✓</td><td style="text-align:center">✓</td><td style="text-align:center;color:rgba(255,255,255,0.15)">—</td></tr>
+      <tr style="border-bottom:1px solid rgba(255,255,255,0.04)"><td style="padding:6px 8px">Редактирование треков</td><td style="text-align:center">✓</td><td style="text-align:center">✓</td><td style="text-align:center;color:rgba(255,255,255,0.15)">—</td></tr>
+      <tr style="border-bottom:1px solid rgba(255,255,255,0.04)"><td style="padding:6px 8px">Скачивание каталога</td><td style="text-align:center">✓</td><td style="text-align:center;color:rgba(255,255,255,0.15)">—</td><td style="text-align:center;color:rgba(255,255,255,0.15)">—</td></tr>
+      <tr style="border-bottom:1px solid rgba(255,255,255,0.04)"><td style="padding:6px 8px">LAN / WAN доступ</td><td style="text-align:center">✓</td><td style="text-align:center;color:rgba(255,255,255,0.15)">—</td><td style="text-align:center;color:rgba(255,255,255,0.15)">—</td></tr>
+      <tr><td style="padding:6px 8px">Управление пользователями</td><td style="text-align:center">✓</td><td style="text-align:center;color:rgba(255,255,255,0.15)">—</td><td style="text-align:center;color:rgba(255,255,255,0.15)">—</td></tr>
+    </table>
+    <div style="font-size:11px;color:rgba(255,255,255,0.3);margin-bottom:12px">
+      <b style="color:#e94560">Админ</b> — полный доступ, управление сервером и пользователями.<br>
+      <b style="color:#52b788">Пользователь</b> — работа с музыкой в своих каталогах.<br>
+      <b style="color:#e9a545">Демо</b> — только прослушивание, для демонстрации.
+    </div>
+    <button class="folder-btn folder-btn-secondary" style="width:100%" onclick="document.getElementById('rolesHelpOverlay').classList.remove('show')">Закрыть</button>
   </div>
 </div>
 
@@ -4230,6 +4302,14 @@ function loadAdminUsers() {
     }
     document.getElementById('adminUserList').innerHTML = html || '<div style="color:rgba(255,255,255,0.3);padding:12px">Нет пользователей</div>';
   });
+}
+
+function showImportHelp() {
+  document.getElementById('importHelpOverlay').classList.add('show');
+}
+
+function showRolesHelp() {
+  document.getElementById('rolesHelpOverlay').classList.add('show');
 }
 
 function adminCreateUser() {
