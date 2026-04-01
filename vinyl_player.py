@@ -1735,7 +1735,7 @@ body {
   flex: 1; overflow-y: auto; padding: 12px; scroll-behavior: smooth;
 }
 .album-card {
-  display: flex; gap: 12px; padding: 10px; border-radius: 10px;
+  display: flex; align-items: center; gap: 12px; padding: 10px; border-radius: 10px;
   cursor: pointer; transition: background 0.15s; margin-bottom: 0;
 }
 .album-card:hover { background: rgba(255,255,255,0.05); }
