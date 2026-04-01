@@ -3052,60 +3052,87 @@ var SILENT_WAV = 'data:audio/wav;base64,UklGRiYAAABXQVZFZm10IBAAAAABAAEARKwAAIhY
 var _audioUnlocked = false;
 
 function loadTrackBlob(file, trackIdx, autoplay) {
+  var t0 = Date.now();
   if (isTrackCached(file)) {
+    dbg('  loadTrackBlob: reading IndexedDB...');
     getCachedAudio(file, function(buf) {
-      if (currentIdx !== trackIdx) return;
+      dbg('  loadTrackBlob: IDB done ' + (Date.now()-t0) + 'ms, buf=' + (buf ? (buf.byteLength/1024|0)+'KB' : 'null'));
+      if (currentIdx !== trackIdx) { dbg('  loadTrackBlob: track changed, skip'); return; }
       if (buf) {
         var url = makeBlobUrl(buf, file);
         _blobUrlCache[file] = url;
         audio.src = url;
-        if (autoplay) audio.play();
+        if (autoplay) {
+          var p = audio.play();
+          if (p && p.then) p.then(function(){ dbg('  ✓ play OK (IDB blob)'); }).catch(function(e){ dbg('  ✗ play FAIL (IDB blob): ' + e.message); });
+        }
       } else {
         delete cachedFiles[file];
         fetchTrackBlob(file, trackIdx, autoplay);
       }
     });
   } else {
+    dbg('  loadTrackBlob: not cached, fetching server...');
     fetchTrackBlob(file, trackIdx, autoplay);
   }
 }
 
 function fetchTrackBlob(file, trackIdx, autoplay) {
+  var t0 = Date.now();
   fetch('/api/stream/' + encodeURIComponent(file)).then(function(r) {
-    if (!r.ok) throw new Error('fetch');
+    dbg('  fetchBlob: response ' + r.status + ' in ' + (Date.now()-t0) + 'ms');
+    if (!r.ok) throw new Error('status ' + r.status);
     return r.arrayBuffer();
   }).then(function(buf) {
-    if (currentIdx !== trackIdx) return;
+    dbg('  fetchBlob: loaded ' + (buf.byteLength/1024|0) + 'KB in ' + (Date.now()-t0) + 'ms');
+    if (currentIdx !== trackIdx) { dbg('  fetchBlob: track changed, skip'); return; }
     var url = makeBlobUrl(buf, file);
     _blobUrlCache[file] = url;
     audio.src = url;
-    if (autoplay) audio.play();
-  }).catch(function() {
+    if (autoplay) {
+      var p = audio.play();
+      if (p && p.then) p.then(function(){ dbg('  ✓ play OK (fetch blob)'); }).catch(function(e){ dbg('  ✗ play FAIL (fetch blob): ' + e.message); });
+    }
+  }).catch(function(e) {
+    dbg('  ✗ fetchBlob FAIL: ' + e.message + ' in ' + (Date.now()-t0) + 'ms');
     if (currentIdx !== trackIdx) return;
     setPlayState(false);
   });
 }
 
+audio.addEventListener('error', function() {
+  var e = audio.error;
+  dbg('AUDIO ERROR: code=' + (e ? e.code : '?') + ' msg=' + (e ? e.message : '?') + ' src=' + (audio.src||'').slice(0,60));
+});
+
 function selectTrack(i, autoplay) {
   if (i < 0 || i >= tracks.length) return;
   currentIdx = i;
   var t = tracks[i];
+  dbg('selectTrack i=' + i + ' auto=' + autoplay + ' file=' + t.file.slice(0,40));
+  dbg('  blobReady=' + !!_blobUrlCache[t.file] + ' cached=' + isTrackCached(t.file) + ' unlocked=' + _audioUnlocked);
 
   vinylAngle = 0;
   vinylSpeed = 0;
 
   if (_blobUrlCache[t.file]) {
-    // Blob URL ready — instant playback (works everywhere)
+    dbg('  → blob URL, playing');
     audio.src = _blobUrlCache[t.file];
-    if (autoplay) { audio.play(); setPlayState(true); _audioUnlocked = true; }
+    if (autoplay) {
+      var p = audio.play();
+      if (p && p.then) p.then(function(){ dbg('  ✓ play OK (blob)'); }).catch(function(e){ dbg('  ✗ play FAIL (blob): ' + e.message); });
+      setPlayState(true); _audioUnlocked = true;
+    }
   } else {
-    // Need to load audio — unlock iOS audio on first tap with silent WAV
     if (autoplay && !_audioUnlocked) {
+      dbg('  → unlock with silent WAV');
       audio.src = SILENT_WAV;
-      audio.play();
+      var p2 = audio.play();
+      if (p2 && p2.then) p2.then(function(){ dbg('  ✓ unlock OK'); }).catch(function(e){ dbg('  ✗ unlock FAIL: ' + e.message); });
       _audioUnlocked = true;
     }
     if (autoplay) setPlayState(true);
+    dbg('  → loadTrackBlob');
     loadTrackBlob(t.file, i, autoplay);
   }
   // Pre-build blob URLs for nearby tracks
@@ -3560,25 +3587,29 @@ function showOfflineBanner(show) {
 }
 
 function loadConfig() {
-  // Instant: restore from cache first so UI is not empty
+  var t0 = Date.now();
   var hadCache = false;
   try {
     var saved = localStorage.getItem('_vc_config');
     if (saved) {
       var cached = JSON.parse(saved);
+      dbg('loadConfig: localStorage hit, folder=' + (cached.last_folder||'none'));
       applyConfig(cached);
       if (cached.last_folder) {
         document.getElementById('folderSelect').value = cached.last_folder;
         loadFolderCacheFirst(cached.last_folder);
       }
       hadCache = true;
+    } else {
+      dbg('loadConfig: no localStorage cache');
     }
-  } catch(e){}
+  } catch(e){ dbg('loadConfig: localStorage error: ' + e.message); }
   if (!hadCache) showLoadingIndicator();
-  // Then fetch fresh data from server
+  dbg('loadConfig: fetching /api/config...');
   fetch('/api/config').then(function(r){return r.json()}).then(function(cfg) {
-    if (cfg.error === 'unauthorized') { window.location.reload(); return; }
-    if (cfg.error === 'offline') { if (!hadCache) enterOfflineMode(); return; }
+    dbg('loadConfig: response in ' + (Date.now()-t0) + 'ms');
+    if (cfg.error === 'unauthorized') { dbg('loadConfig: unauthorized, reload'); window.location.reload(); return; }
+    if (cfg.error === 'offline') { dbg('loadConfig: offline'); if (!hadCache) enterOfflineMode(); return; }
     _isOffline = false;
     showOfflineBanner(false);
     try { localStorage.setItem('_vc_config', JSON.stringify(cfg)); } catch(e){}
@@ -5776,20 +5807,31 @@ openCacheDB(function() { refreshCachedList(); });
 
 // Register Service Worker for offline app shell (HTTPS or localhost only)
 if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1')) {
+  dbg('SW: registering...');
   navigator.serviceWorker.register('/sw.js').then(function(reg) {
-    // After SW activates, ensure current page is cached (with auth cookies)
+    dbg('SW: registered, active=' + !!reg.active + ' installing=' + !!reg.installing + ' waiting=' + !!reg.waiting);
     if (reg.active) {
       warmAppCache();
     } else {
-      navigator.serviceWorker.ready.then(function() { warmAppCache(); });
+      navigator.serviceWorker.ready.then(function() { dbg('SW: ready'); warmAppCache(); });
     }
-    // Listen for SW telling us to reload (after update)
     navigator.serviceWorker.addEventListener('message', function(e) {
+      dbg('SW: message received: ' + JSON.stringify(e.data));
       if (e.data && e.data.action === 'reload') {
         window.location.reload();
       }
     });
-  }).catch(function(){});
+    // Log update events
+    reg.addEventListener('updatefound', function() {
+      dbg('SW: updatefound!');
+      var nw = reg.installing;
+      if (nw) nw.addEventListener('statechange', function() {
+        dbg('SW: new worker state=' + nw.state);
+      });
+    });
+  }).catch(function(e){ dbg('SW: register FAIL: ' + e.message); });
+} else {
+  dbg('SW: skip (proto=' + location.protocol + ' host=' + location.hostname + ')');
 }
 function warmAppCache() {
   if (!('caches' in window)) return;
@@ -5826,6 +5868,45 @@ window.addEventListener('offline', function() {
   if (!_isOffline) enterOfflineMode();
 });
 
+// ── Debug log (triple-tap app title to toggle) ──
+var _dbgLog = [];
+var _dbgEl = null;
+var _dbgVisible = false;
+var _dbgTapCount = 0;
+var _dbgTapTimer = null;
+
+function dbg(msg) {
+  var ts = new Date().toTimeString().slice(0,8);
+  _dbgLog.push(ts + ' ' + msg);
+  if (_dbgLog.length > 80) _dbgLog.shift();
+  if (_dbgEl && _dbgVisible) _dbgEl.textContent = _dbgLog.join('\n');
+  console.log('[DBG] ' + msg);
+}
+
+function initDebugPanel() {
+  _dbgEl = document.createElement('pre');
+  _dbgEl.style.cssText = 'display:none;position:fixed;top:0;left:0;right:0;bottom:0;z-index:99999;background:rgba(0,0,0,0.92);color:#0f0;font-size:10px;padding:8px;overflow:auto;margin:0;white-space:pre-wrap;word-break:break-all;-webkit-overflow-scrolling:touch;';
+  _dbgEl.onclick = function() { _dbgVisible = false; _dbgEl.style.display = 'none'; };
+  document.body.appendChild(_dbgEl);
+  // Triple-tap on track title area to toggle
+  var titleEl = document.getElementById('trackTitle');
+  if (titleEl) titleEl.addEventListener('click', function() {
+    _dbgTapCount++;
+    clearTimeout(_dbgTapTimer);
+    _dbgTapTimer = setTimeout(function() { _dbgTapCount = 0; }, 500);
+    if (_dbgTapCount >= 3) {
+      _dbgTapCount = 0;
+      _dbgVisible = !_dbgVisible;
+      _dbgEl.style.display = _dbgVisible ? '' : 'none';
+      if (_dbgVisible) _dbgEl.textContent = _dbgLog.join('\n');
+    }
+  });
+}
+
+dbg('page loaded, proto=' + location.protocol + ' host=' + location.hostname + ' standalone=' + (window.navigator.standalone === true) + ' display=' + (window.matchMedia('(display-mode: standalone)').matches));
+dbg('SW controller: ' + (navigator.serviceWorker ? (navigator.serviceWorker.controller ? 'yes' : 'no') : 'n/a'));
+
+initDebugPanel();
 loadConfig();
 </script>
 </body>
@@ -7030,7 +7111,12 @@ class Handler(BaseHTTPRequestHandler):
         self._respond(200, "application/json", body)
 
     def log_message(self, format, *args):
-        pass
+        # Log requests from remote devices (not localhost)
+        ip = self.client_address[0] if self.client_address else ''
+        if ip and ip not in ('127.0.0.1', '::1'):
+            import datetime
+            ts = datetime.datetime.now().strftime('%H:%M:%S')
+            print("[{}] {} {}".format(ts, ip, format % args))
 
     def handle(self):
         try:
