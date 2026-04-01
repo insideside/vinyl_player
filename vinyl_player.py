@@ -1370,24 +1370,10 @@ self.addEventListener('install', function(e) {
 self.addEventListener('activate', function(e) {
   e.waitUntil(
     caches.keys().then(function(names) {
-      var hadOld = false;
       return Promise.all(names.filter(function(n) {
-        if (n.startsWith('app-') && n !== CACHE_APP) { hadOld = true; return true; }
-        return false;
-      }).map(function(n) { return caches.delete(n); })).then(function() { return hadOld; });
-    }).then(function(hadOld) {
-      return self.clients.claim().then(function() {
-        if (hadOld) {
-          // App was updated — force navigate all windows to reload with new code
-          // Uses WindowClient.navigate() which doesn't need client-side listener
-          return self.clients.matchAll({type:'window'}).then(function(cls) {
-            cls.forEach(function(c) {
-              if (c.url && c.navigate) c.navigate(c.url);
-            });
-          });
-        }
-      });
-    })
+        return n.startsWith('app-') && n !== CACHE_APP;
+      }).map(function(n) { return caches.delete(n); }));
+    }).then(function() { return self.clients.claim(); })
   );
 });
 
