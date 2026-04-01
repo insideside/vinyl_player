@@ -4520,8 +4520,8 @@ function renderPlaylists() {
       + '<div class="album-cover" style="position:relative;overflow:hidden">' + coverHtml + '</div>'
       + '<div class="album-info"><div class="album-name">' + esc(pl.name) + '</div>'
       + '<div class="album-count">' + pl.tracks.length + ' треков</div></div>'
-      + '<button class="track-edit-btn" onclick="event.stopPropagation();cachePlaylist(\'' + pl.id + '\')" data-tip="Кэшировать"><svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg></button>'
-      + (userRole !== 'demo' ? '<button class="track-edit-btn" onclick="event.stopPropagation();editPlaylist(\'' + pl.id + '\')"><svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 000-1.41l-2.34-2.34a1 1 0 00-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg></button>' : '')
+      + '<button class="shuffle-btn" style="width:32px;height:32px;flex-shrink:0" onclick="event.stopPropagation();cachePlaylist(\'' + pl.id + '\')" data-tip="Кэшировать"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg></button>'
+      + (userRole !== 'demo' ? '<button class="shuffle-btn" style="width:32px;height:32px;flex-shrink:0" onclick="event.stopPropagation();editPlaylist(\'' + pl.id + '\')" data-tip="Редактировать"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 000-1.41l-2.34-2.34a1 1 0 00-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg></button>' : '')
       + '</div>';
     // Expanded track list
     html += '<div class="album-tracks' + (isExp ? ' open' : '') + '">';
