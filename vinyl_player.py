@@ -464,28 +464,43 @@ def parse_apple_playlist(url):
         if resp.status_code != 200:
             return None
         html = resp.text
-        import json as _json
-        tracks = []
-        # Method 1: JSON-LD for titles + artistName from HTML for artists
-        m = re.search(r'<script[^>]*type="application/ld\+json"[^>]*>(.*?)</script>', html, re.DOTALL)
         artist_names = re.findall(r'"artistName":"((?:[^"\\]|\\.)+)"', html)
+        all_names = re.findall(r'"name":"((?:[^"\\]|\\.)+)"', html)
+        if not artist_names:
+            return None
+        # Deduplicate names (each appears twice), skip UI labels
+        skip = set()
+        # Detect playlist title/name to skip
+        m = re.search(r'<title>([^<]+)</title>', html)
         if m:
-            data = _json.loads(m.group(1))
-            track_list = data.get("track", data.get("tracks", []))
-            for i, item in enumerate(track_list):
-                if isinstance(item, dict):
-                    artist = artist_names[i] if i < len(artist_names) else ""
-                    tracks.append({"artist": artist, "title": item.get("name", "")})
-            if tracks:
-                return tracks
-        # Method 2: artistName + name pairs from embedded JSON
-        song_names = re.findall(r'"name":"((?:[^"\\]|\\.)+)"', html)
-        if artist_names and len(artist_names) > 3:
-            for i in range(min(len(artist_names), len(song_names))):
-                tracks.append({"artist": artist_names[i], "title": song_names[i]})
-            if tracks:
-                return tracks
-        return None
+            for part in m.group(1).replace('—', '-').split(' - '):
+                skip.add(part.strip())
+        # Extract playlist name from og:title or title (inside «» or quotes)
+        for attr in ['og:title', 'og:description']:
+            m2 = re.search(r'property="' + attr + '"[^>]*content="([^"]+)"', html)
+            if m2:
+                # Extract name from «Name» pattern
+                m3 = re.search(r'[«"](.*?)[»"]', m2.group(1))
+                if m3:
+                    skip.add(m3.group(1).strip())
+        # Common UI labels to skip
+        for label in ['Подборка', 'Прослушать отрывки', 'Apple Music', 'Плейлист']:
+            skip.add(label)
+        song_names = []
+        prev = ''
+        for n in all_names:
+            if n == prev or n in skip:
+                prev = n
+                continue
+            song_names.append(n)
+            prev = n
+        # Pair artists with song names
+        tracks = []
+        for i in range(len(artist_names)):
+            title = song_names[i] if i < len(song_names) else ""
+            if title:
+                tracks.append({"artist": artist_names[i], "title": title})
+        return tracks if tracks else None
     except Exception:
         return None
 
