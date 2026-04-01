@@ -3056,93 +3056,44 @@ function prepareNearbyBlobs() {
   }
 }
 
-// Silent WAV for iOS audio unlock (46 bytes: 1 sample of silence)
-var SILENT_WAV = 'data:audio/wav;base64,UklGRiYAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQIAAAAA';
-var _audioUnlocked = false;
-
-function loadTrackBlob(file, trackIdx, autoplay) {
-  var t0 = Date.now();
-  if (isTrackCached(file)) {
-    dbg('loadBlob: IDB read...');
-    getCachedAudio(file, function(buf) {
-      dbg('loadBlob: IDB ' + (Date.now()-t0) + 'ms buf=' + (buf ? (buf.byteLength/1024|0)+'K' : 'null'));
-      if (currentIdx !== trackIdx) { dbg('loadBlob: track changed'); return; }
-      if (buf) {
-        var url = makeBlobUrl(buf, file);
-        _blobUrlCache[file] = url;
-        audio.src = url;
-        if (autoplay) {
-          var p = audio.play();
-          if (p&&p.then) p.then(function(){dbg('play OK (IDB)')}).catch(function(e){dbg('play FAIL (IDB): '+e.message)});
-        }
-      } else {
-        delete cachedFiles[file];
-        fetchTrackBlob(file, trackIdx, autoplay);
-      }
-    });
-  } else {
-    dbg('loadBlob: fetch server...');
-    fetchTrackBlob(file, trackIdx, autoplay);
-  }
-}
-
-function fetchTrackBlob(file, trackIdx, autoplay) {
-  var t0 = Date.now();
-  fetch('/api/stream/' + encodeURIComponent(file)).then(function(r) {
-    dbg('fetchBlob: ' + r.status + ' ' + (Date.now()-t0) + 'ms');
-    if (!r.ok) throw new Error('status ' + r.status);
-    return r.arrayBuffer();
-  }).then(function(buf) {
-    dbg('fetchBlob: got ' + (buf.byteLength/1024|0) + 'K ' + (Date.now()-t0) + 'ms');
-    if (currentIdx !== trackIdx) { dbg('fetchBlob: track changed'); return; }
-    var url = makeBlobUrl(buf, file);
-    _blobUrlCache[file] = url;
-    audio.src = url;
-    if (autoplay) {
-      var p = audio.play();
-      if (p&&p.then) p.then(function(){dbg('play OK (fetch)')}).catch(function(e){dbg('play FAIL (fetch): '+e.message)});
-    }
-  }).catch(function(e) {
-    dbg('fetchBlob FAIL: ' + e.message + ' ' + (Date.now()-t0) + 'ms');
-    if (currentIdx !== trackIdx) return;
-    setPlayState(false);
-  });
-}
-
 audio.addEventListener('error', function() {
   var e = audio.error;
   dbg('AUDIO ERR code=' + (e?e.code:'?') + ' msg=' + (e?e.message:'?') + ' src=' + (audio.src||'').slice(0,50));
 });
 
+// Track actual playback state
+audio.addEventListener('playing', function() { dbg('EVENT: playing, time=' + audio.currentTime.toFixed(1)); });
+audio.addEventListener('pause', function() { dbg('EVENT: pause, time=' + audio.currentTime.toFixed(1)); });
+audio.addEventListener('stalled', function() { dbg('EVENT: stalled'); });
+audio.addEventListener('waiting', function() { dbg('EVENT: waiting'); });
+
 function selectTrack(i, autoplay) {
   if (i < 0 || i >= tracks.length) return;
   currentIdx = i;
   var t = tracks[i];
-  dbg('select #' + i + ' auto=' + autoplay + ' blob=' + !!_blobUrlCache[t.file] + ' cached=' + isTrackCached(t.file) + ' unlocked=' + _audioUnlocked);
+  dbg('select #' + i + ' auto=' + autoplay + ' blob=' + !!_blobUrlCache[t.file] + ' cached=' + isTrackCached(t.file));
 
   vinylAngle = 0;
   vinylSpeed = 0;
 
+  // Always use direct server URL + play() in user gesture (activates iOS audio session)
+  // SW does NOT intercept /api/stream/ — goes straight to server
+  var streamUrl = '/api/stream/' + encodeURIComponent(t.file);
   if (_blobUrlCache[t.file]) {
     dbg('→ blob URL');
     audio.src = _blobUrlCache[t.file];
-    if (autoplay) {
-      var p = audio.play();
-      if (p&&p.then) p.then(function(){dbg('play OK (blob)')}).catch(function(e){dbg('play FAIL (blob): '+e.message)});
-      setPlayState(true); _audioUnlocked = true;
-    }
   } else {
-    if (autoplay && !_audioUnlocked) {
-      dbg('→ unlock silent WAV');
-      audio.src = SILENT_WAV;
-      var p2 = audio.play();
-      if (p2&&p2.then) p2.then(function(){dbg('unlock OK')}).catch(function(e){dbg('unlock FAIL: '+e.message)});
-      _audioUnlocked = true;
-    }
-    dbg('→ loadTrackBlob');
-    if (autoplay) setPlayState(true);
-    loadTrackBlob(t.file, i, autoplay);
+    dbg('→ direct URL');
+    audio.src = streamUrl;
   }
+  if (autoplay) {
+    var p = audio.play();
+    if (p&&p.then) p.then(function(){dbg('play OK')}).catch(function(e){dbg('play FAIL: '+e.message)});
+    setPlayState(true);
+  }
+  // Pre-build blob URLs for nearby tracks (for offline + faster next)
+  if (isTrackCached(t.file)) prepareBlobUrl(t.file);
+  setTimeout(prepareNearbyBlobs, 200);
   // Pre-build blob URLs for nearby tracks
   setTimeout(prepareNearbyBlobs, 200);
   var titleEl = document.getElementById('trackTitle');
