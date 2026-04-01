@@ -395,64 +395,37 @@ def vk_repad_tracks(folder):
 # ──────────────────── Playlist Parsers ────────────────────
 
 def parse_yandex_playlist(url):
-    """Парсит публичный плейлист Яндекс.Музыки."""
+    """Парсит публичный плейлист Яндекс.Музыки через API."""
     try:
-        with HttpClient(timeout=20, follow_redirects=True) as client:
-            resp = client.get(url, headers={
-                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                "Accept": "text/html,application/xhtml+xml",
-                "Accept-Language": "ru-RU,ru;q=0.9",
-            })
+        import json as _json
+        # Extract UUID or owner/kind from URL
+        m = re.search(r'/playlists/([a-f0-9-]{36})', url)
+        if m:
+            # UUID format — use direct API
+            uuid = m.group(1)
+            api_url = "https://api.music.yandex.net/playlist/{}".format(uuid)
+        else:
+            # users/LOGIN/playlists/KIND format
+            m = re.search(r'/users/([^/]+)/playlists/(\d+)', url)
+            if not m:
+                return None
+            api_url = "https://api.music.yandex.net/users/{}/playlists/{}".format(m.group(1), m.group(2))
+
+        with HttpClient(timeout=15) as client:
+            resp = client.get(api_url, headers={"User-Agent": "Yandex-Music-API"})
         if resp.status_code != 200:
             return None
-        html = resp.text
-        import json as _json
+        data = resp.json()
+        result = data.get("result", {})
+        tracks_raw = result.get("tracks", [])
         tracks = []
-
-        # Method 1: __NEXT_DATA__
-        m = re.search(r'<script[^>]*id="__NEXT_DATA__"[^>]*>(.+?)</script>', html)
-        if m:
-            data = _json.loads(m.group(1))
-            def find_ym(obj):
-                if isinstance(obj, dict):
-                    if "title" in obj and "artists" in obj and isinstance(obj["artists"], list):
-                        a = obj["artists"][0]["name"] if obj["artists"] else ""
-                        tracks.append({"artist": a, "title": obj["title"]})
-                    for v in obj.values():
-                        find_ym(v)
-                elif isinstance(obj, list):
-                    for v in obj:
-                        find_ym(v)
-            find_ym(data)
-            if tracks:
-                return tracks
-
-        # Method 2: Yandex embeds track data as escaped JSON in script blocks
-        # Pattern: "title":"TRACK","realId":"..." followed later by "artists":[{"name":"ARTIST"}]
-        # Extract all tracks by finding sequential title+artists pairs
-        all_titles = re.findall(r'"title":"((?:[^"\\]|\\.)+)"', html)
-        all_artists = re.findall(r'"artists":\[\{"[^}]*?"name":"((?:[^"\\]|\\.)+)"', html)
-
-        # Filter: titles that appear near "realId" are track titles
-        track_blocks = re.findall(
-            r'"realId":"[^"]+","title":"((?:[^"\\]|\\.)+)".*?"artists":\[\{[^}]*?"name":"((?:[^"\\]|\\.)+)"',
-            html
-        )
-        if track_blocks:
-            return [{"artist": a.encode().decode('unicode_escape'), "title": t.encode().decode('unicode_escape')} for t, a in track_blocks]
-
-        # Method 3: Broader search — pair titles with closest artists
-        if len(all_titles) > 5 and len(all_artists) > 3:
-            # Heuristic: skip first few (UI labels), take sequential pairs
-            seen = set()
-            for t in all_titles:
-                t_clean = t.encode().decode('unicode_escape') if '\\u' in t else t
-                if t_clean not in seen and len(t_clean) > 1 and t_clean not in ('default', 'music', 'playlist'):
-                    tracks.append({"artist": "", "title": t_clean})
-                    seen.add(t_clean)
-            if len(tracks) > 5:
-                return tracks
-
+        for t in tracks_raw:
+            track = t.get("track", t)
+            title = track.get("title", "")
+            artists = track.get("artists", [])
+            artist = artists[0].get("name", "") if artists else ""
+            if title:
+                tracks.append({"artist": artist, "title": title})
         return tracks if tracks else None
     except Exception:
         return None
