@@ -392,6 +392,170 @@ def vk_repad_tracks(folder):
             old_path.rename(new_path)
 
 
+# ──────────────────── Playlist Parsers ────────────────────
+
+def parse_yandex_playlist(url):
+    """Парсит публичный плейлист Яндекс.Музыки."""
+    try:
+        # URL: https://music.yandex.ru/users/LOGIN/playlists/ID
+        with HttpClient(timeout=15, follow_redirects=True) as client:
+            resp = client.get(url, headers={"User-Agent": "Mozilla/5.0"})
+        if resp.status_code != 200:
+            return None
+        html = resp.text
+        # Find __NEXT_DATA__ or musicData JSON
+        import json as _json
+        m = re.search(r'<script[^>]*id="__NEXT_DATA__"[^>]*>(.+?)</script>', html)
+        if not m:
+            m = re.search(r'"tracks":\s*(\[.+?\])\s*[,}]', html)
+            if m:
+                tracks_json = _json.loads(m.group(1))
+                return [{"artist": t.get("artists", [{}])[0].get("name", "") if t.get("artists") else "", "title": t.get("title", "")} for t in tracks_json]
+            return None
+        data = _json.loads(m.group(1))
+        # Navigate JSON structure
+        tracks = []
+        def find_tracks(obj):
+            if isinstance(obj, dict):
+                if "title" in obj and "artists" in obj:
+                    artist = obj["artists"][0]["name"] if obj.get("artists") else ""
+                    tracks.append({"artist": artist, "title": obj["title"]})
+                for v in obj.values():
+                    find_tracks(v)
+            elif isinstance(obj, list):
+                for v in obj:
+                    find_tracks(v)
+        find_tracks(data)
+        return tracks if tracks else None
+    except Exception:
+        return None
+
+
+def parse_spotify_playlist(url):
+    """Парсит публичный плейлист Spotify через oEmbed + scrape."""
+    try:
+        # Spotify embed endpoint returns basic info
+        # Better: use Spotify's open page and parse
+        # URL: https://open.spotify.com/playlist/ID
+        m = re.search(r'playlist/([a-zA-Z0-9]+)', url)
+        if not m:
+            return None
+        playlist_id = m.group(1)
+        # Use Spotify embed page
+        embed_url = "https://open.spotify.com/embed/playlist/{}".format(playlist_id)
+        with HttpClient(timeout=15, follow_redirects=True) as client:
+            resp = client.get(embed_url, headers={"User-Agent": "Mozilla/5.0"})
+        if resp.status_code != 200:
+            return None
+        html = resp.text
+        import json as _json
+        # Find track data in embed HTML
+        m = re.search(r'Spotify\.Entity\s*=\s*({.+?});', html)
+        if not m:
+            m = re.search(r'"tracks":\s*\{[^}]*"items":\s*(\[.+?\])', html)
+            if not m:
+                # Try resource JSON
+                m = re.search(r'<script[^>]*type="application/json"[^>]*>(.+?)</script>', html)
+        if m:
+            try:
+                data = _json.loads(m.group(1))
+                tracks = []
+                def find_sp(obj):
+                    if isinstance(obj, dict):
+                        if obj.get("type") == "track" and "name" in obj:
+                            artist = obj.get("artists", [{}])[0].get("name", "") if obj.get("artists") else ""
+                            tracks.append({"artist": artist, "title": obj["name"]})
+                        for v in obj.values():
+                            find_sp(v)
+                    elif isinstance(obj, list):
+                        for v in obj:
+                            find_sp(v)
+                find_sp(data)
+                if tracks:
+                    return tracks
+            except Exception:
+                pass
+        return None
+    except Exception:
+        return None
+
+
+def parse_apple_playlist(url):
+    """Парсит публичный плейлист Apple Music."""
+    try:
+        with HttpClient(timeout=15, follow_redirects=True) as client:
+            resp = client.get(url, headers={"User-Agent": "Mozilla/5.0"})
+        if resp.status_code != 200:
+            return None
+        html = resp.text
+        import json as _json
+        # Apple Music embeds JSON-LD
+        m = re.search(r'<script[^>]*type="application/ld\+json"[^>]*>(.+?)</script>', html, re.DOTALL)
+        if m:
+            data = _json.loads(m.group(1))
+            tracks = []
+            for item in data.get("track", data.get("tracks", [])):
+                if isinstance(item, dict):
+                    tracks.append({"artist": item.get("byArtist", {}).get("name", ""), "title": item.get("name", "")})
+            if tracks:
+                return tracks
+        # Fallback: parse meta tags
+        titles = re.findall(r'class="songs-list-row__song-name">([^<]+)<', html)
+        artists = re.findall(r'class="songs-list-row__by-artist">([^<]+)<', html)
+        if titles:
+            return [{"artist": artists[i] if i < len(artists) else "", "title": t.strip()} for i, t in enumerate(titles)]
+        return None
+    except Exception:
+        return None
+
+
+def parse_soundcloud_playlist(url):
+    """Парсит публичный плейлист SoundCloud."""
+    try:
+        with HttpClient(timeout=15, follow_redirects=True) as client:
+            resp = client.get(url, headers={"User-Agent": "Mozilla/5.0"})
+        if resp.status_code != 200:
+            return None
+        html = resp.text
+        import json as _json
+        # SoundCloud stores data in window.__sc_hydration
+        m = re.search(r'window\.__sc_hydration\s*=\s*(\[.+?\]);\s*<', html, re.DOTALL)
+        if m:
+            data = _json.loads(m.group(1))
+            tracks = []
+            for item in data:
+                d = item.get("data", {})
+                if d.get("kind") == "playlist":
+                    for t in d.get("tracks", []):
+                        artist = t.get("user", {}).get("username", "")
+                        tracks.append({"artist": artist, "title": t.get("title", "")})
+                elif d.get("kind") == "track":
+                    tracks.append({"artist": d.get("user", {}).get("username", ""), "title": d.get("title", "")})
+            if tracks:
+                return tracks
+        # Fallback: meta tags
+        titles = re.findall(r'"title":"([^"]+)"', html)
+        if titles:
+            return [{"artist": "", "title": t} for t in titles[:50]]
+        return None
+    except Exception:
+        return None
+
+
+def parse_external_playlist(url):
+    """Определяет платформу по URL и парсит плейлист."""
+    url_lower = url.lower()
+    if "music.yandex" in url_lower:
+        return parse_yandex_playlist(url), "yandex"
+    elif "spotify.com" in url_lower:
+        return parse_spotify_playlist(url), "spotify"
+    elif "music.apple.com" in url_lower:
+        return parse_apple_playlist(url), "apple"
+    elif "soundcloud.com" in url_lower:
+        return parse_soundcloud_playlist(url), "soundcloud"
+    return None, "unknown"
+
+
 def vk_download_worker(urls, folder, order, mode, run_meta_after, username=""):
     vk_state = get_vk_state(username)
     vk_state["running"] = True
@@ -1352,6 +1516,12 @@ body {
 .playlist-item .info { flex: 1; overflow: hidden; }
 .playlist-item .info .name { font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .playlist-item .info .artist { font-size: 12px; color: rgba(255,255,255,0.4); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.imp-tab.active { background: #e94560 !important; color: #fff !important; border-color: #e94560 !important; }
+.imp-match { display:flex; align-items:flex-start; gap:8px; padding:8px; border-bottom:1px solid rgba(255,255,255,0.04); font-size:11px; }
+.imp-match .orig { color:rgba(255,255,255,0.5); flex:1; min-width:0; }
+.imp-match .vk { color:#eee; flex:1; min-width:0; }
+.imp-match .nomatch { color:#e94560; }
+
 .track-edit-btn {
   width: 28px; height: 28px; flex-shrink: 0; border: none; border-radius: 50%;
   background: none; color: rgba(255,255,255,0.15); cursor: pointer;
@@ -1747,7 +1917,7 @@ body { overflow: hidden; touch-action: none; position: fixed; width: 100%; heigh
 
       <div class="fp-row" id="metaVkRow">
         <button class="folder-btn folder-btn-secondary" style="flex:1" onclick="startMetaSearch()" data-tip="Поиск обложек, артистов и альбомов">Meta</button>
-        <button class="folder-btn folder-btn-secondary" style="flex:1" onclick="openVkModal()" data-tip="Загрузка треков из VK Music">VK</button>
+        <button class="folder-btn folder-btn-secondary" style="flex:1" onclick="openVkModal()" data-tip="Импорт из VK, Яндекс, Spotify, Apple Music, SoundCloud">Загрузить</button>
         <div id="networkToggles" style="display:none;align-items:center;gap:4px;flex-shrink:0">
           <span style="font-size:10px;color:rgba(255,255,255,0.35)">LAN</span>
           <label style="position:relative;width:30px;height:16px;cursor:pointer;flex-shrink:0">
@@ -1838,75 +2008,85 @@ body { overflow: hidden; touch-action: none; position: fixed; width: 100%; heigh
   </div>
 </div>
 
-<!-- VK Download modal -->
+<!-- Import modal -->
 <div class="meta-overlay" id="vkOverlay">
-  <div class="meta-modal" style="width:min(480px,92vw);max-height:90vh;overflow-y:auto">
-    <h3>VK Music</h3>
-    <div id="vkAuthSection">
-      <div id="vkAuthStatus" style="font-size:12px;color:rgba(255,255,255,0.4);margin-bottom:8px"></div>
-      <div id="vkAuthForm" style="display:none;margin-bottom:10px">
-        <div style="font-size:12px;color:rgba(255,255,255,0.5);margin-bottom:4px">Вставьте URL после авторизации VK:</div>
+  <div class="meta-modal" style="width:min(560px,94vw);max-height:90vh;display:flex;flex-direction:column;overflow:hidden">
+    <h3 style="flex-shrink:0">Загрузка треков</h3>
+    <div id="vkAuthSection" style="flex-shrink:0">
+      <div id="vkAuthStatus" style="font-size:12px;color:rgba(255,255,255,0.4);margin-bottom:6px"></div>
+      <div id="vkAuthForm" style="display:none;margin-bottom:8px">
+        <div style="font-size:11px;color:rgba(255,255,255,0.4);margin-bottom:4px">Вставьте URL после авторизации VK:</div>
         <div style="display:flex;gap:6px">
-          <input type="text" id="vkTokenInput" class="folder-path-input" style="flex:1" placeholder="https://oauth.vk.com/blank.html#access_token=...">
-          <button class="folder-btn folder-btn-primary" onclick="submitVkToken()">OK</button>
+          <input type="text" id="vkTokenInput" class="folder-path-input" style="flex:1;font-size:11px" placeholder="https://oauth.vk.com/blank.html#access_token=...">
+          <button class="folder-btn folder-btn-primary" style="padding:6px 12px;font-size:11px" onclick="submitVkToken()">OK</button>
         </div>
       </div>
     </div>
-    <!-- VK Tabs -->
-    <div class="playlist-tabs" style="margin-bottom:10px">
-      <button class="playlist-tab active" id="vkTabPlaylist" onclick="showVkTab('playlist')">Плейлисты</button>
-      <button class="playlist-tab" id="vkTabSearch" onclick="showVkTab('search')">Поиск трека</button>
+    <!-- Source tabs -->
+    <div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:8px;flex-shrink:0">
+      <button class="folder-btn folder-btn-secondary imp-tab active" onclick="showImpTab('vk')" id="impTabVk" style="flex:1;padding:6px 4px;font-size:11px;min-width:60px">VK</button>
+      <button class="folder-btn folder-btn-secondary imp-tab" onclick="showImpTab('yandex')" id="impTabYandex" style="flex:1;padding:6px 4px;font-size:11px;min-width:60px">Яндекс</button>
+      <button class="folder-btn folder-btn-secondary imp-tab" onclick="showImpTab('spotify')" id="impTabSpotify" style="flex:1;padding:6px 4px;font-size:11px;min-width:60px">Spotify</button>
+      <button class="folder-btn folder-btn-secondary imp-tab" onclick="showImpTab('apple')" id="impTabApple" style="flex:1;padding:6px 4px;font-size:11px;min-width:60px">Apple</button>
+      <button class="folder-btn folder-btn-secondary imp-tab" onclick="showImpTab('soundcloud')" id="impTabSoundcloud" style="flex:1;padding:6px 4px;font-size:11px;min-width:60px">SoundCloud</button>
+      <button class="folder-btn folder-btn-secondary imp-tab" onclick="showImpTab('search')" id="impTabSearch" style="flex:1;padding:6px 4px;font-size:11px;min-width:60px">Поиск</button>
     </div>
-    <!-- Tab 1: Playlist download -->
-    <div id="vkPlaylistTab">
-      <div id="vkFolderHint" style="font-size:11px;color:rgba(255,255,255,0.35);margin-bottom:8px"></div>
-      <textarea id="vkUrls" style="width:100%;height:70px;padding:8px;border-radius:8px;border:1px solid rgba(255,255,255,0.12);background:rgba(255,255,255,0.06);color:#eee;font-size:12px;resize:vertical;outline:none;font-family:inherit" placeholder="Ссылки на плейлисты (по одной на строку)"></textarea>
-      <div style="display:flex;gap:6px;margin:8px 0;font-size:12px;align-items:center;flex-wrap:wrap">
-        <select id="vkMode" class="folder-select" style="flex:1;min-width:100px;padding:7px 26px 7px 8px;font-size:12px">
-          <option value="prepend">В начало</option>
-          <option value="append">В конец</option>
-        </select>
-        <select id="vkOrder" class="folder-select" style="flex:1;min-width:100px;padding:7px 26px 7px 8px;font-size:12px">
-          <option value="normal">Как в плейлисте</option>
-          <option value="reverse">Обратный</option>
-        </select>
+    <div style="flex:1;overflow-y:auto;min-height:0">
+    <!-- VK Playlists -->
+    <div id="impVk">
+      <div id="vkFolderHint" style="font-size:11px;color:rgba(255,255,255,0.3);margin-bottom:6px"></div>
+      <textarea id="vkUrls" style="width:100%;height:60px;padding:8px;border-radius:8px;border:1px solid rgba(255,255,255,0.12);background:rgba(255,255,255,0.06);color:#eee;font-size:11px;resize:vertical;outline:none;font-family:inherit" placeholder="Ссылки на VK плейлисты (по одной на строку)"></textarea>
+      <div style="display:flex;gap:6px;margin:6px 0;font-size:11px">
+        <select id="vkMode" class="folder-select" style="flex:1;padding:6px 24px 6px 8px;font-size:11px"><option value="prepend">В начало</option><option value="append">В конец</option></select>
+        <select id="vkOrder" class="folder-select" style="flex:1;padding:6px 24px 6px 8px;font-size:11px"><option value="normal">Как в плейлисте</option><option value="reverse">Обратный</option></select>
       </div>
-      <label style="display:flex;align-items:center;gap:5px;color:rgba(255,255,255,0.5);cursor:pointer;font-size:12px;margin-bottom:8px">
-        <input type="checkbox" id="vkRunMeta" style="accent-color:#e94560"> Получить Meta-данные после загрузки
-      </label>
-      <button class="folder-btn folder-btn-primary" style="width:100%" onclick="startVkDownload()">Загрузить плейлисты</button>
+      <label style="display:flex;align-items:center;gap:5px;color:rgba(255,255,255,0.4);cursor:pointer;font-size:11px;margin-bottom:6px"><input type="checkbox" id="vkRunMeta" style="accent-color:#e94560"> Meta-данные после загрузки</label>
+      <button class="folder-btn folder-btn-primary" style="width:100%;font-size:12px" onclick="startVkDownload()">Загрузить VK плейлисты</button>
     </div>
-    <!-- Tab 2: Search & download single track -->
-    <div id="vkSearchTab" style="display:none">
+    <!-- External: Yandex/Spotify/Apple/SoundCloud -->
+    <div id="impExternal" style="display:none">
       <div style="display:flex;gap:6px;margin-bottom:8px">
-        <input type="text" id="vkSearchQuery" class="folder-path-input" style="flex:1" placeholder="Название трека или артист..." onkeydown="if(event.key==='Enter')vkSearchTracks()">
-        <button class="folder-btn folder-btn-primary" onclick="vkSearchTracks()">Найти</button>
+        <input type="text" id="impExtUrl" class="folder-path-input" style="flex:1;font-size:11px" placeholder="Ссылка на публичный плейлист...">
+        <button class="folder-btn folder-btn-primary" style="padding:6px 12px;font-size:11px" onclick="importExternal()">Загрузить</button>
       </div>
-      <div id="vkSearchResults" style="max-height:200px;overflow-y:auto;border-radius:8px"></div>
-      <!-- Selected queue -->
-      <div id="vkQueueSection" style="display:none;margin-top:8px">
-        <div style="font-size:11px;color:rgba(255,255,255,0.4);margin-bottom:4px">Очередь загрузки (перетащите для изменения порядка):</div>
-        <div id="vkQueue" style="max-height:40vh;overflow-y:auto;border:1px solid rgba(255,255,255,0.06);border-radius:8px;background:rgba(255,255,255,0.02)"></div>
-        <div style="display:flex;gap:6px;align-items:center;margin-top:6px">
-          <select id="vkSearchMode" class="folder-select" style="flex:1;padding:7px 26px 7px 8px;font-size:12px">
-            <option value="prepend">В начало</option>
-            <option value="append">В конец</option>
-          </select>
-          <label style="display:flex;align-items:center;gap:5px;color:rgba(255,255,255,0.5);cursor:pointer;font-size:12px;white-space:nowrap">
-            <input type="checkbox" id="vkSearchMeta" style="accent-color:#e94560"> Meta
-          </label>
+      <div id="impExtStatus" style="font-size:11px;color:rgba(255,255,255,0.3);margin-bottom:6px"></div>
+      <div id="impMatchList" style="max-height:35vh;overflow-y:auto;border-radius:8px"></div>
+      <div id="impMatchActions" style="display:none;margin-top:6px">
+        <div style="display:flex;gap:6px;align-items:center;margin-bottom:6px">
+          <select id="impExtMode" class="folder-select" style="flex:1;padding:6px 24px 6px 8px;font-size:11px"><option value="prepend">В начало</option><option value="append">В конец</option></select>
+          <label style="display:flex;align-items:center;gap:4px;color:rgba(255,255,255,0.4);font-size:11px;white-space:nowrap;cursor:pointer"><input type="checkbox" id="impExtMeta" style="accent-color:#e94560"> Meta</label>
+          <button class="folder-btn folder-btn-secondary" style="padding:4px 8px;font-size:10px" onclick="impToggleAll(true)">Все</button>
+          <button class="folder-btn folder-btn-secondary" style="padding:4px 8px;font-size:10px" onclick="impToggleAll(false)">Нет</button>
         </div>
-        <button class="folder-btn folder-btn-primary" style="width:100%;margin-top:6px" onclick="vkDownloadSelected()">Скачать очередь</button>
+        <button class="folder-btn folder-btn-primary" style="width:100%;font-size:12px" onclick="downloadImportMatches()">Скачать выбранные</button>
       </div>
+    </div>
+    <!-- Search -->
+    <div id="impSearch" style="display:none">
+      <div style="display:flex;gap:6px;margin-bottom:8px">
+        <input type="text" id="vkSearchQuery" class="folder-path-input" style="flex:1;font-size:11px" placeholder="Название трека или артист..." onkeydown="if(event.key==='Enter')vkSearchTracks()">
+        <button class="folder-btn folder-btn-primary" style="padding:6px 12px;font-size:11px" onclick="vkSearchTracks()">Найти</button>
+      </div>
+      <div id="vkSearchResults" style="max-height:180px;overflow-y:auto;border-radius:8px"></div>
+      <div id="vkQueueSection" style="display:none;margin-top:6px">
+        <div style="font-size:11px;color:rgba(255,255,255,0.3);margin-bottom:4px">Очередь (перетащите для порядка):</div>
+        <div id="vkQueue" style="max-height:25vh;overflow-y:auto;border:1px solid rgba(255,255,255,0.06);border-radius:8px;background:rgba(255,255,255,0.02)"></div>
+        <div style="display:flex;gap:6px;align-items:center;margin-top:6px">
+          <select id="vkSearchMode" class="folder-select" style="flex:1;padding:6px 24px 6px 8px;font-size:11px"><option value="prepend">В начало</option><option value="append">В конец</option></select>
+          <label style="display:flex;align-items:center;gap:4px;color:rgba(255,255,255,0.4);font-size:11px;white-space:nowrap;cursor:pointer"><input type="checkbox" id="vkSearchMeta" style="accent-color:#e94560"> Meta</label>
+        </div>
+        <button class="folder-btn folder-btn-primary" style="width:100%;margin-top:6px;font-size:12px" onclick="vkDownloadSelected()">Скачать очередь</button>
+      </div>
+    </div>
     </div>
     <!-- Progress (shared) -->
-    <div id="vkProgressSection" style="display:none;margin-top:10px">
+    <div id="vkProgressSection" style="display:none;margin-top:8px;flex-shrink:0">
       <div class="meta-progress" id="vkProgress"></div>
       <div class="meta-bar"><div class="meta-bar-fill" id="vkBarFill" style="width:0%"></div></div>
-      <div class="meta-log" id="vkLog" style="max-height:200px;overflow-y:auto"></div>
+      <div class="meta-log" id="vkLog" style="max-height:150px;overflow-y:auto"></div>
     </div>
-    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px">
-      <button onclick="cancelVkDownload()" style="background:#e94560;color:#fff" class="folder-btn">Отменить</button>
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:8px;flex-shrink:0">
+      <button onclick="cancelVkDownload()" class="folder-btn folder-btn-primary">Отменить</button>
       <button onclick="closeVkModal()" class="folder-btn folder-btn-secondary">Закрыть</button>
     </div>
   </div>
@@ -3569,11 +3749,130 @@ function cancelVkDownload() {
 }
 
 // ── VK Tabs & Search ──
-function showVkTab(tab) {
-  document.getElementById('vkTabPlaylist').classList.toggle('active', tab === 'playlist');
-  document.getElementById('vkTabSearch').classList.toggle('active', tab === 'search');
-  document.getElementById('vkPlaylistTab').style.display = tab === 'playlist' ? '' : 'none';
-  document.getElementById('vkSearchTab').style.display = tab === 'search' ? '' : 'none';
+function showImpTab(tab) {
+  var tabs = document.querySelectorAll('.imp-tab');
+  for (var i = 0; i < tabs.length; i++) tabs[i].classList.remove('active');
+  var btn = document.getElementById('impTab' + tab.charAt(0).toUpperCase() + tab.slice(1));
+  if (btn) btn.classList.add('active');
+  document.getElementById('impVk').style.display = tab === 'vk' ? '' : 'none';
+  document.getElementById('impExternal').style.display = (tab !== 'vk' && tab !== 'search') ? '' : 'none';
+  document.getElementById('impSearch').style.display = tab === 'search' ? '' : 'none';
+}
+// Keep old name for compat
+function showVkTab(t) { showImpTab(t === 'playlist' ? 'vk' : 'search'); }
+
+var impMatches = [];
+
+function importExternal() {
+  var url = document.getElementById('impExtUrl').value.trim();
+  if (!url) { showToast('Вставьте ссылку'); return; }
+  document.getElementById('impExtStatus').textContent = 'Загружаю плейлист и ищу треки в VK...';
+  document.getElementById('impMatchList').innerHTML = '';
+  document.getElementById('impMatchActions').style.display = 'none';
+  fetch('/api/import/parse', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({url: url})})
+  .then(function(r){return r.json()}).then(function(d) {
+    if (!d.ok) { document.getElementById('impExtStatus').textContent = d.error || 'Ошибка'; return; }
+    impMatches = d.matches || [];
+    document.getElementById('impExtStatus').textContent = 'Найдено: ' + impMatches.length + ' из ' + d.total + ' треков (платформа: ' + d.platform + ')';
+    renderImpMatches();
+    if (impMatches.length) document.getElementById('impMatchActions').style.display = '';
+  });
+}
+
+function renderImpMatches() {
+  var html = '';
+  for (var i = 0; i < impMatches.length; i++) {
+    var m = impMatches[i];
+    var dur = m.vk_duration ? Math.floor(m.vk_duration/60)+':'+('0'+m.vk_duration%60).slice(-2) : '';
+    if (m.matched && m.has_url) {
+      html += '<div class="imp-match" draggable="true" data-ii="'+i+'" ondragstart="impDragStart(event,'+i+')" ondragover="impDragOver(event,'+i+')" ondrop="impDrop(event,'+i+')" ondragend="impDragEnd(event)">'
+        + '<input type="checkbox" checked class="imp-check" data-idx="'+i+'" style="accent-color:#e94560;margin-top:2px;flex-shrink:0">'
+        + '<div class="orig"><div>'+esc(m.original_artist)+' — '+esc(m.original_title)+'</div></div>'
+        + '<div class="vk"><div>'+esc(m.vk_artist)+' — '+esc(m.vk_title)+' <span style="color:rgba(255,255,255,0.2)">'+dur+'</span></div>'
+        + '<button class="folder-btn folder-btn-secondary" style="padding:2px 6px;font-size:10px;margin-top:2px" onclick="reSearchTrack('+i+')">другой</button></div>'
+        + '<span class="drag-handle" style="cursor:grab;color:rgba(255,255,255,0.15)">≡</span></div>';
+    } else {
+      html += '<div class="imp-match" style="opacity:0.4">'
+        + '<input type="checkbox" disabled style="margin-top:2px;flex-shrink:0">'
+        + '<div class="orig"><div>'+esc(m.original_artist)+' — '+esc(m.original_title)+'</div></div>'
+        + '<div class="nomatch">Не найдено в VK</div></div>';
+    }
+  }
+  document.getElementById('impMatchList').innerHTML = html;
+}
+
+function reSearchTrack(idx) {
+  var m = impMatches[idx];
+  var q = prompt('Поиск в VK:', m.original_artist + ' ' + m.original_title);
+  if (!q) return;
+  fetch('/api/import/re_search', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({query: q})})
+  .then(function(r){return r.json()}).then(function(d) {
+    if (!d.ok || !d.results.length) { showToast('Не найдено'); return; }
+    // Show options
+    var html = '';
+    for (var i = 0; i < d.results.length; i++) {
+      var r = d.results[i];
+      html += '<div style="padding:6px;cursor:pointer;border-bottom:1px solid rgba(255,255,255,0.04)" onclick="pickReSearch('+idx+','+i+')" class="playlist-item">'
+        + '<div class="info"><div class="name" style="font-size:11px">'+esc(r.vk_title)+'</div>'
+        + '<div class="artist" style="font-size:10px">'+esc(r.vk_artist)+'</div></div></div>';
+    }
+    document.getElementById('impMatchList').innerHTML = html;
+    window._reSearchResults = d.results;
+    window._reSearchIdx = idx;
+  });
+}
+
+function pickReSearch(idx, resultIdx) {
+  var r = window._reSearchResults[resultIdx];
+  impMatches[idx].vk_artist = r.vk_artist;
+  impMatches[idx].vk_title = r.vk_title;
+  impMatches[idx].vk_id = r.vk_id;
+  impMatches[idx].vk_duration = r.vk_duration;
+  impMatches[idx].has_url = r.has_url;
+  impMatches[idx].matched = true;
+  renderImpMatches();
+}
+
+function impToggleAll(checked) {
+  var checks = document.querySelectorAll('.imp-check');
+  for (var i = 0; i < checks.length; i++) checks[i].checked = checked;
+}
+
+// Drag reorder for import matches
+var impDragIdx = null;
+function impDragStart(e,i) { impDragIdx = i; e.target.closest('.imp-match').style.opacity='0.4'; }
+function impDragEnd(e) { impDragIdx = null; var el = e.target.closest('.imp-match'); if(el) el.style.opacity=''; }
+function impDragOver(e,i) { e.preventDefault(); }
+function impDrop(e,targetIdx) {
+  e.preventDefault();
+  if (impDragIdx === null || impDragIdx === targetIdx) return;
+  var item = impMatches.splice(impDragIdx, 1)[0];
+  impMatches.splice(targetIdx, 0, item);
+  impDragIdx = null;
+  renderImpMatches();
+}
+
+function downloadImportMatches() {
+  var checks = document.querySelectorAll('.imp-check:checked');
+  if (!checks.length) { showToast('Выберите треки'); return; }
+  var folder = document.getElementById('folderSelect').value;
+  if (!folder) { showToast('Выберите каталог'); return; }
+  var ids = [];
+  for (var i = 0; i < checks.length; i++) {
+    var idx = parseInt(checks[i].getAttribute('data-idx'));
+    if (impMatches[idx] && impMatches[idx].vk_id) ids.push(impMatches[idx].vk_id);
+  }
+  if (!ids.length) { showToast('Нет доступных треков'); return; }
+  var mode = document.getElementById('impExtMode').value;
+  var runMeta = document.getElementById('impExtMeta').checked;
+  fetch('/api/vk/download_tracks', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({folder: folder, track_ids: ids, mode: mode, run_meta: runMeta})})
+  .then(function(r){return r.json()}).then(function(d) {
+    if (d.ok) { document.getElementById('vkProgressSection').style.display=''; vkPolling=true; pollVk(); }
+    else showToast(d.error || 'Ошибка');
+  });
 }
 
 var vkSearchResults = [];
@@ -4860,6 +5159,83 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/vk/cancel":
             get_vk_state(user)["cancel"] = True
             self._respond_json({"ok": True})
+
+        elif path == "/api/import/parse":
+            # Parse external playlist and match tracks with VK
+            if self._deny_demo(udata): return
+            vs = get_vk_state(user)
+            if not vs["service"]:
+                self._respond_json({"ok": False, "error": "VK не авторизован."})
+                return
+            ext_url = data.get("url", "").strip()
+            if not ext_url:
+                self._respond_json({"ok": False, "error": "Вставьте ссылку."})
+                return
+            tracks_list, platform = parse_external_playlist(ext_url)
+            if not tracks_list:
+                self._respond_json({"ok": False, "error": "Не удалось получить треки. Убедитесь что плейлист публичный."})
+                return
+            # Match each track with VK
+            matches = []
+            for t in tracks_list[:200]:  # limit 200 tracks
+                query = "{} {}".format(t.get("artist", ""), t.get("title", "")).strip()
+                if not query:
+                    continue
+                try:
+                    results = vs["service"].search_songs_by_text(query, count=1)
+                    if results:
+                        s = results[0]
+                        matches.append({
+                            "original_artist": t.get("artist", ""),
+                            "original_title": t.get("title", ""),
+                            "vk_artist": s.artist,
+                            "vk_title": s.title,
+                            "vk_id": "{}_{}".format(s.owner_id, s.track_id),
+                            "vk_duration": s.duration,
+                            "has_url": bool(s.url and "index.m3u8" not in s.url),
+                            "matched": True,
+                        })
+                    else:
+                        matches.append({
+                            "original_artist": t.get("artist", ""),
+                            "original_title": t.get("title", ""),
+                            "vk_artist": "", "vk_title": "", "vk_id": "",
+                            "vk_duration": 0, "has_url": False, "matched": False,
+                        })
+                except Exception:
+                    matches.append({
+                        "original_artist": t.get("artist", ""),
+                        "original_title": t.get("title", ""),
+                        "vk_artist": "", "vk_title": "", "vk_id": "",
+                        "vk_duration": 0, "has_url": False, "matched": False,
+                    })
+                time.sleep(0.2)  # VK rate limit
+            self._respond_json({"ok": True, "platform": platform, "matches": matches, "total": len(tracks_list)})
+
+        elif path == "/api/import/re_search":
+            # Re-search single track in VK with custom query
+            if self._deny_demo(udata): return
+            vs = get_vk_state(user)
+            if not vs["service"]:
+                self._respond_json({"ok": False, "error": "VK не авторизован."})
+                return
+            query = data.get("query", "").strip()
+            if not query:
+                self._respond_json({"ok": False, "error": "Пустой запрос."})
+                return
+            try:
+                results = vs["service"].search_songs_by_text(query, count=5)
+                items = []
+                for s in results:
+                    items.append({
+                        "vk_artist": s.artist, "vk_title": s.title,
+                        "vk_id": "{}_{}".format(s.owner_id, s.track_id),
+                        "vk_duration": s.duration,
+                        "has_url": bool(s.url and "index.m3u8" not in s.url),
+                    })
+                self._respond_json({"ok": True, "results": items})
+            except Exception:
+                self._respond_json({"ok": False, "error": "Ошибка поиска."})
 
         elif path == "/api/vk/search":
             if self._deny_demo(udata): return
