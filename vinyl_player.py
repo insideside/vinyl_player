@@ -4376,19 +4376,58 @@ function loadUserPlaylists() {
   });
 }
 
+var expandedPlaylist = null;
+
 function renderPlaylists() {
   var html = '<div style="padding:8px 12px"><button class="folder-btn folder-btn-secondary" style="width:100%;font-size:12px" onclick="createPlaylist()">+ Создать плейлист</button></div>';
   for (var i = 0; i < userPlaylists.length; i++) {
     var pl = userPlaylists[i];
+    var isExp = expandedPlaylist === pl.id;
     var coverHtml = buildPlCover(pl);
-    html += '<div class="album-card" onclick="playPlaylist(\'' + pl.id + '\')">'
+    html += '<div class="album-card' + (isExp ? ' active' : '') + '" onclick="togglePlaylistExpand(\'' + pl.id + '\')">'
       + '<div class="album-cover" style="position:relative;overflow:hidden">' + coverHtml + '</div>'
       + '<div class="album-info"><div class="album-name">' + esc(pl.name) + '</div>'
       + '<div class="album-count">' + pl.tracks.length + ' треков</div></div>'
       + '<button class="track-edit-btn" onclick="event.stopPropagation();editPlaylist(\'' + pl.id + '\')"><svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 000-1.41l-2.34-2.34a1 1 0 00-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg></button>'
       + '</div>';
+    // Expanded track list
+    html += '<div class="album-tracks' + (isExp ? ' open' : '') + '">';
+    if (isExp) {
+      html += '<div style="padding:6px 12px"><button class="folder-btn folder-btn-primary" style="width:100%;font-size:11px;padding:6px" onclick="event.stopPropagation();playPlaylist(\'' + pl.id + '\')">&#9654; Воспроизвести</button></div>';
+      for (var ti = 0; ti < pl.tracks.length; ti++) {
+        var file = pl.tracks[ti];
+        var t = tracks.find(function(tr){return tr.file===file});
+        if (!t) continue;
+        var trackIdx = tracks.indexOf(t);
+        html += '<div class="playlist-item' + (trackIdx === currentIdx ? ' active' : '') + '" onclick="event.stopPropagation();playFromPlaylist(\'' + pl.id + '\',' + ti + ')" style="padding-left:20px">'
+          + '<div class="info"><div class="name" style="font-size:12px">' + esc(t.title) + '</div>'
+          + '<div class="artist" style="font-size:11px">' + esc(t.artist) + '</div></div></div>';
+      }
+    }
+    html += '</div>';
   }
   document.getElementById('playlistsList').innerHTML = html;
+}
+
+function togglePlaylistExpand(id) {
+  expandedPlaylist = expandedPlaylist === id ? null : id;
+  renderPlaylists();
+}
+
+function playFromPlaylist(plId, trackIndex) {
+  var pl = userPlaylists.find(function(p){return p.id===plId});
+  if (!pl) return;
+  playQueue = [];
+  for (var i = 0; i < pl.tracks.length; i++) {
+    var idx = tracks.findIndex(function(t){return t.file===pl.tracks[i]});
+    if (idx >= 0) playQueue.push(idx);
+  }
+  // Find position in queue
+  var file = pl.tracks[trackIndex];
+  var tIdx = tracks.findIndex(function(t){return t.file===file});
+  playQueuePos = playQueue.indexOf(tIdx);
+  if (playQueuePos < 0) playQueuePos = 0;
+  selectTrack(playQueue[playQueuePos], true);
 }
 
 function buildPlCover(pl) {
