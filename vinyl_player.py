@@ -2150,8 +2150,8 @@ body { overflow: hidden; touch-action: none; position: fixed; width: 100%; heigh
     </div>
 
     <div class="playlist-header" style="display:flex;align-items:center;gap:8px">
-      <button class="shuffle-btn" id="downloadCatalogBtn" onclick="downloadCatalog()" data-tip="Скачать каталог" style="display:none"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg></button>
-      <button class="shuffle-btn" id="cacheBtn" onclick="startCacheAll()" data-tip="Кэшировать для офлайн"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.49 2 2 6.49 2 12s4.49 10 10 10 10-4.49 10-10S17.51 2 12 2zm-1 14.5v-9l6 4.5-6 4.5z"/></svg></button>
+      <button class="shuffle-btn" id="downloadCatalogBtn" onclick="downloadCatalog()" data-tip="Скачать ZIP-архив" style="display:none"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M20 6h-8l-2-2H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2zm-2 10h-3v3h-2v-3H9l5-5 5 5z"/></svg></button>
+      <button class="shuffle-btn" id="cacheBtn" onclick="startCacheAll()" data-tip="Кэшировать для офлайн"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg></button>
       <button class="shuffle-btn" id="cachedOnlyBtn" onclick="toggleCachedOnly()" data-tip="Только кэш"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg></button>
       <span id="playlistHeader" style="flex:1;cursor:pointer" onclick="scrollTracklistTop()">0 треков</span>
       <button class="shuffle-btn" id="shuffleListBtn" onclick="toggleShuffleFromList()" data-tip="Перемешать"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M10.59 9.17L5.41 4 4 5.41l5.17 5.17 1.42-1.41zM14.5 4l2.04 2.04L4 18.59 5.41 20 17.96 7.46 20 9.5V4h-5.5zm.33 9.41l-1.41 1.41 3.13 3.13L14.5 20H20v-5.5l-2.04 2.04-3.13-3.13z"/></svg></button>
