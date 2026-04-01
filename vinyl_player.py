@@ -2065,7 +2065,10 @@ body { overflow: hidden; touch-action: none; position: fixed; width: 100%; heigh
           <button class="folder-btn folder-btn-secondary" style="padding:4px 8px;font-size:10px" onclick="impToggleAll(true)">Все</button>
           <button class="folder-btn folder-btn-secondary" style="padding:4px 8px;font-size:10px" onclick="impToggleAll(false)">Нет</button>
         </div>
-        <button class="folder-btn folder-btn-primary" style="width:100%;font-size:12px" onclick="downloadImportMatches()">Скачать выбранные</button>
+        <div style="display:flex;gap:6px">
+          <button class="folder-btn folder-btn-primary" style="flex:1;font-size:12px" onclick="downloadImportMatches()">Скачать выбранные</button>
+          <button class="folder-btn folder-btn-secondary" style="flex:1;font-size:11px" id="impRetryBtn" onclick="retryUnmatched()" disabled data-tip="Повторить поиск ненайденных треков">Повторить поиск</button>
+        </div>
       </div>
     </div>
     <!-- Search -->
@@ -3769,6 +3772,9 @@ function showImpTab(tab) {
 function showVkTab(t) { showImpTab(t === 'playlist' ? 'vk' : 'search'); }
 
 var impMatches = [];
+var impOriginalTracks = []; // full track list from external platform
+var impRetryTimer = null;
+var impRetryTime = 0;
 
 function importExternal() {
   var url = document.getElementById('impExtUrl').value.trim();
@@ -3781,12 +3787,94 @@ function importExternal() {
   .then(function(r){return r.json()}).then(function(d) {
     if (!d.ok) { document.getElementById('impExtStatus').textContent = d.error || 'Ошибка'; return; }
     impMatches = d.matches || [];
-    var status = 'Найдено: ' + impMatches.length + ' из ' + d.total + ' треков (' + d.platform + ')';
-    if (d.warning) status += '\n⚠ ' + d.warning;
-    document.getElementById('impExtStatus').textContent = status;
-    if (d.warning) showToast(d.warning);
+    impOriginalTracks = d.matches ? d.matches.map(function(m) { return {artist: m.original_artist, title: m.original_title}; }) : [];
+    updateImpStatus(d);
     renderImpMatches();
     if (impMatches.length) document.getElementById('impMatchActions').style.display = '';
+    // If there was a captcha warning, start retry timer
+    if (d.warning) startRetryTimer();
+    else enableRetryBtn();
+  });
+}
+
+function updateImpStatus(d) {
+  var matched = impMatches.filter(function(m){return m.matched}).length;
+  var total = impMatches.length;
+  var status = 'Сопоставлено: ' + matched + ' из ' + total + ' треков';
+  if (d && d.platform) status += ' (' + d.platform + ')';
+  if (d && d.warning) status += '\n⚠ ' + d.warning;
+  document.getElementById('impExtStatus').textContent = status;
+  if (d && d.warning) showToast(d.warning);
+}
+
+function startRetryTimer() {
+  var btn = document.getElementById('impRetryBtn');
+  btn.disabled = true;
+  impRetryTime = 30 * 60; // 30 minutes
+  if (impRetryTimer) clearInterval(impRetryTimer);
+  updateRetryLabel();
+  impRetryTimer = setInterval(function() {
+    impRetryTime--;
+    if (impRetryTime <= 0) {
+      clearInterval(impRetryTimer);
+      impRetryTimer = null;
+      enableRetryBtn();
+    } else {
+      updateRetryLabel();
+    }
+  }, 1000);
+}
+
+function updateRetryLabel() {
+  var btn = document.getElementById('impRetryBtn');
+  var m = Math.floor(impRetryTime / 60);
+  var s = impRetryTime % 60;
+  btn.textContent = 'Повторить (' + m + ':' + ('0'+s).slice(-2) + ')';
+}
+
+function enableRetryBtn() {
+  var btn = document.getElementById('impRetryBtn');
+  var unmatched = impMatches.filter(function(m){return !m.matched}).length;
+  if (unmatched > 0) {
+    btn.disabled = false;
+    btn.textContent = 'Повторить (' + unmatched + ' ненайд.)';
+  } else {
+    btn.disabled = true;
+    btn.textContent = 'Все найдены';
+  }
+}
+
+function retryUnmatched() {
+  // Collect unmatched tracks
+  var unmatched = [];
+  for (var i = 0; i < impMatches.length; i++) {
+    if (!impMatches[i].matched) {
+      unmatched.push({artist: impMatches[i].original_artist, title: impMatches[i].original_title, idx: i});
+    }
+  }
+  if (!unmatched.length) { showToast('Все треки найдены'); return; }
+  document.getElementById('impExtStatus').textContent = 'Повторный поиск ' + unmatched.length + ' треков...';
+  document.getElementById('impRetryBtn').disabled = true;
+  document.getElementById('impRetryBtn').textContent = 'Ищу...';
+
+  // Send only unmatched for re-search
+  var queries = unmatched.map(function(u) { return {artist: u.artist, title: u.title}; });
+  fetch('/api/import/retry', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({tracks: queries})})
+  .then(function(r){return r.json()}).then(function(d) {
+    if (!d.ok) { showToast(d.error || 'Ошибка'); startRetryTimer(); return; }
+    // Update matches in place
+    var newMatches = d.matches || [];
+    for (var i = 0; i < newMatches.length; i++) {
+      var origIdx = unmatched[i].idx;
+      if (newMatches[i].matched) {
+        impMatches[origIdx] = newMatches[i];
+      }
+    }
+    updateImpStatus(d);
+    renderImpMatches();
+    if (d.warning) startRetryTimer();
+    else enableRetryBtn();
   });
 }
 
@@ -5228,6 +5316,49 @@ class Handler(BaseHTTPRequestHandler):
                     })
                 time.sleep(0.3)
             self._respond_json({"ok": True, "platform": platform, "matches": matches, "total": len(tracks_list)})
+
+        elif path == "/api/import/retry":
+            # Retry matching for unmatched tracks only
+            if self._deny_demo(udata): return
+            vs = get_vk_state(user)
+            if not vs["service"]:
+                self._respond_json({"ok": False, "error": "VK не авторизован."})
+                return
+            retry_tracks = data.get("tracks", [])
+            if not retry_tracks:
+                self._respond_json({"ok": False, "error": "Нет треков."})
+                return
+            matches = []
+            warning = None
+            for t in retry_tracks[:200]:
+                query = "{} {}".format(t.get("artist", ""), t.get("title", "")).strip()
+                if not query:
+                    matches.append({"original_artist": t.get("artist",""), "original_title": t.get("title",""),
+                        "vk_artist":"","vk_title":"","vk_id":"","vk_duration":0,"has_url":False,"matched":False})
+                    continue
+                try:
+                    results = vs["service"].search_songs_by_text(query, count=1)
+                    if results:
+                        s = results[0]
+                        matches.append({"original_artist": t.get("artist",""), "original_title": t.get("title",""),
+                            "vk_artist": s.artist, "vk_title": s.title,
+                            "vk_id": "{}_{}".format(s.owner_id, s.track_id),
+                            "vk_duration": s.duration,
+                            "has_url": bool(s.url and "index.m3u8" not in s.url), "matched": True})
+                    else:
+                        matches.append({"original_artist": t.get("artist",""), "original_title": t.get("title",""),
+                            "vk_artist":"","vk_title":"","vk_id":"","vk_duration":0,"has_url":False,"matched":False})
+                except Exception as e:
+                    if "captcha" in str(e).lower():
+                        warning = "VK снова включил captcha после {} треков.".format(len(matches))
+                        break
+                    matches.append({"original_artist": t.get("artist",""), "original_title": t.get("title",""),
+                        "vk_artist":"","vk_title":"","vk_id":"","vk_duration":0,"has_url":False,"matched":False})
+                time.sleep(0.3)
+            resp = {"ok": True, "matches": matches}
+            if warning:
+                resp["warning"] = warning
+            self._respond_json(resp)
 
         elif path == "/api/import/re_search":
             # Re-search single track in VK with custom query
