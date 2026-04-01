@@ -443,26 +443,40 @@ def parse_yandex_playlist(url):
 
 
 def parse_spotify_playlist(url):
-    """Парсит публичный плейлист Spotify через embed JSON."""
+    """Парсит публичный плейлист Spotify. Embed = max 50, direct page = more."""
     try:
+        import json as _json
         m = re.search(r'playlist/([a-zA-Z0-9]+)', url)
         if not m:
             return None
-        embed_url = "https://open.spotify.com/embed/playlist/{}".format(m.group(1))
+        playlist_id = m.group(1)
+        # Method 1: Embed (reliable, max 50)
+        embed_url = "https://open.spotify.com/embed/playlist/{}".format(playlist_id)
         with HttpClient(timeout=15, follow_redirects=True) as client:
             resp = client.get(embed_url, headers={"User-Agent": "Mozilla/5.0"})
         if resp.status_code != 200:
             return None
-        import json as _json
-        m = re.search(r'<script[^>]*type="application/json"[^>]*>(.+?)</script>', resp.text)
-        if not m:
+        m2 = re.search(r'<script[^>]*type="application/json"[^>]*>(.+?)</script>', resp.text)
+        if not m2:
             return None
-        data = _json.loads(m.group(1))
+        data = _json.loads(m2.group(1))
         entity = data.get("props", {}).get("pageProps", {}).get("state", {}).get("data", {}).get("entity", {})
         track_list = entity.get("trackList", [])
-        if not track_list:
-            return None
-        return [{"artist": t.get("subtitle", ""), "title": t.get("title", "")} for t in track_list if t.get("title")]
+        tracks = [{"artist": t.get("subtitle", ""), "title": t.get("title", "")} for t in track_list if t.get("title")]
+        # Method 2: Direct page (more tracks via regex)
+        if len(tracks) >= 48:  # likely truncated at 50
+            try:
+                with HttpClient(timeout=15, follow_redirects=True) as client:
+                    resp2 = client.get("https://open.spotify.com/playlist/{}".format(playlist_id),
+                        headers={"User-Agent": "Mozilla/5.0"})
+                if resp2.status_code == 200:
+                    # Extract all title+subtitle pairs
+                    pairs = re.findall(r'"title":"((?:[^"\\]|\\.)+)","subtitle":"((?:[^"\\]|\\.)+)"', resp2.text)
+                    if len(pairs) > len(tracks):
+                        tracks = [{"artist": a, "title": t} for t, a in pairs]
+            except Exception:
+                pass
+        return tracks if tracks else None
     except Exception:
         return None
 
@@ -590,7 +604,14 @@ def vk_download_worker(urls, folder, order, mode, run_meta_after, username=""):
                 continue
             owner_id, playlist_id, access_key = parsed
             vk_state["log"].append("[{}/{}] Загружаю список треков...".format(pl_num, total_pl))
-            songs = vk_get_all_songs(service, owner_id, playlist_id, access_key)
+            try:
+                songs = vk_get_all_songs(service, owner_id, playlist_id, access_key)
+            except Exception as e:
+                if "captcha" in str(e).lower():
+                    vk_state["log"].append("  VK включил captcha. Подождите 15 минут и повторите.")
+                    break
+                vk_state["log"].append("  Ошибка: " + str(e)[:80])
+                continue
             vk_state["log"].append("  Найдено: {} треков".format(len(songs)))
             if order == "reverse":
                 songs = list(reversed(songs))
@@ -641,9 +662,15 @@ def vk_download_worker(urls, folder, order, mode, run_meta_after, username=""):
                 downloaded += 1
                 continue
 
-            ok = vk_download_song(song, filepath)
-            if not ok:
-                ok = vk_search_fallback(service, song.artist, song.title, filepath)
+            try:
+                ok = vk_download_song(song, filepath)
+                if not ok:
+                    ok = vk_search_fallback(service, song.artist, song.title, filepath)
+            except Exception as e:
+                if "captcha" in str(e).lower():
+                    vk_state["log"].append("\n⚠ VK включил captcha. Скачано: {}/{}. Подождите 15 минут.".format(downloaded, total))
+                    break
+                ok = False
 
             if ok:
                 downloaded += 1
@@ -3810,7 +3837,7 @@ function updateImpStatus(d) {
 function startRetryTimer() {
   var btn = document.getElementById('impRetryBtn');
   btn.disabled = true;
-  impRetryTime = 30 * 60; // 30 minutes
+  impRetryTime = 15 * 60; // 15 minutes
   if (impRetryTimer) clearInterval(impRetryTimer);
   updateRetryLabel();
   impRetryTimer = setInterval(function() {
@@ -5275,7 +5302,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             # Match each track with VK
             matches = []
-            for t in tracks_list[:200]:  # limit 200 tracks
+            for t in tracks_list:  # no artificial limit
                 query = "{} {}".format(t.get("artist", ""), t.get("title", "")).strip()
                 if not query:
                     continue
