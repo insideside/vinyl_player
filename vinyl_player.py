@@ -2551,31 +2551,18 @@ body { overflow: hidden; touch-action: none; position: fixed; width: 100%; heigh
 <audio id="audioEl"></audio>
 
 <script>
-// ── Debug log — triple-tap track title to show ──
-var _dbgLog = [];
-var _dbgEl = null;
-var _dbgVisible = false;
-var _dbgTaps = 0;
-var _dbgTimer = null;
+// ── Debug: logs sent to server console ──
+var _dbgQueue = [];
+var _dbgTimer2 = null;
 function dbg(msg) {
-  var ts = new Date().toTimeString().slice(0,8);
-  var line = ts + ' ' + msg;
-  _dbgLog.push(line);
-  if (_dbgLog.length > 100) _dbgLog.shift();
-  if (_dbgEl && _dbgVisible) { _dbgEl.textContent = _dbgLog.join('\n'); _dbgEl.scrollTop = _dbgEl.scrollHeight; }
-  console.log('[dbg] ' + line);
+  _dbgQueue.push(new Date().toTimeString().slice(0,8) + ' ' + msg);
+  if (!_dbgTimer2) _dbgTimer2 = setTimeout(_dbgFlush, 300);
 }
-function initDebugPanel() {
-  _dbgEl = document.createElement('pre');
-  _dbgEl.style.cssText = 'display:none;position:fixed;top:0;left:0;right:0;bottom:0;z-index:99999;background:rgba(0,0,0,0.93);color:#0f0;font:10px/1.4 monospace;padding:10px;overflow:auto;margin:0;white-space:pre-wrap;word-break:break-all;-webkit-overflow-scrolling:touch';
-  _dbgEl.onclick = function() { _dbgVisible = false; _dbgEl.style.display = 'none'; };
-  document.body.appendChild(_dbgEl);
-  var el = document.getElementById('trackTitle');
-  if (el) el.addEventListener('click', function() {
-    _dbgTaps++; clearTimeout(_dbgTimer);
-    _dbgTimer = setTimeout(function() { _dbgTaps = 0; }, 500);
-    if (_dbgTaps >= 3) { _dbgTaps = 0; _dbgVisible = !_dbgVisible; _dbgEl.style.display = _dbgVisible ? '' : 'none'; if (_dbgVisible) { _dbgEl.textContent = _dbgLog.join('\n'); _dbgEl.scrollTop = _dbgEl.scrollHeight; } }
-  });
+function _dbgFlush() {
+  _dbgTimer2 = null;
+  if (!_dbgQueue.length) return;
+  var q = _dbgQueue.splice(0);
+  try { fetch('/api/dbg', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({lines:q})}); } catch(e){}
 }
 dbg('init proto=' + location.protocol + ' host=' + location.hostname + ' standalone=' + !!window.navigator.standalone);
 // ── End debug ──
@@ -5883,7 +5870,6 @@ window.addEventListener('offline', function() {
   if (!_isOffline) enterOfflineMode();
 });
 
-initDebugPanel();
 loadConfig();
 </script>
 </body>
@@ -6517,6 +6503,14 @@ class Handler(BaseHTTPRequestHandler):
                 try: self.wfile.flush()
                 except Exception: pass
                 threading.Timer(1.0, _restart_server, args=["127.0.0.1"]).start()
+
+        elif path == "/api/dbg":
+            # Debug: print client logs to server console
+            lines = data.get("lines", [])
+            ip = self.client_address[0] if self.client_address else '?'
+            for line in lines:
+                print("\033[36m[{}]\033[0m {}".format(ip, line))
+            self._respond_json({"ok": True})
 
         elif path == "/api/remove_folder":
             if self._deny_demo(udata): return
