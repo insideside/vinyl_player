@@ -5210,6 +5210,10 @@ class Handler(BaseHTTPRequestHandler):
                             "vk_duration": 0, "has_url": False, "matched": False,
                         })
                 except Exception as e:
+                    err = str(e).lower()
+                    if "captcha" in err:
+                        self._respond_json({"ok": False, "error": "VK временно ограничил доступ (captcha). Подождите 1-2 часа и попробуйте снова."})
+                        return
                     print("VK import match error:", str(e)[:100])
                     matches.append({
                         "original_artist": t.get("artist", ""),
@@ -5217,7 +5221,7 @@ class Handler(BaseHTTPRequestHandler):
                         "vk_artist": "", "vk_title": "", "vk_id": "",
                         "vk_duration": 0, "has_url": False, "matched": False,
                     })
-                time.sleep(0.2)  # VK rate limit
+                time.sleep(0.3)  # VK rate limit
             self._respond_json({"ok": True, "platform": platform, "matches": matches, "total": len(tracks_list)})
 
         elif path == "/api/import/re_search":
@@ -5271,8 +5275,10 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 err_msg = str(e)
                 if "access_token" in err_msg or "authorization" in err_msg.lower():
-                    vs["service"] = None  # Invalidate
+                    vs["service"] = None
                     self._respond_json({"ok": False, "error": "Токен VK истёк. Переавторизуйтесь."})
+                elif "captcha" in err_msg.lower():
+                    self._respond_json({"ok": False, "error": "VK временно ограничил доступ (captcha). Подождите 1-2 часа и попробуйте снова. Это нормально при частых запросах."})
                 else:
                     print("VK search error:", err_msg)
                     self._respond_json({"ok": False, "error": "Ошибка поиска VK: " + err_msg[:100]})
