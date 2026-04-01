@@ -2551,6 +2551,31 @@ body { overflow: hidden; touch-action: none; position: fixed; width: 100%; heigh
 <audio id="audioEl"></audio>
 
 <script>
+// ── iOS PWA audio session fix: must run FIRST, before anything else ──
+// Creates AudioContext on first touch and connects <audio> through it.
+// Without this, iOS standalone PWA plays silently (play() resolves but no sound).
+(function(){
+  var _acxDone = false;
+  function _acxUnlock() {
+    if (_acxDone) return;
+    _acxDone = true;
+    try {
+      var ctx = new (window.AudioContext || window.webkitAudioContext)();
+      var el = document.getElementById('audioEl');
+      if (el) {
+        var src = ctx.createMediaElementSource(el);
+        src.connect(ctx.destination);
+      }
+      if (ctx.state === 'suspended') ctx.resume();
+      window._acx = ctx;
+      if (typeof dbg === 'function') dbg('ACX unlocked state=' + ctx.state);
+    } catch(e) { if (typeof dbg === 'function') dbg('ACX err: ' + e.message); }
+    document.removeEventListener('touchstart', _acxUnlock, true);
+    document.removeEventListener('click', _acxUnlock, true);
+  }
+  document.addEventListener('touchstart', _acxUnlock, true);
+  document.addEventListener('click', _acxUnlock, true);
+})();
 // ── Debug: logs sent to server console ──
 var _dbgQueue = [];
 var _dbgTimer2 = null;
@@ -3064,25 +3089,7 @@ audio.addEventListener('playing', function() { dbg('EVENT: playing, time=' + aud
 audio.addEventListener('pause', function() { dbg('EVENT: pause, time=' + audio.currentTime.toFixed(1)); });
 audio.addEventListener('stalled', function() { dbg('EVENT: stalled'); });
 
-// iOS PWA audio session fix: AudioContext.resume() in user gesture
-var _acx = null;
-var _acxConnected = false;
-function ensureAudioContext() {
-  if (!_acx) {
-    _acx = new (window.AudioContext || window.webkitAudioContext)();
-    dbg('AudioContext created, state=' + _acx.state);
-  }
-  if (!_acxConnected) {
-    try {
-      var src = _acx.createMediaElementSource(audio);
-      src.connect(_acx.destination);
-      _acxConnected = true;
-      dbg('AudioContext connected to <audio>');
-    } catch(e) { dbg('AudioContext connect err: ' + e.message); }
-  }
-  if (_acx.state === 'suspended') {
-    _acx.resume().then(function() { dbg('AudioContext resumed'); });
-  }
+// ensureAudioContext removed — handled by global touchstart/click at top of script
 }
 
 function selectTrack(i, autoplay) {
@@ -3093,9 +3100,6 @@ function selectTrack(i, autoplay) {
 
   vinylAngle = 0;
   vinylSpeed = 0;
-
-  // Activate iOS audio session via AudioContext (must be in user gesture)
-  ensureAudioContext();
 
   var streamUrl = '/api/stream/' + encodeURIComponent(t.file);
   if (_blobUrlCache[t.file]) {
