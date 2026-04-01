@@ -2551,9 +2551,33 @@ body { overflow: hidden; touch-action: none; position: fixed; width: 100%; heigh
 <audio id="audioEl"></audio>
 
 <script>
-// ── iOS PWA audio fix ──
-// iOS standalone PWA cannot activate audio session on its own.
-// Detect: if play() fires 'playing' but time doesn't advance, show prompt.
+// ── iOS PWA audio session fix ──
+// iOS standalone PWA won't activate audio session even with play() in gesture.
+// Workaround: on first touch, play <audio> muted (iOS allows muted autoplay),
+// then unmute — this may activate the session.
+(function(){
+  var done = false;
+  function unlock() {
+    if (done) return;
+    done = true;
+    var el = document.getElementById('audioEl');
+    if (!el) return;
+    el.muted = true;
+    el.play().then(function() {
+      el.muted = false;
+      el.pause();
+      el.currentTime = 0;
+      if (typeof dbg === 'function') dbg('PWA audio unlock: muted play OK');
+    }).catch(function(e) {
+      el.muted = false;
+      if (typeof dbg === 'function') dbg('PWA audio unlock fail: ' + e.message);
+    });
+    document.removeEventListener('touchstart', unlock, true);
+    document.removeEventListener('click', unlock, true);
+  }
+  document.addEventListener('touchstart', unlock, true);
+  document.addEventListener('click', unlock, true);
+})();
 // ── Debug: logs sent to server console ──
 var _dbgQueue = [];
 var _dbgTimer2 = null;
@@ -3067,16 +3091,6 @@ audio.addEventListener('playing', function() { dbg('EVENT: playing, time=' + aud
 audio.addEventListener('pause', function() { dbg('EVENT: pause, time=' + audio.currentTime.toFixed(1)); });
 audio.addEventListener('stalled', function() { dbg('EVENT: stalled'); });
 
-var _pwaFixShown = false;
-function showPwaAudioFix() {
-  if (_pwaFixShown) return;
-  _pwaFixShown = true;
-  // Open a page in Safari that plays silence and redirects back
-  // Safari activates the system audio session, then PWA can play
-  var url = location.origin + '/pwa-audio-fix';
-  window.location.href = url;
-}
-
 function selectTrack(i, autoplay) {
   if (i < 0 || i >= tracks.length) return;
   currentIdx = i;
@@ -3096,18 +3110,7 @@ function selectTrack(i, autoplay) {
   }
   if (autoplay) {
     var p = audio.play();
-    if (p&&p.then) p.then(function(){
-      dbg('play OK, time=' + audio.currentTime.toFixed(1));
-      // iOS PWA audio session check: if playing but time stuck at 0
-      if (window.navigator.standalone) {
-        setTimeout(function() {
-          if (audio.currentTime < 0.1 && !audio.paused) {
-            dbg('PWA audio stuck — opening Safari to activate session');
-            showPwaAudioFix();
-          }
-        }, 1500);
-      }
-    }).catch(function(e){dbg('play FAIL: '+e.message)});
+    if (p&&p.then) p.then(function(){dbg('play OK, time=' + audio.currentTime.toFixed(1))}).catch(function(e){dbg('play FAIL: '+e.message)});
     setPlayState(true);
   }
   if (isTrackCached(t.file)) prepareBlobUrl(t.file);
