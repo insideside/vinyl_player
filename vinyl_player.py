@@ -7365,8 +7365,8 @@ def _start_server(bind_addr):
             _server = None
         time.sleep(0.5)  # дать порту освободиться
         srv = ReusableHTTPServer((bind_addr, SERVER_PORT), Handler)
-        # Wrap with SSL if HTTPS enabled and cert exists
-        if _use_https and CERT_FILE.exists() and KEY_FILE.exists():
+        # Wrap with SSL if HTTPS enabled, public mode, and cert exists
+        if _use_https and bind_addr == "0.0.0.0" and CERT_FILE.exists() and KEY_FILE.exists():
             ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
             ctx.load_cert_chain(str(CERT_FILE), str(KEY_FILE))
             srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
@@ -7394,11 +7394,13 @@ def main():
         bind_addr = "0.0.0.0"
         print("Restoring WAN static: http://{}:{}".format(s["wan_ip"], s.get("wan_port", SERVER_PORT)))
 
-    # Auto-restore HTTPS setting
-    if s.get("https"):
+    # Auto-restore HTTPS only when public (LAN/WAN), never on localhost-only
+    if IS_PUBLIC and s.get("https"):
         if _generate_self_signed_cert():
             _use_https = True
             print("HTTPS enabled")
+    else:
+        _use_https = False
 
     _start_server(bind_addr)
 
