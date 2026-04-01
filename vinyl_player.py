@@ -3902,12 +3902,14 @@ function togglePublic(enabled) {
     body: JSON.stringify({enabled: enabled})})
   .then(function(r){return r.json()})
   .then(function(d) {
+    dbg('togglePublic response: ' + JSON.stringify(d));
     if (d.public && d.lan_url) {
+      info.textContent = 'Перенаправление на ' + d.lan_url + '...';
       setTimeout(function() { window.location.href = d.lan_url; }, 2500);
     } else {
       setTimeout(function() { window.location.href = 'http://127.0.0.1:PORT_PLACEHOLDER'; }, 2500);
     }
-  });
+  }).catch(function(e) { dbg('togglePublic error: ' + e.message); });
 }
 
 // ── WAN (Cloudflare Tunnel) ──
