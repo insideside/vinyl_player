@@ -2552,29 +2552,30 @@ body { overflow: hidden; touch-action: none; position: fixed; width: 100%; heigh
 
 <script>
 // ── iOS PWA audio session fix: must run FIRST, before anything else ──
-// Creates AudioContext on first touch and connects <audio> through it.
-// Without this, iOS standalone PWA plays silently (play() resolves but no sound).
+// iOS standalone PWA: audio.play() resolves but no sound. AudioContext.resume() alone
+// doesn't activate the system audio session. Playing an actual AudioBufferSourceNode does.
 (function(){
-  var _acxDone = false;
-  function _acxUnlock() {
-    if (_acxDone) return;
-    _acxDone = true;
+  var done = false;
+  function unlock() {
+    if (done) return;
+    done = true;
     try {
       var ctx = new (window.AudioContext || window.webkitAudioContext)();
-      var el = document.getElementById('audioEl');
-      if (el) {
-        var src = ctx.createMediaElementSource(el);
-        src.connect(ctx.destination);
-      }
+      // Play a tiny buffer through AudioContext to activate system audio session
+      var buf = ctx.createBuffer(1, 1, 22050);
+      var src = ctx.createBufferSource();
+      src.buffer = buf;
+      src.connect(ctx.destination);
+      src.start(0);
       if (ctx.state === 'suspended') ctx.resume();
-      window._acx = ctx;
-      if (typeof dbg === 'function') dbg('ACX unlocked state=' + ctx.state);
+      window._pwaAudioCtx = ctx;
+      if (typeof dbg === 'function') dbg('ACX buffer played, state=' + ctx.state);
     } catch(e) { if (typeof dbg === 'function') dbg('ACX err: ' + e.message); }
-    document.removeEventListener('touchstart', _acxUnlock, true);
-    document.removeEventListener('click', _acxUnlock, true);
+    document.removeEventListener('touchstart', unlock, true);
+    document.removeEventListener('click', unlock, true);
   }
-  document.addEventListener('touchstart', _acxUnlock, true);
-  document.addEventListener('click', _acxUnlock, true);
+  document.addEventListener('touchstart', unlock, true);
+  document.addEventListener('click', unlock, true);
 })();
 // ── Debug: logs sent to server console ──
 var _dbgQueue = [];
