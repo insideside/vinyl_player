@@ -61,6 +61,7 @@ SUPPORTED_FORMATS = {'.mp3', '.flac', '.m4a', '.ogg', '.wav', '.aac', '.opus'}
 
 # ──────────────────── User system ────────────────────
 
+SESSIONS_FILE = Path.home() / ".vinyl_sessions.json"
 _sessions = {}  # token -> username
 _login_attempts_ip = {}    # ip -> (count, last_time)
 _login_attempts_user = {}  # username -> (count, last_time)
@@ -166,9 +167,30 @@ def authenticate_user(username, password):
     return _check_pw(password, u["password"])
 
 
+def _load_sessions():
+    global _sessions
+    if SESSIONS_FILE.exists():
+        try:
+            data = json.loads(SESSIONS_FILE.read_text())
+            # Only load sessions for users that still exist
+            users = load_users()
+            _sessions = {k: v for k, v in data.items() if v in users}
+        except Exception:
+            pass
+
+
+def _save_sessions():
+    try:
+        SESSIONS_FILE.write_text(json.dumps(_sessions, ensure_ascii=False))
+        SESSIONS_FILE.chmod(0o600)
+    except Exception:
+        pass
+
+
 def create_session(username):
     token = secrets.token_hex(32)
     _sessions[token] = username
+    _save_sessions()
     return token
 
 
@@ -5115,6 +5137,7 @@ class Handler(BaseHTTPRequestHandler):
                 if part.startswith("session="):
                     tok = part[len("session="):]
                     _sessions.pop(tok, None)
+                    _save_sessions()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Set-Cookie", "session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0")
@@ -5965,6 +5988,7 @@ def _restart_server(bind_addr):
 
 def main():
     global IS_PUBLIC
+    _load_sessions()
     public = "--public" in sys.argv
     IS_PUBLIC = public
     bind_addr = "0.0.0.0" if public else "127.0.0.1"

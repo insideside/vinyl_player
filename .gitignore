@@ -17,6 +17,7 @@ Music/
 .vinyl_player_config.json
 .vk_music_token.json
 .vinyl_meta_done.json
+.vinyl_sessions.json
 config_vk.ini
 
 # Build artifacts
