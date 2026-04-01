@@ -459,50 +459,26 @@ def parse_yandex_playlist(url):
 
 
 def parse_spotify_playlist(url):
-    """Парсит публичный плейлист Spotify через oEmbed + scrape."""
+    """Парсит публичный плейлист Spotify через embed JSON."""
     try:
-        # Spotify embed endpoint returns basic info
-        # Better: use Spotify's open page and parse
-        # URL: https://open.spotify.com/playlist/ID
         m = re.search(r'playlist/([a-zA-Z0-9]+)', url)
         if not m:
             return None
-        playlist_id = m.group(1)
-        # Use Spotify embed page
-        embed_url = "https://open.spotify.com/embed/playlist/{}".format(playlist_id)
+        embed_url = "https://open.spotify.com/embed/playlist/{}".format(m.group(1))
         with HttpClient(timeout=15, follow_redirects=True) as client:
             resp = client.get(embed_url, headers={"User-Agent": "Mozilla/5.0"})
         if resp.status_code != 200:
             return None
-        html = resp.text
         import json as _json
-        # Find track data in embed HTML
-        m = re.search(r'Spotify\.Entity\s*=\s*({.+?});', html)
+        m = re.search(r'<script[^>]*type="application/json"[^>]*>(.+?)</script>', resp.text)
         if not m:
-            m = re.search(r'"tracks":\s*\{[^}]*"items":\s*(\[.+?\])', html)
-            if not m:
-                # Try resource JSON
-                m = re.search(r'<script[^>]*type="application/json"[^>]*>(.+?)</script>', html)
-        if m:
-            try:
-                data = _json.loads(m.group(1))
-                tracks = []
-                def find_sp(obj):
-                    if isinstance(obj, dict):
-                        if obj.get("type") == "track" and "name" in obj:
-                            artist = obj.get("artists", [{}])[0].get("name", "") if obj.get("artists") else ""
-                            tracks.append({"artist": artist, "title": obj["name"]})
-                        for v in obj.values():
-                            find_sp(v)
-                    elif isinstance(obj, list):
-                        for v in obj:
-                            find_sp(v)
-                find_sp(data)
-                if tracks:
-                    return tracks
-            except Exception:
-                pass
-        return None
+            return None
+        data = _json.loads(m.group(1))
+        entity = data.get("props", {}).get("pageProps", {}).get("state", {}).get("data", {}).get("entity", {})
+        track_list = entity.get("trackList", [])
+        if not track_list:
+            return None
+        return [{"artist": t.get("subtitle", ""), "title": t.get("title", "")} for t in track_list if t.get("title")]
     except Exception:
         return None
 
@@ -516,21 +492,26 @@ def parse_apple_playlist(url):
             return None
         html = resp.text
         import json as _json
-        # Apple Music embeds JSON-LD
-        m = re.search(r'<script[^>]*type="application/ld\+json"[^>]*>(.+?)</script>', html, re.DOTALL)
+        tracks = []
+        # Method 1: JSON-LD for titles + artistName from HTML for artists
+        m = re.search(r'<script[^>]*type="application/ld\+json"[^>]*>(.*?)</script>', html, re.DOTALL)
+        artist_names = re.findall(r'"artistName":"((?:[^"\\]|\\.)+)"', html)
         if m:
             data = _json.loads(m.group(1))
-            tracks = []
-            for item in data.get("track", data.get("tracks", [])):
+            track_list = data.get("track", data.get("tracks", []))
+            for i, item in enumerate(track_list):
                 if isinstance(item, dict):
-                    tracks.append({"artist": item.get("byArtist", {}).get("name", ""), "title": item.get("name", "")})
+                    artist = artist_names[i] if i < len(artist_names) else ""
+                    tracks.append({"artist": artist, "title": item.get("name", "")})
             if tracks:
                 return tracks
-        # Fallback: parse meta tags
-        titles = re.findall(r'class="songs-list-row__song-name">([^<]+)<', html)
-        artists = re.findall(r'class="songs-list-row__by-artist">([^<]+)<', html)
-        if titles:
-            return [{"artist": artists[i] if i < len(artists) else "", "title": t.strip()} for i, t in enumerate(titles)]
+        # Method 2: artistName + name pairs from embedded JSON
+        song_names = re.findall(r'"name":"((?:[^"\\]|\\.)+)"', html)
+        if artist_names and len(artist_names) > 3:
+            for i in range(min(len(artist_names), len(song_names))):
+                tracks.append({"artist": artist_names[i], "title": song_names[i]})
+            if tracks:
+                return tracks
         return None
     except Exception:
         return None
@@ -2074,7 +2055,7 @@ body { overflow: hidden; touch-action: none; position: fixed; width: 100%; heigh
     <div id="impExternal" style="display:none">
       <div style="display:flex;gap:6px;margin-bottom:8px">
         <input type="text" id="impExtUrl" class="folder-path-input" style="flex:1;font-size:11px" placeholder="Ссылка на публичный плейлист...">
-        <button class="folder-btn folder-btn-primary" style="padding:6px 12px;font-size:11px" onclick="importExternal()">Загрузить</button>
+        <button class="folder-btn folder-btn-primary" style="padding:6px 12px;font-size:11px" onclick="importExternal()">Искать</button>
       </div>
       <div id="impExtStatus" style="font-size:11px;color:rgba(255,255,255,0.3);margin-bottom:6px"></div>
       <div id="impMatchList" style="max-height:35vh;overflow-y:auto;border-radius:8px"></div>
