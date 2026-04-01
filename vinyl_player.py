@@ -397,35 +397,62 @@ def vk_repad_tracks(folder):
 def parse_yandex_playlist(url):
     """Парсит публичный плейлист Яндекс.Музыки."""
     try:
-        # URL: https://music.yandex.ru/users/LOGIN/playlists/ID
-        with HttpClient(timeout=15, follow_redirects=True) as client:
-            resp = client.get(url, headers={"User-Agent": "Mozilla/5.0"})
+        with HttpClient(timeout=20, follow_redirects=True) as client:
+            resp = client.get(url, headers={
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml",
+                "Accept-Language": "ru-RU,ru;q=0.9",
+            })
         if resp.status_code != 200:
             return None
         html = resp.text
-        # Find __NEXT_DATA__ or musicData JSON
         import json as _json
-        m = re.search(r'<script[^>]*id="__NEXT_DATA__"[^>]*>(.+?)</script>', html)
-        if not m:
-            m = re.search(r'"tracks":\s*(\[.+?\])\s*[,}]', html)
-            if m:
-                tracks_json = _json.loads(m.group(1))
-                return [{"artist": t.get("artists", [{}])[0].get("name", "") if t.get("artists") else "", "title": t.get("title", "")} for t in tracks_json]
-            return None
-        data = _json.loads(m.group(1))
-        # Navigate JSON structure
         tracks = []
-        def find_tracks(obj):
-            if isinstance(obj, dict):
-                if "title" in obj and "artists" in obj:
-                    artist = obj["artists"][0]["name"] if obj.get("artists") else ""
-                    tracks.append({"artist": artist, "title": obj["title"]})
-                for v in obj.values():
-                    find_tracks(v)
-            elif isinstance(obj, list):
-                for v in obj:
-                    find_tracks(v)
-        find_tracks(data)
+
+        # Method 1: __NEXT_DATA__
+        m = re.search(r'<script[^>]*id="__NEXT_DATA__"[^>]*>(.+?)</script>', html)
+        if m:
+            data = _json.loads(m.group(1))
+            def find_ym(obj):
+                if isinstance(obj, dict):
+                    if "title" in obj and "artists" in obj and isinstance(obj["artists"], list):
+                        a = obj["artists"][0]["name"] if obj["artists"] else ""
+                        tracks.append({"artist": a, "title": obj["title"]})
+                    for v in obj.values():
+                        find_ym(v)
+                elif isinstance(obj, list):
+                    for v in obj:
+                        find_ym(v)
+            find_ym(data)
+            if tracks:
+                return tracks
+
+        # Method 2: Yandex embeds track data as escaped JSON in script blocks
+        # Pattern: "title":"TRACK","realId":"..." followed later by "artists":[{"name":"ARTIST"}]
+        # Extract all tracks by finding sequential title+artists pairs
+        all_titles = re.findall(r'"title":"((?:[^"\\]|\\.)+)"', html)
+        all_artists = re.findall(r'"artists":\[\{"[^}]*?"name":"((?:[^"\\]|\\.)+)"', html)
+
+        # Filter: titles that appear near "realId" are track titles
+        track_blocks = re.findall(
+            r'"realId":"[^"]+","title":"((?:[^"\\]|\\.)+)".*?"artists":\[\{[^}]*?"name":"((?:[^"\\]|\\.)+)"',
+            html
+        )
+        if track_blocks:
+            return [{"artist": a.encode().decode('unicode_escape'), "title": t.encode().decode('unicode_escape')} for t, a in track_blocks]
+
+        # Method 3: Broader search — pair titles with closest artists
+        if len(all_titles) > 5 and len(all_artists) > 3:
+            # Heuristic: skip first few (UI labels), take sequential pairs
+            seen = set()
+            for t in all_titles:
+                t_clean = t.encode().decode('unicode_escape') if '\\u' in t else t
+                if t_clean not in seen and len(t_clean) > 1 and t_clean not in ('default', 'music', 'playlist'):
+                    tracks.append({"artist": "", "title": t_clean})
+                    seen.add(t_clean)
+            if len(tracks) > 5:
+                return tracks
+
         return tracks if tracks else None
     except Exception:
         return None
