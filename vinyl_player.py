@@ -292,9 +292,11 @@ def vk_save_token(token):
 def vk_validate_token(token):
     try:
         svc = VkService(VK_USER_AGENT, token)
-        svc.get_popular(count=1)
+        # Test actual audio search, not just popular
+        results = svc.search_songs_by_text("test", count=1)
         return True
-    except Exception:
+    except Exception as e:
+        print("VK token validation failed:", str(e)[:100])
         return False
 
 
@@ -5198,7 +5200,8 @@ class Handler(BaseHTTPRequestHandler):
                             "vk_artist": "", "vk_title": "", "vk_id": "",
                             "vk_duration": 0, "has_url": False, "matched": False,
                         })
-                except Exception:
+                except Exception as e:
+                    print("VK import match error:", str(e)[:100])
                     matches.append({
                         "original_artist": t.get("artist", ""),
                         "original_title": t.get("title", ""),
@@ -5256,8 +5259,14 @@ class Handler(BaseHTTPRequestHandler):
                         "has_url": bool(s.url and "index.m3u8" not in s.url),
                     })
                 self._respond_json({"ok": True, "results": items})
-            except Exception:
-                self._respond_json({"ok": False, "error": "Ошибка поиска."})
+            except Exception as e:
+                err_msg = str(e)
+                if "access_token" in err_msg or "authorization" in err_msg.lower():
+                    vs["service"] = None  # Invalidate
+                    self._respond_json({"ok": False, "error": "Токен VK истёк. Переавторизуйтесь."})
+                else:
+                    print("VK search error:", err_msg)
+                    self._respond_json({"ok": False, "error": "Ошибка поиска VK: " + err_msg[:100]})
 
         elif path == "/api/vk/download_tracks":
             if self._deny_demo(udata): return
