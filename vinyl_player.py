@@ -2552,31 +2552,39 @@ body { overflow: hidden; touch-action: none; position: fixed; width: 100%; heigh
 
 <script>
 // ── iOS PWA audio session fix ──
-// iOS standalone PWA won't activate audio session even with play() in gesture.
-// Workaround: on first touch, play <audio> muted (iOS allows muted autoplay),
-// then unmute — this may activate the session.
+// iOS standalone PWA defaults to "ambient" audio category (no sound output).
+// Playing a real audio FILE (not data URI, not AudioBuffer) via <audio> element
+// forces iOS to switch to "playback" category. Must be a real server-served file.
+// Based on: https://github.com/swevans/unmute
 (function(){
+  if (!(/iPad|iPhone|iPod/.test(navigator.userAgent) || (/Mac/.test(navigator.userAgent) && navigator.maxTouchPoints > 1))) return;
+  var silentEl = null;
   var done = false;
   function unlock() {
     if (done) return;
     done = true;
-    var el = document.getElementById('audioEl');
-    if (!el) return;
-    el.muted = true;
-    el.play().then(function() {
-      el.muted = false;
-      el.pause();
-      el.currentTime = 0;
-      if (typeof dbg === 'function') dbg('PWA audio unlock: muted play OK');
+    silentEl = document.createElement('audio');
+    silentEl.src = '/silence.mp3';
+    silentEl.loop = true;
+    silentEl.playsinline = true;
+    silentEl.setAttribute('playsinline', '');
+    silentEl.volume = 0.01;
+    silentEl.play().then(function() {
+      if (typeof dbg === 'function') dbg('PWA silent audio loop started');
     }).catch(function(e) {
-      el.muted = false;
-      if (typeof dbg === 'function') dbg('PWA audio unlock fail: ' + e.message);
+      if (typeof dbg === 'function') dbg('PWA silent play fail: ' + e.message);
     });
     document.removeEventListener('touchstart', unlock, true);
     document.removeEventListener('click', unlock, true);
   }
   document.addEventListener('touchstart', unlock, true);
   document.addEventListener('click', unlock, true);
+  // Stop silent loop when page hidden, restart when visible
+  document.addEventListener('visibilitychange', function() {
+    if (!silentEl) return;
+    if (document.hidden) { silentEl.pause(); }
+    else { silentEl.play().catch(function(){}); }
+  });
 })();
 // ── Debug: logs sent to server console ──
 var _dbgQueue = [];
@@ -5943,28 +5951,19 @@ class Handler(BaseHTTPRequestHandler):
         path = parsed.path
 
         # Reset page — clears SW cache, not intercepted by SW
-        if path == "/pwa-audio-fix":
-            # Opens in Safari (not PWA), plays silence to activate system audio session
-            self._respond(200, "text/html", b"""<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">
-<title>Audio</title><style>body{background:#111;color:#eee;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;flex-direction:column;gap:12px}
-</style></head><body><p style="color:rgba(255,255,255,0.4);font-size:14px">Activating audio...</p>
-<script>
-var ctx = new (window.AudioContext || window.webkitAudioContext)();
-var osc = ctx.createOscillator();
-var gain = ctx.createGain();
-gain.gain.value = 0.001;
-osc.connect(gain);
-gain.connect(ctx.destination);
-osc.start(0);
-osc.stop(ctx.currentTime + 0.5);
-ctx.resume();
-// Also play via audio element
-var a = new Audio();
-a.src = 'data:audio/wav;base64,UklGRiYAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQIAAAAA';
-a.play().catch(function(){});
-setTimeout(function(){ window.close(); }, 2000);
-document.body.innerHTML += '<p style="color:rgba(255,255,255,0.3);font-size:12px">You can close this tab</p>';
-</script></body></html>""")
+        if path == "/silence.mp3":
+            # Minimal valid MP3: single MPEG frame of silence (~417 bytes)
+            # MPEG1 Layer3, 128kbps, 44100Hz, stereo, 1 frame
+            import struct
+            # MP3 frame header: sync=0xFFF, MPEG1, Layer3, 128kbps, 44100Hz, stereo
+            # Frame size = 144 * 128000 / 44100 + padding = 417 bytes
+            frame = b'\xff\xfb\x90\x00' + b'\x00' * 413
+            self.send_response(200)
+            self.send_header("Content-Type", "audio/mpeg")
+            self.send_header("Content-Length", str(len(frame)))
+            self.send_header("Cache-Control", "public, max-age=31536000")
+            self.end_headers()
+            self.wfile.write(frame)
             return
 
         if path == "/reset":
