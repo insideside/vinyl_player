@@ -3781,7 +3781,10 @@ function importExternal() {
   .then(function(r){return r.json()}).then(function(d) {
     if (!d.ok) { document.getElementById('impExtStatus').textContent = d.error || 'Ошибка'; return; }
     impMatches = d.matches || [];
-    document.getElementById('impExtStatus').textContent = 'Найдено: ' + impMatches.length + ' из ' + d.total + ' треков (платформа: ' + d.platform + ')';
+    var status = 'Найдено: ' + impMatches.length + ' из ' + d.total + ' треков (' + d.platform + ')';
+    if (d.warning) status += '\n⚠ ' + d.warning;
+    document.getElementById('impExtStatus').textContent = status;
+    if (d.warning) showToast(d.warning);
     renderImpMatches();
     if (impMatches.length) document.getElementById('impMatchActions').style.display = '';
   });
@@ -5210,18 +5213,20 @@ class Handler(BaseHTTPRequestHandler):
                             "vk_duration": 0, "has_url": False, "matched": False,
                         })
                 except Exception as e:
-                    err = str(e).lower()
-                    if "captcha" in err:
-                        self._respond_json({"ok": False, "error": "VK временно ограничил доступ (captcha). Подождите 1-2 часа и попробуйте снова."})
+                    err_str = str(e)
+                    if "captcha" in err_str.lower() or "Captcha" in err_str:
+                        # Stop immediately, return what we have + error flag
+                        self._respond_json({"ok": True, "platform": platform, "matches": matches, "total": len(tracks_list),
+                            "warning": "VK включил captcha после {} треков. Подождите 1-2 часа.".format(len(matches))})
                         return
-                    print("VK import match error:", str(e)[:100])
+                    print("VK import match error:", err_str[:100])
                     matches.append({
                         "original_artist": t.get("artist", ""),
                         "original_title": t.get("title", ""),
                         "vk_artist": "", "vk_title": "", "vk_id": "",
                         "vk_duration": 0, "has_url": False, "matched": False,
                     })
-                time.sleep(0.3)  # VK rate limit
+                time.sleep(0.3)
             self._respond_json({"ok": True, "platform": platform, "matches": matches, "total": len(tracks_list)})
 
         elif path == "/api/import/re_search":
