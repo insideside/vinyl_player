@@ -3089,8 +3089,6 @@ audio.addEventListener('playing', function() { dbg('EVENT: playing, time=' + aud
 audio.addEventListener('pause', function() { dbg('EVENT: pause, time=' + audio.currentTime.toFixed(1)); });
 audio.addEventListener('stalled', function() { dbg('EVENT: stalled'); });
 
-// ensureAudioContext removed — handled by global touchstart/click at top of script
-}
 
 function selectTrack(i, autoplay) {
   if (i < 0 || i >= tracks.length) return;
