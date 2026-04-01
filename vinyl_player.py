@@ -3047,7 +3047,6 @@ var _audioUnlocked = false;
 function loadTrackBlob(file, trackIdx, autoplay) {
   var t0 = Date.now();
   if (isTrackCached(file)) {
-    dbg('  loadTrackBlob: reading IndexedDB...');
     getCachedAudio(file, function(buf) {
       dbg('  loadTrackBlob: IDB done ' + (Date.now()-t0) + 'ms, buf=' + (buf ? (buf.byteLength/1024|0)+'KB' : 'null'));
       if (currentIdx !== trackIdx) { dbg('  loadTrackBlob: track changed, skip'); return; }
@@ -3057,7 +3056,6 @@ function loadTrackBlob(file, trackIdx, autoplay) {
         audio.src = url;
         if (autoplay) {
           var p = audio.play();
-          if (p && p.then) p.then(function(){ dbg('  ✓ play OK (IDB blob)'); }).catch(function(e){ dbg('  ✗ play FAIL (IDB blob): ' + e.message); });
         }
       } else {
         delete cachedFiles[file];
@@ -3065,7 +3063,6 @@ function loadTrackBlob(file, trackIdx, autoplay) {
       }
     });
   } else {
-    dbg('  loadTrackBlob: not cached, fetching server...');
     fetchTrackBlob(file, trackIdx, autoplay);
   }
 }
@@ -3084,7 +3081,6 @@ function fetchTrackBlob(file, trackIdx, autoplay) {
     audio.src = url;
     if (autoplay) {
       var p = audio.play();
-      if (p && p.then) p.then(function(){ dbg('  ✓ play OK (fetch blob)'); }).catch(function(e){ dbg('  ✗ play FAIL (fetch blob): ' + e.message); });
     }
   }).catch(function(e) {
     dbg('  ✗ fetchBlob FAIL: ' + e.message + ' in ' + (Date.now()-t0) + 'ms');
@@ -3109,23 +3105,18 @@ function selectTrack(i, autoplay) {
   vinylSpeed = 0;
 
   if (_blobUrlCache[t.file]) {
-    dbg('  → blob URL, playing');
     audio.src = _blobUrlCache[t.file];
     if (autoplay) {
       var p = audio.play();
-      if (p && p.then) p.then(function(){ dbg('  ✓ play OK (blob)'); }).catch(function(e){ dbg('  ✗ play FAIL (blob): ' + e.message); });
       setPlayState(true); _audioUnlocked = true;
     }
   } else {
     if (autoplay && !_audioUnlocked) {
-      dbg('  → unlock with silent WAV');
       audio.src = SILENT_WAV;
       var p2 = audio.play();
-      if (p2 && p2.then) p2.then(function(){ dbg('  ✓ unlock OK'); }).catch(function(e){ dbg('  ✗ unlock FAIL: ' + e.message); });
       _audioUnlocked = true;
     }
     if (autoplay) setPlayState(true);
-    dbg('  → loadTrackBlob');
     loadTrackBlob(t.file, i, autoplay);
   }
   // Pre-build blob URLs for nearby tracks
@@ -3594,11 +3585,9 @@ function loadConfig() {
       }
       hadCache = true;
     } else {
-      dbg('loadConfig: no localStorage cache');
     }
   } catch(e){ dbg('loadConfig: localStorage error: ' + e.message); }
   if (!hadCache) showLoadingIndicator();
-  dbg('loadConfig: fetching /api/config...');
   fetch('/api/config').then(function(r){return r.json()}).then(function(cfg) {
     dbg('loadConfig: response in ' + (Date.now()-t0) + 'ms');
     if (cfg.error === 'unauthorized') { dbg('loadConfig: unauthorized, reload'); window.location.reload(); return; }
@@ -3902,7 +3891,7 @@ function togglePublic(enabled) {
     } else {
       setTimeout(function() { window.location.href = 'http://127.0.0.1:PORT_PLACEHOLDER'; }, 2500);
     }
-  }).catch(function(e) { dbg('togglePublic error: ' + e.message); });
+  }).catch(function(){});
 }
 
 // ── WAN (Cloudflare Tunnel) ──
@@ -5802,9 +5791,7 @@ openCacheDB(function() { refreshCachedList(); });
 
 // Register Service Worker for offline app shell (HTTPS or localhost only)
 if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1')) {
-  dbg('SW: registering...');
   navigator.serviceWorker.register('/sw.js').then(function(reg) {
-    dbg('SW: registered, active=' + !!reg.active + ' installing=' + !!reg.installing + ' waiting=' + !!reg.waiting);
     if (reg.active) {
       warmAppCache();
     } else {
@@ -5818,13 +5805,11 @@ if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.
     });
     // Log update events
     reg.addEventListener('updatefound', function() {
-      dbg('SW: updatefound!');
       var nw = reg.installing;
       if (nw) nw.addEventListener('statechange', function() {
-        dbg('SW: new worker state=' + nw.state);
       });
     });
-  }).catch(function(e){ dbg('SW: register FAIL: ' + e.message); });
+  });
 } else {
   dbg('SW: skip (proto=' + location.protocol + ' host=' + location.hostname + ')');
 }
@@ -5863,45 +5848,6 @@ window.addEventListener('offline', function() {
   if (!_isOffline) enterOfflineMode();
 });
 
-// ── Debug log (triple-tap app title to toggle) ──
-var _dbgLog = [];
-var _dbgEl = null;
-var _dbgVisible = false;
-var _dbgTapCount = 0;
-var _dbgTapTimer = null;
-
-function dbg(msg) {
-  var ts = new Date().toTimeString().slice(0,8);
-  _dbgLog.push(ts + ' ' + msg);
-  if (_dbgLog.length > 80) _dbgLog.shift();
-  if (_dbgEl && _dbgVisible) _dbgEl.textContent = _dbgLog.join('\n');
-  console.log('[DBG] ' + msg);
-}
-
-function initDebugPanel() {
-  _dbgEl = document.createElement('pre');
-  _dbgEl.style.cssText = 'display:none;position:fixed;top:0;left:0;right:0;bottom:0;z-index:99999;background:rgba(0,0,0,0.92);color:#0f0;font-size:10px;padding:8px;overflow:auto;margin:0;white-space:pre-wrap;word-break:break-all;-webkit-overflow-scrolling:touch;';
-  _dbgEl.onclick = function() { _dbgVisible = false; _dbgEl.style.display = 'none'; };
-  document.body.appendChild(_dbgEl);
-  // Triple-tap on track title area to toggle
-  var titleEl = document.getElementById('trackTitle');
-  if (titleEl) titleEl.addEventListener('click', function() {
-    _dbgTapCount++;
-    clearTimeout(_dbgTapTimer);
-    _dbgTapTimer = setTimeout(function() { _dbgTapCount = 0; }, 500);
-    if (_dbgTapCount >= 3) {
-      _dbgTapCount = 0;
-      _dbgVisible = !_dbgVisible;
-      _dbgEl.style.display = _dbgVisible ? '' : 'none';
-      if (_dbgVisible) _dbgEl.textContent = _dbgLog.join('\n');
-    }
-  });
-}
-
-dbg('page loaded, proto=' + location.protocol + ' host=' + location.hostname + ' standalone=' + (window.navigator.standalone === true) + ' display=' + (window.matchMedia('(display-mode: standalone)').matches));
-dbg('SW controller: ' + (navigator.serviceWorker ? (navigator.serviceWorker.controller ? 'yes' : 'no') : 'n/a'));
-
-initDebugPanel();
 loadConfig();
 </script>
 </body>
@@ -6521,12 +6467,9 @@ class Handler(BaseHTTPRequestHandler):
                 all_ips = get_all_local_ips()
                 lan_url = "{}://{}:{}".format(proto, local_ip, SERVER_PORT)
                 all_urls = ["{}://{}:{}".format(proto, ip, SERVER_PORT) for ip in all_ips]
-                resp = {"ok": True, "public": True, "lan_url": lan_url, "ip": local_ip, "all_urls": all_urls, "https": https_ok}
-                print("LAN ON: responding with", resp)
-                self._respond_json(resp)
+                self._respond_json({"ok": True, "public": True, "lan_url": lan_url, "ip": local_ip, "all_urls": all_urls, "https": https_ok})
                 try: self.wfile.flush()
                 except Exception: pass
-                print("LAN ON: response sent, restarting in 1s as", proto)
                 threading.Timer(1.0, _restart_server, args=["0.0.0.0"]).start()
             else:
                 if _use_https:
@@ -7135,12 +7078,7 @@ class Handler(BaseHTTPRequestHandler):
         self._respond(200, "application/json", body)
 
     def log_message(self, format, *args):
-        # Log requests from remote devices (not localhost)
-        ip = self.client_address[0] if self.client_address else ''
-        if ip and ip not in ('127.0.0.1', '::1'):
-            import datetime
-            ts = datetime.datetime.now().strftime('%H:%M:%S')
-            print("[{}] {} {}".format(ts, ip, format % args))
+        pass
 
     def handle(self):
         try:
