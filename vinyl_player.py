@@ -1413,17 +1413,24 @@ self.addEventListener('fetch', function(e) {
     return;
   }
 
-  // App shell — stale-while-revalidate: instant from cache, update in background
+  // App shell — stale-while-revalidate, but never cache login page
   if (url.pathname === '/' || url.pathname === '/index.html') {
     e.respondWith(
       caches.open(CACHE_APP).then(function(cache) {
         return cache.match('/').then(function(cached) {
           var fetchPromise = fetch(e.request).then(function(resp) {
-            if (resp.ok) cache.put('/', resp.clone());
+            // Only cache the main app page (large), not login page (small)
+            if (resp.ok && resp.headers.get('content-length') > 10000) {
+              cache.put('/', resp.clone());
+            }
             return resp;
           });
-          return cached || fetchPromise.catch(function() {
-            return new Response(OFFLINE_FALLBACK, {headers:{'Content-Type':'text/html'}});
+          // Only serve from cache if it's the real app page, not login
+          if (cached && cached.headers.get('content-length') > 10000) {
+            return cached;
+          }
+          return fetchPromise.catch(function() {
+            return cached || new Response(OFFLINE_FALLBACK, {headers:{'Content-Type':'text/html'}});
           });
         });
       })
