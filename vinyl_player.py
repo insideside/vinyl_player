@@ -3037,11 +3037,11 @@ function prepareBlobUrl(file) {
 function prepareNearbyBlobs() {
   if (playQueue.length === 0) return;
   var startPos = playQueuePos >= 0 ? playQueuePos : 0;
-  var positions = [startPos, startPos + 1, startPos + 2, startPos - 1];
-  for (var p = 0; p < positions.length; p++) {
-    var pos = positions[p];
-    if (pos < 0) pos = playQueue.length - 1;
-    if (pos >= playQueue.length) pos = 0;
+  // Prepare current + 5 next + 2 prev
+  for (var d = 0; d <= 7; d++) {
+    var pos = startPos + (d <= 5 ? d : -(d - 5));
+    if (pos < 0) pos += playQueue.length;
+    if (pos >= playQueue.length) pos -= playQueue.length;
     var idx = playQueue[pos];
     if (idx >= 0 && idx < tracks.length) prepareBlobUrl(tracks[idx].file);
   }
@@ -5616,26 +5616,9 @@ function refreshCachedList() {
       cachedFiles = {};
       for (var i = 0; i < req.result.length; i++) if (req.result[i].indexOf('cover:') !== 0) cachedFiles[req.result[i]] = true;
       if (typeof renderTracks === 'function') renderTracks();
-      // Pre-build blob URLs for ALL cached tracks (critical for iOS PWA)
-      preloadAllCachedBlobs();
+      prepareNearbyBlobs();
     };
   });
-}
-
-function preloadAllCachedBlobs() {
-  var files = Object.keys(cachedFiles);
-  var idx = 0;
-  function next() {
-    if (idx >= files.length) return;
-    var file = files[idx++];
-    if (_blobUrlCache[file]) { next(); return; }
-    getCachedAudio(file, function(buf) {
-      if (buf) _blobUrlCache[file] = makeBlobUrl(buf, file);
-      // Small delay between reads to avoid blocking UI
-      setTimeout(next, 10);
-    });
-  }
-  next();
 }
 
 function isTrackCached(file) { return !!cachedFiles[file]; }
