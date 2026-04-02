@@ -3080,7 +3080,7 @@ function selectTrack(i, autoplay) {
   }
   if (autoplay) {
     var p = audio.play();
-    if (p&&p.then) p.then(function(){
+    if (p && p.then) p.then(function() {
       // iOS PWA: detect stuck audio (plays but no sound, time=0)
       if (!_pwaAudioChecked && window.navigator.standalone) {
         _pwaAudioChecked = true;
@@ -3091,7 +3091,7 @@ function selectTrack(i, autoplay) {
           }
         }, 2000);
       }
-    });
+    }).catch(function() {});
     setPlayState(true);
   }
   if (isTrackCached(t.file)) prepareBlobUrl(t.file);
