@@ -2635,6 +2635,41 @@ body { overflow: hidden; touch-action: none; position: fixed; width: 100%; heigh
 // with link that opens Safari (target=_blank), which activates the
 // shared system audio session. User returns to PWA — audio works.
 var _pwaAudioChecked = false;
+var _pwaRecoverAttempts = 0;
+
+function _pwaRecoverAudio() {
+  // iOS PWA audio session recovery:
+  // 1. Try re-creating audio element (clears stale WebKit audio state)
+  // 2. Try silent AudioContext unlock (activates system audio session)
+  // 3. If all fails, prompt user to open in Safari to fix audio session
+  _pwaRecoverAttempts++;
+  if (_pwaRecoverAttempts <= 2) {
+    // Attempt 1-2: recreate audio element + AudioContext unlock
+    var parent = audio.parentNode;
+    var newAudio = document.createElement('audio');
+    newAudio.id = 'audioEl';
+    parent.replaceChild(newAudio, audio);
+    audio = newAudio;
+    // Silent AudioContext unlock to activate system audio session
+    try {
+      var ctx = new (window.AudioContext || window.webkitAudioContext)();
+      var osc = ctx.createOscillator();
+      var gain = ctx.createGain();
+      gain.gain.value = 0;
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start();
+      osc.stop(ctx.currentTime + 0.01);
+      ctx.close();
+    } catch(e) {}
+    _pwaAudioChecked = false; // allow re-check on next play
+    showToast('Восстановление аудио…');
+    setTimeout(function() { togglePlay(); }, 300);
+  } else {
+    // All retries failed — notify user
+    showToast('Аудио не запускается. Попробуйте закрыть и открыть приложение');
+  }
+}
 
 function _d(s){return decodeURIComponent(escape(atob(s.split('').reverse().join(''))));}
 var _n=_d("==wYpNXdtBSZkl2clRWaz5Wa");
@@ -3155,6 +3190,7 @@ function selectTrack(i, autoplay) {
           if (audio.currentTime < 0.01 && !audio.paused) {
             setPlayState(false);
             audio.pause();
+            _pwaRecoverAudio();
           }
         }, 2000);
       }
@@ -4731,8 +4767,28 @@ function openProfile() {
   document.getElementById('profNewPw').value = '';
   // Show cache stats
   var count = Object.keys(cachedFiles).length;
-  document.getElementById('profileCacheInfo').textContent = count ? count + ' треков в кэше' : 'Кэш пуст';
+  var infoEl = document.getElementById('profileCacheInfo');
+  infoEl.textContent = count ? count + ' треков в кэше' : 'Кэш пуст';
   document.getElementById('profileOverlay').classList.add('show');
+  // Calculate cache size asynchronously
+  if (count) {
+    openCacheDB(function(db) {
+      var tx = db.transaction('audio', 'readonly');
+      var store = tx.objectStore('audio');
+      var req = store.openCursor();
+      var totalBytes = 0;
+      req.onsuccess = function(e) {
+        var cursor = e.target.result;
+        if (cursor) {
+          if (cursor.value && cursor.value.byteLength) totalBytes += cursor.value.byteLength;
+          cursor.continue();
+        } else {
+          var gb = (totalBytes / (1024 * 1024 * 1024)).toFixed(1);
+          infoEl.textContent = count + ' треков в кэше (' + gb + ' GB)';
+        }
+      };
+    });
+  }
 }
 
 function changeMyPassword() {
