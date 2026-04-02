@@ -3347,6 +3347,13 @@ function prevTrack() {
 }
 
 function nextTrack() {
+  // "Play next" override — play forced track, then continue from where we were
+  if (_forceNextIdx >= 0) {
+    var idx = _forceNextIdx;
+    _forceNextIdx = -1;
+    selectTrack(idx, isPlaying);
+    return;
+  }
   if (playQueue.length > 0) {
     playQueuePos++;
     if (playQueuePos >= playQueue.length) playQueuePos = 0;
@@ -5580,14 +5587,13 @@ function hideCtxMenu() {
   _ctxIdx = -1;
 }
 
+var _forceNextIdx = -1;
+
 function ctxPlayNext() {
   var idx = _ctxIdx;
   hideCtxMenu();
   if (idx < 0 || idx >= tracks.length) return;
-  var pos = playQueue.indexOf(idx);
-  if (pos >= 0) playQueue.splice(pos, 1);
-  if (pos >= 0 && pos <= playQueuePos) playQueuePos--;
-  playQueue.splice(playQueuePos + 1, 0, idx);
+  _forceNextIdx = idx;
   showToast(tracks[idx].title + ' — следующий');
 }
 
