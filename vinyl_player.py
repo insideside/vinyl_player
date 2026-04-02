@@ -2557,18 +2557,6 @@ body { overflow: hidden; touch-action: none; position: fixed; width: 100%; heigh
 // with link that opens Safari (target=_blank), which activates the
 // shared system audio session. User returns to PWA — audio works.
 var _pwaAudioChecked = false;
-function showPwaAudioOverlay() {
-  var ov = document.createElement('div');
-  ov.style.cssText = 'position:fixed;inset:0;z-index:99999;background:rgba(0,0,0,0.85);display:flex;align-items:center;justify-content:center;backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px)';
-  ov.innerHTML = '<div style="text-align:center;padding:24px">'
-    + '<div style="font-size:40px;margin-bottom:16px">&#127925;</div>'
-    + '<div style="font-size:16px;color:#fff;margin-bottom:8px;font-weight:600">Активация звука</div>'
-    + '<div style="font-size:13px;color:rgba(255,255,255,0.5);margin-bottom:20px;max-width:280px;line-height:1.4">iOS ограничивает звук в приложениях.<br>Нажмите кнопку — откроется Safari для активации, затем вернитесь сюда.</div>'
-    + '<a href="/pwa-audio-fix" target="_blank" style="display:inline-block;padding:14px 32px;background:#e94560;color:#fff;border-radius:12px;font-size:15px;font-weight:600;text-decoration:none">Активировать звук</a>'
-    + '<div style="margin-top:16px"><button onclick="this.closest(\'div\').parentElement.remove()" style="background:none;border:none;color:rgba(255,255,255,0.3);font-size:13px;cursor:pointer">Пропустить</button></div>'
-    + '</div>';
-  document.body.appendChild(ov);
-}
 // ── Debug: logs sent to server console ──
 var _dbgQueue = [];
 var _dbgTimer2 = null;
@@ -3108,10 +3096,9 @@ function selectTrack(i, autoplay) {
         _pwaAudioChecked = true;
         setTimeout(function() {
           if (audio.currentTime < 0.01 && !audio.paused) {
-            dbg('PWA audio stuck, showing Safari fix');
+            dbg('PWA audio stuck');
             setPlayState(false);
             audio.pause();
-            showPwaAudioOverlay();
           }
         }, 2000);
       }
@@ -5948,38 +5935,6 @@ class Handler(BaseHTTPRequestHandler):
         path = parsed.path
 
         # Reset page — clears SW cache, not intercepted by SW
-        if path == "/silence.mp3":
-            # Minimal valid MP3: single MPEG frame of silence (~417 bytes)
-            # MPEG1 Layer3, 128kbps, 44100Hz, stereo, 1 frame
-            import struct
-            # MP3 frame header: sync=0xFFF, MPEG1, Layer3, 128kbps, 44100Hz, stereo
-            # Frame size = 144 * 128000 / 44100 + padding = 417 bytes
-            frame = b'\xff\xfb\x90\x00' + b'\x00' * 413
-            self.send_response(200)
-            self.send_header("Content-Type", "audio/mpeg")
-            self.send_header("Content-Length", str(len(frame)))
-            self.send_header("Cache-Control", "public, max-age=31536000")
-            self.end_headers()
-            self.wfile.write(frame)
-            return
-
-        if path == "/pwa-audio-fix":
-            self._respond(200, "text/html", b"""<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">
-<title>Audio</title><style>*{margin:0;padding:0;box-sizing:border-box}body{background:#111;color:#eee;font-family:-apple-system,sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;text-align:center}</style></head>
-<body><div><p style="font-size:32px;margin-bottom:12px">&#9835;</p><p id="s" style="color:rgba(255,255,255,0.5);font-size:14px">Activating audio...</p></div>
-<script>
-var a = new Audio('/silence.mp3');
-a.play().then(function(){
-  document.getElementById('s').textContent = 'Audio activated! Return to app.';
-}).catch(function(){
-  document.getElementById('s').textContent = 'Tap anywhere to activate.';
-  document.onclick = function() {
-    a.play().then(function(){ document.getElementById('s').textContent = 'Audio activated! Return to app.'; });
-  };
-});
-</script></body></html>""")
-            return
-
         if path == "/reset":
             self._respond(200, "text/html", b"""<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Reset</title>
 <style>body{background:#111;color:#eee;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0}
