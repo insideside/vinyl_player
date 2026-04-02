@@ -5581,24 +5581,21 @@ function hideCtxMenu() {
 }
 
 function ctxPlayNext() {
-  hideCtxMenu();
-  if (_ctxIdx < 0 || _ctxIdx >= tracks.length) return;
-  // Insert this track right after current position in play queue
   var idx = _ctxIdx;
-  // Remove if already in queue
+  hideCtxMenu();
+  if (idx < 0 || idx >= tracks.length) return;
   var pos = playQueue.indexOf(idx);
   if (pos >= 0) playQueue.splice(pos, 1);
-  // Adjust playQueuePos if needed
   if (pos >= 0 && pos <= playQueuePos) playQueuePos--;
-  // Insert after current
   playQueue.splice(playQueuePos + 1, 0, idx);
   showToast(tracks[idx].title + ' — следующий');
 }
 
 function ctxAddToPlaylist(plId, where) {
+  var idx = _ctxIdx;
   hideCtxMenu();
-  if (_ctxIdx < 0 || _ctxIdx >= tracks.length) return;
-  var file = tracks[_ctxIdx].file;
+  if (idx < 0 || idx >= tracks.length) return;
+  var file = tracks[idx].file;
   var pl = userPlaylists.find(function(p) { return p.id === plId; });
   if (!pl) return;
   // Check if already in playlist
@@ -5618,10 +5615,10 @@ function ctxAddToPlaylist(plId, where) {
 }
 
 function ctxDelete() {
-  hideCtxMenu();
-  if (_ctxIdx < 0 || _ctxIdx >= tracks.length) return;
-  var t = tracks[_ctxIdx];
   var idx = _ctxIdx;
+  hideCtxMenu();
+  if (idx < 0 || idx >= tracks.length) return;
+  var t = tracks[idx];
   showConfirm('Удалить «' + t.title + '»?\nФайл будет удалён с диска.', function() {
     var folder = document.getElementById('folderSelect').value;
     fetch('/api/track/delete', {method:'POST', headers:{'Content-Type':'application/json'},
@@ -5640,9 +5637,10 @@ function ctxDelete() {
 }
 
 function ctxToggleCache() {
+  var idx = _ctxIdx;
   hideCtxMenu();
-  if (_ctxIdx < 0 || _ctxIdx >= tracks.length) return;
-  var file = tracks[_ctxIdx].file;
+  if (idx < 0 || idx >= tracks.length) return;
+  var file = tracks[idx].file;
   if (isTrackCached(file)) {
     uncacheTrack(file);
   } else {
@@ -5692,14 +5690,15 @@ function hidePlCtxMenu() {
   document.getElementById('plCtxMenu').classList.remove('show');
 }
 function plCtxDelete() {
+  var id = _plCtxId;
   hidePlCtxMenu();
-  if (!_plCtxId) return;
-  var pl = userPlaylists.find(function(p){return p.id===_plCtxId});
+  if (!id) return;
+  var pl = userPlaylists.find(function(p){return p.id===id});
   var name = pl ? pl.name : '';
   showConfirm('Удалить плейлист «' + name + '»?', function() {
     var folder = document.getElementById('folderSelect').value;
     fetch('/api/playlists', {method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({folder: folder, action: 'delete', id: _plCtxId})})
+      body: JSON.stringify({folder: folder, action: 'delete', id: id})})
     .then(function(r){return r.json()}).then(function(d) {
       if (d.ok) { showToast('Плейлист удалён'); loadUserPlaylists(); }
     });
