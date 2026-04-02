@@ -1977,7 +1977,7 @@ body { overflow: hidden; touch-action: none; position: fixed; width: 100%; heigh
   padding: 0; width: 40px; height: 40px; border: none; border-radius: 20px; font-size: 11px;
   background: none; color: rgba(255,255,255,0.4); cursor: pointer; transition: color 0.2s;
   display: flex; align-items: center; justify-content: center;
-  position: relative; z-index: 1;
+  position: relative; z-index: 1; pointer-events: none;
 }
 .mobile-toggle button.active { color: #fff; }
 .mobile-mini-btn {
@@ -2324,10 +2324,10 @@ body { overflow: hidden; touch-action: none; position: fixed; width: 100%; heigh
 <div class="mobile-bar">
   <div class="mobile-bar-inner">
     <button class="mobile-mini-btn" id="mobilePlayBtn" onclick="togglePlay()"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg></button>
-    <div class="mobile-toggle" id="mobileToggle">
+    <div class="mobile-toggle" id="mobileToggle" onclick="mobileToggleView()">
       <div class="mobile-toggle-bg right" id="toggleBg"></div>
-      <button id="btnVinyl" onclick="mobileShow('vinyl')"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="1.5"/><circle cx="12" cy="12" r="4" fill="currentColor"/></svg></button>
-      <button class="active" id="btnPlaylist" onclick="mobileShow('playlist')"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M3 13h2v-2H3v2zm0 4h2v-2H3v2zm0-8h2V7H3v2zm4 4h14v-2H7v2zm0 4h14v-2H7v2zM7 7v2h14V7H7z"/></svg></button>
+      <button id="btnVinyl"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="1.5"/><circle cx="12" cy="12" r="4" fill="currentColor"/></svg></button>
+      <button class="active" id="btnPlaylist"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M3 13h2v-2H3v2zm0 4h2v-2H3v2zm0-8h2V7H3v2zm4 4h14v-2H7v2zm0 4h14v-2H7v2zM7 7v2h14V7H7z"/></svg></button>
     </div>
     <button class="mobile-mini-btn" id="mobileNextBtn" onclick="nextTrack()"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M16 6h2v12h-2zM6 18l8.5-6L6 6z"/></svg></button>
   </div>
@@ -3056,13 +3056,6 @@ function prepareNearbyBlobs() {
     if (idx >= 0 && idx < tracks.length) prepareBlobUrl(tracks[idx].file);
   }
 }
-
-audio.addEventListener('error', function() {
-  var e = audio.error;
-});
-audio.addEventListener('playing', function() { ); });
-audio.addEventListener('pause', function() { ); });
-audio.addEventListener('stalled', function() { });
 
 function selectTrack(i, autoplay) {
   if (i < 0 || i >= tracks.length) return;
@@ -4627,6 +4620,11 @@ function mobileShow(view) {
   document.getElementById('btnVinyl').classList.toggle('active', view === 'vinyl');
   document.getElementById('btnPlaylist').classList.toggle('active', view === 'playlist');
   document.getElementById('toggleBg').classList.toggle('right', view === 'playlist');
+}
+
+function mobileToggleView() {
+  var isPlaylist = document.body.classList.contains('mobile-view-playlist');
+  mobileShow(isPlaylist ? 'vinyl' : 'playlist');
 }
 
 // Set default mobile view
