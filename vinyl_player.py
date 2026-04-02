@@ -3537,9 +3537,9 @@ function applyConfig(cfg) {
   renderFolderSelect();
   if (!_isOffline) syncNetworkState();
   var isDemo = userRole === 'demo';
-  var isLocalhost = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
+  var isLocal = cfg.is_local !== false; // true if server says client is local, default true for cached
   document.getElementById('adminBtn').style.display = isAdmin ? '' : 'none';
-  document.getElementById('networkToggles').style.display = (isAdmin && !_isOffline && isLocalhost) ? 'flex' : 'none';
+  document.getElementById('networkToggles').style.display = (isAdmin && !_isOffline && isLocal) ? 'flex' : 'none';
   document.getElementById('downloadCatalogBtn').style.display = (isAdmin && !_isOffline) ? '' : 'none';
   document.getElementById('metaVkRow').style.display = (isDemo || _isOffline) ? 'none' : '';
   document.getElementById('addFolderBtn').style.display = (isDemo || _isOffline) ? 'none' : '';
@@ -6008,6 +6008,10 @@ class Handler(BaseHTTPRequestHandler):
             proto = "https" if _use_https else "http"
             lan_url = "{}://{}:{}".format(proto, local_ip, SERVER_PORT) if IS_PUBLIC else None
             all_urls = ["{}://{}:{}".format(proto, ip, SERVER_PORT) for ip in get_all_local_ips()] if IS_PUBLIC else []
+            # Detect if client is the server machine (localhost or own IP)
+            client_ip = self.client_address[0] if self.client_address else ''
+            local_ips = set(['127.0.0.1', '::1'] + get_all_local_ips())
+            is_local = client_ip in local_ips
             self._respond_json({
                 "folders": folders,
                 "last_folder": last,
@@ -6018,6 +6022,7 @@ class Handler(BaseHTTPRequestHandler):
                 "is_admin": udata.get("is_admin", False) if udata else False,
                 "role": udata.get("role", "user") if udata else "user",
                 "music_root": get_music_root(),
+                "is_local": is_local,
             })
 
         elif path == "/api/scan":
