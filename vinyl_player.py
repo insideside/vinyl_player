@@ -3347,10 +3347,12 @@ function prevTrack() {
 }
 
 function nextTrack() {
-  // "Play next" override — play forced track, then continue from where we were
   if (_forceNextIdx >= 0) {
     var idx = _forceNextIdx;
     _forceNextIdx = -1;
+    // Move queue position to this track so next continues from there
+    var qPos = playQueue.indexOf(idx);
+    if (qPos >= 0) playQueuePos = qPos;
     selectTrack(idx, isPlaying);
     return;
   }
