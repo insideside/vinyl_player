@@ -1946,6 +1946,27 @@ body {
 }
 .drag-handle:active { cursor: grabbing; }
 
+/* ── Context menu ── */
+.ctx-menu {
+  position: fixed; z-index: 300; min-width: 180px;
+  background: rgba(30,30,30,0.96); border-radius: 12px; padding: 6px 0;
+  backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(255,255,255,0.1); box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+  display: none;
+}
+.ctx-menu.show { display: block; }
+.ctx-item {
+  padding: 10px 16px; font-size: 13px; color: rgba(255,255,255,0.8);
+  cursor: pointer; display: flex; align-items: center; gap: 10px;
+}
+.ctx-item:hover { background: rgba(255,255,255,0.08); }
+.ctx-item:active { background: rgba(233,69,96,0.2); }
+.ctx-item.danger { color: #e94560; }
+.ctx-sep { height: 1px; background: rgba(255,255,255,0.08); margin: 4px 0; }
+.ctx-sub { padding: 6px 0; max-height: 200px; overflow-y: auto; }
+.ctx-sub .ctx-item { padding: 8px 16px; font-size: 12px; }
+.ctx-sub-header { padding: 6px 16px; font-size: 11px; color: rgba(255,255,255,0.3); }
+
 /* ── Toast ── */
 .toast {
   position: fixed; top: 20px; left: 50%; transform: translateX(-50%) translateY(-80px);
@@ -2590,6 +2611,16 @@ body { overflow: hidden; touch-action: none; position: fixed; width: 100%; heigh
 </div>
 <audio id="audioEl"></audio>
 
+<!-- Track context menu -->
+<div class="ctx-menu" id="ctxMenu">
+  <div class="ctx-item" onclick="ctxPlayNext()"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></svg> Играть следующим</div>
+  <div class="ctx-sep"></div>
+  <div class="ctx-sub-header">Добавить в плейлист</div>
+  <div class="ctx-sub" id="ctxPlaylists"></div>
+  <div class="ctx-sep"></div>
+  <div class="ctx-item danger" onclick="ctxDelete()"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg> Удалить</div>
+</div>
+
 <script>
 // ── iOS PWA audio session fix ──
 // iOS standalone PWA cannot activate audio session (WebKit bug).
@@ -2936,7 +2967,9 @@ function renderTracks() {
       var offDisabled = _isOffline && !isTrackCached(t.file);
       html += '<div class="playlist-item' + (i === currentIdx ? ' active' : '') + (offDisabled ? ' disabled' : '') + '"'
         + (offDisabled ? '' : ' onclick="playFromList(' + i + ')"')
-        + (offDisabled ? ' style="opacity:0.3;pointer-events:none"' : '') + '>'
+        + (offDisabled ? ' style="opacity:0.3;pointer-events:none"' : '')
+        + ' oncontextmenu="event.preventDefault();showCtxMenu(event,' + i + ')"'
+        + ' data-longpress="' + i + '">'
         + '<div class="cover-thumb">' + coverHtml + '</div>'
         + '<div class="info"><div class="name">' + esc(t.title) + '</div>'
         + '<div class="artist">' + esc(t.artist) + '</div></div>'
@@ -5498,6 +5531,122 @@ function downloadCatalog() {
 // ── Track Edit ──
 var editingTrackIdx = -1;
 
+// ── Context menu ──
+var _ctxIdx = -1;
+var _ctxLongTimer = null;
+
+function showCtxMenu(e, idx) {
+  _ctxIdx = idx;
+  var menu = document.getElementById('ctxMenu');
+  // Build playlist submenu
+  var plHtml = '';
+  if (userPlaylists.length === 0) {
+    plHtml = '<div class="ctx-item" style="color:rgba(255,255,255,0.3);pointer-events:none">Нет плейлистов</div>';
+  } else {
+    for (var p = 0; p < userPlaylists.length; p++) {
+      var pl = userPlaylists[p];
+      plHtml += '<div class="ctx-item" onclick="ctxAddToPlaylist(\'' + pl.id + '\',\'start\')">' + esc(pl.name) + ' <span style="color:rgba(255,255,255,0.25);margin-left:auto;font-size:10px">в начало</span></div>';
+      plHtml += '<div class="ctx-item" onclick="ctxAddToPlaylist(\'' + pl.id + '\',\'end\')">' + esc(pl.name) + ' <span style="color:rgba(255,255,255,0.25);margin-left:auto;font-size:10px">в конец</span></div>';
+    }
+  }
+  document.getElementById('ctxPlaylists').innerHTML = plHtml;
+  // Position
+  var x = e.clientX || (e.touches && e.touches[0] ? e.touches[0].clientX : 100);
+  var y = e.clientY || (e.touches && e.touches[0] ? e.touches[0].clientY : 100);
+  menu.style.left = Math.min(x, window.innerWidth - 200) + 'px';
+  menu.style.top = Math.min(y, window.innerHeight - 300) + 'px';
+  menu.classList.add('show');
+  // Close on any outside click
+  setTimeout(function() {
+    document.addEventListener('click', hideCtxMenu, {once: true});
+    document.addEventListener('touchstart', hideCtxMenu, {once: true});
+  }, 50);
+}
+
+function hideCtxMenu() {
+  document.getElementById('ctxMenu').classList.remove('show');
+  _ctxIdx = -1;
+}
+
+function ctxPlayNext() {
+  hideCtxMenu();
+  if (_ctxIdx < 0 || _ctxIdx >= tracks.length) return;
+  // Insert this track right after current position in play queue
+  var idx = _ctxIdx;
+  // Remove if already in queue
+  var pos = playQueue.indexOf(idx);
+  if (pos >= 0) playQueue.splice(pos, 1);
+  // Adjust playQueuePos if needed
+  if (pos >= 0 && pos <= playQueuePos) playQueuePos--;
+  // Insert after current
+  playQueue.splice(playQueuePos + 1, 0, idx);
+  showToast(tracks[idx].title + ' — следующий');
+}
+
+function ctxAddToPlaylist(plId, where) {
+  hideCtxMenu();
+  if (_ctxIdx < 0 || _ctxIdx >= tracks.length) return;
+  var file = tracks[_ctxIdx].file;
+  var pl = userPlaylists.find(function(p) { return p.id === plId; });
+  if (!pl) return;
+  // Check if already in playlist
+  if (pl.tracks.indexOf(file) >= 0) { showToast('Уже в плейлисте'); return; }
+  var newTracks = pl.tracks.slice();
+  if (where === 'start') newTracks.unshift(file);
+  else newTracks.push(file);
+  var folder = document.getElementById('folderSelect').value;
+  fetch('/api/playlists', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({folder: folder, action: 'update', id: plId, tracks: newTracks})})
+  .then(function(r){return r.json()}).then(function(d) {
+    if (d.ok) {
+      pl.tracks = newTracks;
+      showToast('Добавлено в «' + pl.name + '»');
+    }
+  });
+}
+
+function ctxDelete() {
+  hideCtxMenu();
+  if (_ctxIdx < 0 || _ctxIdx >= tracks.length) return;
+  var t = tracks[_ctxIdx];
+  var idx = _ctxIdx;
+  showConfirm('Удалить «' + t.title + '»?\nФайл будет удалён с диска.', function() {
+    var folder = document.getElementById('folderSelect').value;
+    fetch('/api/track/delete', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({folder: folder, file: t.file})})
+    .then(function(r){return r.json()}).then(function(d) {
+      if (d.ok) {
+        // If playing this track, stop
+        if (currentIdx === idx) { audio.pause(); setPlayState(false); }
+        showToast('Удалено');
+        loadFolder(folder);
+      } else {
+        showToast(d.error || 'Ошибка');
+      }
+    });
+  }, 'Удалить');
+}
+
+// Long-press for mobile context menu
+(function() {
+  document.addEventListener('touchstart', function(e) {
+    var el = e.target.closest('[data-longpress]');
+    if (!el) return;
+    var idx = parseInt(el.getAttribute('data-longpress'));
+    _ctxLongTimer = setTimeout(function() {
+      _ctxLongTimer = null;
+      e.preventDefault();
+      showCtxMenu(e, idx);
+    }, 500);
+  }, {passive: true});
+  document.addEventListener('touchmove', function() {
+    if (_ctxLongTimer) { clearTimeout(_ctxLongTimer); _ctxLongTimer = null; }
+  });
+  document.addEventListener('touchend', function() {
+    if (_ctxLongTimer) { clearTimeout(_ctxLongTimer); _ctxLongTimer = null; }
+  });
+})();
+
 function openTrackEdit(idx) {
   if (idx < 0 || idx >= tracks.length) return;
   editingTrackIdx = idx;
@@ -6793,6 +6942,27 @@ class Handler(BaseHTTPRequestHandler):
             t = threading.Thread(target=dl_tracks, daemon=True)
             t.start()
             self._respond_json({"ok": True})
+
+        elif path == "/api/track/delete":
+            if self._deny_demo(udata): return
+            folder = data.get("folder", _user_music_dirs.get(user, ""))
+            filename = data.get("file", "")
+            if not folder or not filename:
+                self._respond_json({"ok": False, "error": "Нет данных."})
+                return
+            user_folders = get_user_folders(user)
+            if folder not in user_folders:
+                self._respond_json({"ok": False, "error": "Нет доступа."})
+                return
+            filepath = _safe_path(folder, filename)
+            if not filepath or not filepath.is_file():
+                self._respond_json({"ok": False, "error": "Файл не найден."})
+                return
+            try:
+                filepath.unlink()
+                self._respond_json({"ok": True})
+            except Exception as ex:
+                self._respond_json({"ok": False, "error": str(ex)})
 
         elif path == "/api/track/edit":
             if self._deny_demo(udata): return
