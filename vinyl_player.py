@@ -2468,6 +2468,7 @@ body { overflow: hidden; touch-action: none; position: fixed; width: 100%; heigh
     <div style="display:flex;gap:6px">
       <button class="folder-btn folder-btn-primary" style="flex:1" onclick="saveTrackEdit()">Сохранить</button>
       <button class="folder-btn folder-btn-secondary" style="flex:1" onclick="document.getElementById('trackEditOverlay').classList.remove('show')">Отмена</button>
+      <button class="folder-btn folder-btn-secondary" style="color:#e94560;flex-shrink:0;padding:8px 12px" onclick="deleteEditTrack()" data-tip="Удалить трек">&#10005;</button>
     </div>
   </div>
 </div>
@@ -2614,11 +2615,17 @@ body { overflow: hidden; touch-action: none; position: fixed; width: 100%; heigh
 <!-- Track context menu -->
 <div class="ctx-menu" id="ctxMenu">
   <div class="ctx-item" onclick="ctxPlayNext()"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></svg> Играть следующим</div>
+  <div class="ctx-item" id="ctxCacheItem" onclick="ctxToggleCache()"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg> <span id="ctxCacheLabel">Кэшировать</span></div>
   <div class="ctx-sep"></div>
   <div class="ctx-sub-header">Добавить в плейлист</div>
   <div class="ctx-sub" id="ctxPlaylists"></div>
   <div class="ctx-sep"></div>
   <div class="ctx-item danger" onclick="ctxDelete()"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg> Удалить</div>
+</div>
+
+<!-- Playlist context menu -->
+<div class="ctx-menu" id="plCtxMenu">
+  <div class="ctx-item danger" onclick="plCtxDelete()"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg> Удалить плейлист</div>
 </div>
 
 <script>
@@ -2973,7 +2980,9 @@ function renderTracks() {
         + '<div class="cover-thumb">' + coverHtml + '</div>'
         + '<div class="info"><div class="name">' + esc(t.title) + '</div>'
         + '<div class="artist">' + esc(t.artist) + '</div></div>'
-        + (isTrackCached(t.file) ? '<span style="width:6px;height:6px;border-radius:50%;background:#52b788;flex-shrink:0" data-tip="В кэше"></span>' : '')
+        + (isTrackCached(t.file)
+          ? '<span style="width:6px;height:6px;border-radius:50%;background:#52b788;flex-shrink:0" data-tip="В кэше"></span>'
+          : (!offDisabled ? '<button class="track-edit-btn" onclick="event.stopPropagation();cacheTrack(\'' + esc(t.file).replace(/'/g,"\\'") + '\',function(ok){if(ok)renderTracks()})" data-tip="Кэшировать"><svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg></button>' : ''))
         + (!offDisabled && userRole !== 'demo' ? '<button class="track-edit-btn" onclick="event.stopPropagation();openTrackEdit(' + i + ')" data-tip="Редактировать"><svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 000-1.41l-2.34-2.34a1 1 0 00-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg></button>' : '')
         + '</div>';
     }
@@ -4819,7 +4828,7 @@ function renderPlaylists() {
     var pl = userPlaylists[i];
     var isExp = expandedPlaylist === pl.id;
     var coverHtml = buildPlCover(pl);
-    html += '<div class="album-card pl-drag-card' + (isExp ? ' active' : '') + '" data-plid="' + pl.id + '" data-plidx="' + i + '" draggable="true" onclick="togglePlaylistExpand(\'' + pl.id + '\')">'
+    html += '<div class="album-card pl-drag-card' + (isExp ? ' active' : '') + '" data-plid="' + pl.id + '" data-plidx="' + i + '" draggable="true" onclick="togglePlaylistExpand(\'' + pl.id + '\')" oncontextmenu="showPlCtxMenu(event,\'' + pl.id + '\')" data-longpress-pl="' + pl.id + '">'
       + '<div class="album-cover" style="position:relative;overflow:hidden">' + coverHtml + '</div>'
       + '<div class="album-info"><div class="album-name">' + esc(pl.name) + '</div>'
       + '<div class="album-count">' + pl.tracks.length + ' треков</div></div>'
@@ -5538,6 +5547,9 @@ var _ctxLongTimer = null;
 function showCtxMenu(e, idx) {
   _ctxIdx = idx;
   var menu = document.getElementById('ctxMenu');
+  // Update cache/uncache label
+  var isCached = idx >= 0 && idx < tracks.length && isTrackCached(tracks[idx].file);
+  document.getElementById('ctxCacheLabel').textContent = isCached ? 'Удалить из кэша' : 'Кэшировать';
   // Build playlist submenu
   var plHtml = '';
   if (userPlaylists.length === 0) {
@@ -5627,17 +5639,95 @@ function ctxDelete() {
   }, 'Удалить');
 }
 
-// Long-press for mobile context menu
+function ctxToggleCache() {
+  hideCtxMenu();
+  if (_ctxIdx < 0 || _ctxIdx >= tracks.length) return;
+  var file = tracks[_ctxIdx].file;
+  if (isTrackCached(file)) {
+    uncacheTrack(file);
+  } else {
+    cacheTrack(file, function(ok) { if (ok) { renderTracks(); showToast('Кэшировано'); } });
+  }
+}
+
+function deleteEditTrack() {
+  if (editingTrackIdx < 0 || editingTrackIdx >= tracks.length) return;
+  var t = tracks[editingTrackIdx];
+  var idx = editingTrackIdx;
+  showConfirm('Удалить «' + t.title + '»?\nФайл будет удалён с диска.', function() {
+    document.getElementById('trackEditOverlay').classList.remove('show');
+    var folder = document.getElementById('folderSelect').value;
+    fetch('/api/track/delete', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({folder: folder, file: t.file})})
+    .then(function(r){return r.json()}).then(function(d) {
+      if (d.ok) {
+        if (currentIdx === idx) { audio.pause(); setPlayState(false); }
+        showToast('Удалено');
+        loadFolder(folder);
+      } else { showToast(d.error || 'Ошибка'); }
+    });
+  }, 'Удалить');
+}
+
+// ── Playlist context menu ──
+var _plCtxId = null;
+function showPlCtxMenu(e, plId) {
+  e.preventDefault();
+  e.stopPropagation();
+  _plCtxId = plId;
+  var pl = userPlaylists.find(function(p){return p.id===plId});
+  if (!pl) return;
+  var menu = document.getElementById('plCtxMenu');
+  var x = e.clientX || (e.touches && e.touches[0] ? e.touches[0].clientX : 100);
+  var y = e.clientY || (e.touches && e.touches[0] ? e.touches[0].clientY : 100);
+  menu.style.left = Math.min(x, window.innerWidth - 200) + 'px';
+  menu.style.top = Math.min(y, window.innerHeight - 200) + 'px';
+  menu.classList.add('show');
+  setTimeout(function() {
+    document.addEventListener('click', hidePlCtxMenu, {once: true});
+    document.addEventListener('touchstart', hidePlCtxMenu, {once: true});
+  }, 50);
+}
+function hidePlCtxMenu() {
+  document.getElementById('plCtxMenu').classList.remove('show');
+}
+function plCtxDelete() {
+  hidePlCtxMenu();
+  if (!_plCtxId) return;
+  var pl = userPlaylists.find(function(p){return p.id===_plCtxId});
+  var name = pl ? pl.name : '';
+  showConfirm('Удалить плейлист «' + name + '»?', function() {
+    var folder = document.getElementById('folderSelect').value;
+    fetch('/api/playlists', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({folder: folder, action: 'delete', id: _plCtxId})})
+    .then(function(r){return r.json()}).then(function(d) {
+      if (d.ok) { showToast('Плейлист удалён'); loadUserPlaylists(); }
+    });
+  }, 'Удалить');
+}
+
+// Long-press for mobile context menu (tracks + playlists)
 (function() {
   document.addEventListener('touchstart', function(e) {
+    // Track long-press
     var el = e.target.closest('[data-longpress]');
-    if (!el) return;
-    var idx = parseInt(el.getAttribute('data-longpress'));
-    _ctxLongTimer = setTimeout(function() {
-      _ctxLongTimer = null;
-      e.preventDefault();
-      showCtxMenu(e, idx);
-    }, 500);
+    if (el) {
+      var idx = parseInt(el.getAttribute('data-longpress'));
+      _ctxLongTimer = setTimeout(function() {
+        _ctxLongTimer = null;
+        showCtxMenu(e, idx);
+      }, 500);
+      return;
+    }
+    // Playlist long-press
+    var plEl = e.target.closest('[data-longpress-pl]');
+    if (plEl) {
+      var plId = plEl.getAttribute('data-longpress-pl');
+      _ctxLongTimer = setTimeout(function() {
+        _ctxLongTimer = null;
+        showPlCtxMenu(e, plId);
+      }, 500);
+    }
   }, {passive: true});
   document.addEventListener('touchmove', function() {
     if (_ctxLongTimer) { clearTimeout(_ctxLongTimer); _ctxLongTimer = null; }
