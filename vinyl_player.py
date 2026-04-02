@@ -5542,15 +5542,27 @@ function saveTrackEdit() {
     if (d.ok) {
       showToast('Трек обновлён');
       document.getElementById('trackEditOverlay').classList.remove('show');
-      // Reload folder
+      var wasCurrentTrack = currentIdx === editingTrackIdx;
+      // Update player UI immediately if this is the current track
+      if (wasCurrentTrack) {
+        document.getElementById('trackTitle').textContent = title;
+        document.getElementById('trackArtist').textContent = artist;
+        if ('mediaSession' in navigator) {
+          navigator.mediaSession.metadata = new MediaMetadata({
+            title: title, artist: artist,
+            album: navigator.mediaSession.metadata ? navigator.mediaSession.metadata.album : ''
+          });
+        }
+      }
+      // Reload folder to refresh track list
       loadFolder(folder);
       // Resume playback with new filename
       if (wasPlaying && d.new_file) {
         setTimeout(function() {
-          // Find the track with new filename
           for (var i = 0; i < tracks.length; i++) {
             if (tracks[i].file === d.new_file) {
-              selectTrack(i, false);
+              currentIdx = i;
+              audio.src = '/api/stream/' + encodeURIComponent(d.new_file);
               audio.currentTime = playPos;
               audio.play();
               setPlayState(true);
