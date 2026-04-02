@@ -2739,6 +2739,8 @@ audio.addEventListener('loadedmetadata', function() {
   document.getElementById('timeDuration').textContent = formatTime(audio.duration);
 });
 audio.addEventListener('ended', function() {
+  // Ignore 'ended' if track just started (src change can fire spurious ended)
+  if (audio.currentTime < 0.5 && audio.duration > 1) return;
   nextTrack();
 });
 
