@@ -3819,7 +3819,7 @@ function setToggle(id, dotId, on) {
 }
 
 function syncNetworkState() {
-  if (!isAdmin) return; // Non-admins don't see network state
+  if (!isAdmin) return;
   Promise.all([
     fetch('/api/config').then(function(r){return r.json()}),
     fetch('/api/wan/status').then(function(r){return r.json()})
@@ -3832,15 +3832,17 @@ function syncNetworkState() {
     setToggle('publicToggle', 'publicDot', cfg.public);
     setToggle('wanToggle', 'wanDot', wan.active);
 
-    // Show WAN only, or LAN if no WAN
-    if (wan.active && wan.url) {
-      parts.push('<span style="color:#52b788">&#9679;</span> WAN: <a href="' + wan.url + '" target="_blank" class="net-link">' + wan.url + '</a>');
-    } else if (cfg.public && cfg.all_urls && cfg.all_urls.length) {
-      var lanPart = '<span style="color:#52b788">&#9679;</span> LAN:';
-      for (var u = 0; u < cfg.all_urls.length; u++) {
-        lanPart += ' <a href="' + cfg.all_urls[u] + '" target="_blank" class="net-link">' + cfg.all_urls[u] + '</a>';
+    // Show network info only on server machine
+    if (cfg.is_local) {
+      if (wan.active && wan.url) {
+        parts.push('<span style="color:#52b788">&#9679;</span> WAN: <a href="' + wan.url + '" target="_blank" class="net-link">' + wan.url + '</a>');
+      } else if (cfg.public && cfg.all_urls && cfg.all_urls.length) {
+        var lanPart = '<span style="color:#52b788">&#9679;</span> LAN:';
+        for (var u = 0; u < cfg.all_urls.length; u++) {
+          lanPart += ' <a href="' + cfg.all_urls[u] + '" target="_blank" class="net-link">' + cfg.all_urls[u] + '</a>';
+        }
+        parts.push(lanPart);
       }
-      parts.push(lanPart);
     }
 
     if (parts.length) {
