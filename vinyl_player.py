@@ -3841,9 +3841,6 @@ function syncNetworkState() {
         lanPart += ' <a href="' + cfg.all_urls[u] + '" target="_blank" class="net-link">' + cfg.all_urls[u] + '</a>';
       }
       parts.push(lanPart);
-      if (cfg.all_urls[0] && cfg.all_urls[0].indexOf('https') === 0) {
-        parts.push('<span style="color:rgba(255,255,255,0.25)"><a href="/cert.pem" class="net-link" style="color:rgba(255,255,255,0.35)">Скачать сертификат</a> для устройств</span>');
-      }
     }
 
     if (parts.length) {
@@ -5979,20 +5976,6 @@ class Handler(BaseHTTPRequestHandler):
             build_hash = hashlib.md5(HTML_PAGE.encode()).hexdigest()[:8]
             sw_code = SW_JS.replace("BUILD_HASH", build_hash)
             self._respond(200, "application/javascript", sw_code.encode("utf-8"))
-            return
-
-        elif path == "/cert.pem":
-            # Download CA cert for installing on devices (trust self-signed)
-            if CERT_FILE.exists():
-                cert_data = CERT_FILE.read_bytes()
-                self.send_response(200)
-                self.send_header("Content-Type", "application/x-pem-file")
-                self.send_header("Content-Disposition", "attachment; filename=\"insideside-music.pem\"")
-                self.send_header("Content-Length", str(len(cert_data)))
-                self.end_headers()
-                self.wfile.write(cert_data)
-            else:
-                self._respond(404, "text/plain", b"No cert")
             return
 
         if not user:
