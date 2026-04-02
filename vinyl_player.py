@@ -2548,44 +2548,27 @@ body { overflow: hidden; touch-action: none; position: fixed; width: 100%; heigh
     </div>
   </div>
 </div>
-<video id="audioEl" playsinline style="display:none"></video>
+<audio id="audioEl"></audio>
 
 <script>
 // ── iOS PWA audio session fix ──
-// iOS standalone PWA defaults to "ambient" audio category (no sound output).
-// Playing a real audio FILE (not data URI, not AudioBuffer) via <audio> element
-// forces iOS to switch to "playback" category. Must be a real server-served file.
-// Based on: https://github.com/swevans/unmute
-(function(){
-  if (!(/iPad|iPhone|iPod/.test(navigator.userAgent) || (/Mac/.test(navigator.userAgent) && navigator.maxTouchPoints > 1))) return;
-  var silentEl = null;
-  var done = false;
-  function unlock() {
-    if (done) return;
-    done = true;
-    silentEl = document.createElement('audio');
-    silentEl.src = '/silence.mp3';
-    silentEl.loop = true;
-    silentEl.playsinline = true;
-    silentEl.setAttribute('playsinline', '');
-    silentEl.volume = 0.01;
-    silentEl.play().then(function() {
-      if (typeof dbg === 'function') dbg('PWA silent audio loop started');
-    }).catch(function(e) {
-      if (typeof dbg === 'function') dbg('PWA silent play fail: ' + e.message);
-    });
-    document.removeEventListener('touchstart', unlock, true);
-    document.removeEventListener('click', unlock, true);
-  }
-  document.addEventListener('touchstart', unlock, true);
-  document.addEventListener('click', unlock, true);
-  // Stop silent loop when page hidden, restart when visible
-  document.addEventListener('visibilitychange', function() {
-    if (!silentEl) return;
-    if (document.hidden) { silentEl.pause(); }
-    else { silentEl.play().catch(function(){}); }
-  });
-})();
+// iOS standalone PWA cannot activate audio session (WebKit bug).
+// Detect: play() resolves but currentTime stays 0. Show overlay
+// with link that opens Safari (target=_blank), which activates the
+// shared system audio session. User returns to PWA — audio works.
+var _pwaAudioChecked = false;
+function showPwaAudioOverlay() {
+  var ov = document.createElement('div');
+  ov.style.cssText = 'position:fixed;inset:0;z-index:99999;background:rgba(0,0,0,0.85);display:flex;align-items:center;justify-content:center;backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px)';
+  ov.innerHTML = '<div style="text-align:center;padding:24px">'
+    + '<div style="font-size:40px;margin-bottom:16px">&#127925;</div>'
+    + '<div style="font-size:16px;color:#fff;margin-bottom:8px;font-weight:600">Активация звука</div>'
+    + '<div style="font-size:13px;color:rgba(255,255,255,0.5);margin-bottom:20px;max-width:280px;line-height:1.4">iOS ограничивает звук в приложениях.<br>Нажмите кнопку — откроется Safari для активации, затем вернитесь сюда.</div>'
+    + '<a href="/pwa-audio-fix" target="_blank" style="display:inline-block;padding:14px 32px;background:#e94560;color:#fff;border-radius:12px;font-size:15px;font-weight:600;text-decoration:none">Активировать звук</a>'
+    + '<div style="margin-top:16px"><button onclick="this.closest(\'div\').parentElement.remove()" style="background:none;border:none;color:rgba(255,255,255,0.3);font-size:13px;cursor:pointer">Пропустить</button></div>'
+    + '</div>';
+  document.body.appendChild(ov);
+}
 // ── Debug: logs sent to server console ──
 var _dbgQueue = [];
 var _dbgTimer2 = null;
@@ -3118,7 +3101,21 @@ function selectTrack(i, autoplay) {
   }
   if (autoplay) {
     var p = audio.play();
-    if (p&&p.then) p.then(function(){dbg('play OK, time=' + audio.currentTime.toFixed(1))}).catch(function(e){dbg('play FAIL: '+e.message)});
+    if (p&&p.then) p.then(function(){
+      dbg('play OK, time=' + audio.currentTime.toFixed(1));
+      // iOS PWA: detect stuck audio (plays but no sound, time=0)
+      if (!_pwaAudioChecked && window.navigator.standalone) {
+        _pwaAudioChecked = true;
+        setTimeout(function() {
+          if (audio.currentTime < 0.01 && !audio.paused) {
+            dbg('PWA audio stuck, showing Safari fix');
+            setPlayState(false);
+            audio.pause();
+            showPwaAudioOverlay();
+          }
+        }, 2000);
+      }
+    }).catch(function(e){dbg('play FAIL: '+e.message)});
     setPlayState(true);
   }
   if (isTrackCached(t.file)) prepareBlobUrl(t.file);
@@ -5964,6 +5961,23 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Cache-Control", "public, max-age=31536000")
             self.end_headers()
             self.wfile.write(frame)
+            return
+
+        if path == "/pwa-audio-fix":
+            self._respond(200, "text/html", b"""<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">
+<title>Audio</title><style>*{margin:0;padding:0;box-sizing:border-box}body{background:#111;color:#eee;font-family:-apple-system,sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;text-align:center}</style></head>
+<body><div><p style="font-size:32px;margin-bottom:12px">&#9835;</p><p id="s" style="color:rgba(255,255,255,0.5);font-size:14px">Activating audio...</p></div>
+<script>
+var a = new Audio('/silence.mp3');
+a.play().then(function(){
+  document.getElementById('s').textContent = 'Audio activated! Return to app.';
+}).catch(function(){
+  document.getElementById('s').textContent = 'Tap anywhere to activate.';
+  document.onclick = function() {
+    a.play().then(function(){ document.getElementById('s').textContent = 'Audio activated! Return to app.'; });
+  };
+});
+</script></body></html>""")
             return
 
         if path == "/reset":
