@@ -6240,13 +6240,17 @@ class Handler(BaseHTTPRequestHandler):
 (async function(){
   var s=document.getElementById('s');
   try{
-    var regs=await navigator.serviceWorker.getRegistrations();
-    for(var r of regs) await r.unregister();
-    s.textContent='SW unregistered ('+regs.length+')...';
-    var names=await caches.keys();
-    for(var n of names) await caches.delete(n);
-    s.textContent='Caches cleared ('+names.length+'). Redirecting...';
-  }catch(e){s.textContent='Error: '+e.message;}
+    if(navigator.serviceWorker){
+      var regs=await navigator.serviceWorker.getRegistrations();
+      for(var r of regs) await r.unregister();
+      s.textContent='SW: '+regs.length+' cleared';
+    }
+    if(window.caches){
+      var names=await caches.keys();
+      for(var n of names) await caches.delete(n);
+      s.textContent='Cache cleared. Redirecting...';
+    } else { s.textContent='Done. Redirecting...'; }
+  }catch(e){s.textContent=e.message;}
   setTimeout(function(){window.location.href='/';},1500);
 })();
 </script></body></html>""")
