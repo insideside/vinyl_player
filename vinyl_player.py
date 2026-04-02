@@ -2565,21 +2565,6 @@ body { overflow: hidden; touch-action: none; position: fixed; width: 100%; heigh
 // with link that opens Safari (target=_blank), which activates the
 // shared system audio session. User returns to PWA — audio works.
 var _pwaAudioChecked = false;
-// ── Debug: logs sent to server console ──
-var _dbgQueue = [];
-var _dbgTimer2 = null;
-function dbg(msg) {
-  _dbgQueue.push(new Date().toTimeString().slice(0,8) + ' ' + msg);
-  if (!_dbgTimer2) _dbgTimer2 = setTimeout(_dbgFlush, 300);
-}
-function _dbgFlush() {
-  _dbgTimer2 = null;
-  if (!_dbgQueue.length) return;
-  var q = _dbgQueue.splice(0);
-  try { fetch('/api/dbg', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({lines:q})}); } catch(e){}
-}
-dbg('init proto=' + location.protocol + ' host=' + location.hostname + ' standalone=' + !!window.navigator.standalone);
-// ── End debug ──
 
 function _d(s){return decodeURIComponent(escape(atob(s.split('').reverse().join(''))));}
 var _n=_d("==wYpNXdtBSZkl2clRWaz5Wa");
@@ -3074,45 +3059,39 @@ function prepareNearbyBlobs() {
 
 audio.addEventListener('error', function() {
   var e = audio.error;
-  dbg('AUDIO ERR code=' + (e?e.code:'?') + ' msg=' + (e?e.message:'?') + ' src=' + (audio.src||'').slice(0,50));
 });
-audio.addEventListener('playing', function() { dbg('EVENT: playing, time=' + audio.currentTime.toFixed(1)); });
-audio.addEventListener('pause', function() { dbg('EVENT: pause, time=' + audio.currentTime.toFixed(1)); });
-audio.addEventListener('stalled', function() { dbg('EVENT: stalled'); });
+audio.addEventListener('playing', function() { ); });
+audio.addEventListener('pause', function() { ); });
+audio.addEventListener('stalled', function() { });
 
 function selectTrack(i, autoplay) {
   if (i < 0 || i >= tracks.length) return;
   currentIdx = i;
   var t = tracks[i];
-  dbg('select #' + i + ' auto=' + autoplay + ' blob=' + !!_blobUrlCache[t.file] + ' cached=' + isTrackCached(t.file));
 
   vinylAngle = 0;
   vinylSpeed = 0;
 
   var streamUrl = '/api/stream/' + encodeURIComponent(t.file);
   if (_blobUrlCache[t.file]) {
-    dbg('→ blob URL');
     audio.src = _blobUrlCache[t.file];
   } else {
-    dbg('→ direct URL');
     audio.src = streamUrl;
   }
   if (autoplay) {
     var p = audio.play();
     if (p&&p.then) p.then(function(){
-      dbg('play OK, time=' + audio.currentTime.toFixed(1));
       // iOS PWA: detect stuck audio (plays but no sound, time=0)
       if (!_pwaAudioChecked && window.navigator.standalone) {
         _pwaAudioChecked = true;
         setTimeout(function() {
           if (audio.currentTime < 0.01 && !audio.paused) {
-            dbg('PWA audio stuck');
             setPlayState(false);
             audio.pause();
           }
         }, 2000);
       }
-    }).catch(function(e){dbg('play FAIL: '+e.message)});
+    });
     setPlayState(true);
   }
   if (isTrackCached(t.file)) prepareBlobUrl(t.file);
@@ -3568,13 +3547,11 @@ function showOfflineBanner(show) {
 
 function loadConfig() {
   var t0 = Date.now();
-  dbg('loadConfig start');
   var hadCache = false;
   try {
     var saved = localStorage.getItem('_vc_config');
     if (saved) {
       var cached = JSON.parse(saved);
-      dbg('loadConfig: LS hit folder=' + (cached.last_folder||'?').split('/').pop());
       applyConfig(cached);
       if (cached.last_folder) {
         document.getElementById('folderSelect').value = cached.last_folder;
@@ -3584,11 +3561,9 @@ function loadConfig() {
     }
   } catch(e){}
   if (!hadCache) showLoadingIndicator();
-  dbg('loadConfig: fetching server...');
   fetch('/api/config').then(function(r){return r.json()}).then(function(cfg) {
-    dbg('loadConfig: server ' + (Date.now()-t0) + 'ms');
-    if (cfg.error === 'unauthorized') { dbg('loadConfig: unauth'); window.location.reload(); return; }
-    if (cfg.error === 'offline') { dbg('loadConfig: offline'); if (!hadCache) enterOfflineMode(); return; }
+    if (cfg.error === 'unauthorized') { window.location.reload(); return; }
+    if (cfg.error === 'offline') { if (!hadCache) enterOfflineMode(); return; }
     _isOffline = false;
     showOfflineBanner(false);
     try { localStorage.setItem('_vc_config', JSON.stringify(cfg)); } catch(e){}
@@ -5800,9 +5775,7 @@ openCacheDB(function() { refreshCachedList(); });
 
 // Register Service Worker for offline app shell (HTTPS or localhost only)
 if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1')) {
-  dbg('SW registering...');
   navigator.serviceWorker.register('/sw.js').then(function(reg) {
-    dbg('SW registered active=' + !!reg.active + ' waiting=' + !!reg.waiting);
     if (reg.active) {
       warmAppCache();
     } else {
@@ -5814,11 +5787,9 @@ if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.
       }
     });
     reg.addEventListener('updatefound', function() {
-      dbg('SW update found');
     });
-  }).catch(function(e) { dbg('SW fail: ' + e.message); });
+  }).catch(function(e) { });
 } else {
-  dbg('SW skip: proto=' + location.protocol + ' host=' + location.hostname);
 }
 function warmAppCache() {
   if (!('caches' in window)) return;
@@ -6355,14 +6326,6 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(body_bytes)
             return
 
-        # Debug logging — no auth needed
-        if path == "/api/dbg":
-            lines = data.get("lines", [])
-            ip = self.client_address[0] if self.client_address else '?'
-            for line in lines:
-                print("\033[36m[{}]\033[0m {}".format(ip, line), flush=True)
-            self._respond_json({"ok": True})
-            return
 
         # All other POST endpoints require auth
         user = self._get_user()
