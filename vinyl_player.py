@@ -1680,9 +1680,13 @@ body {
 .playlist-item:hover { background: rgba(255,255,255,0.05); }
 .playlist-item.active { background: rgba(233,69,96,0.15); transition: background 0.3s ease; }
 .playlist-item .cover-thumb {
-  width: 40px; height: 40px; border-radius: 4px; background: #333;
+  width: 40px; height: 40px; border-radius: 4px; background: rgba(255,255,255,0.06);
   display: flex; align-items: center; justify-content: center; overflow: hidden; flex-shrink: 0;
+  color: rgba(255,255,255,0.12); font-size: 16px;
 }
+.playlist-item .cover-thumb::after { content: '\266B'; }
+.playlist-item .cover-thumb:has(img) { color: transparent; }
+.playlist-item .cover-thumb:has(img)::after { display: none; }
 .playlist-item .cover-thumb img { width: 100%; height: 100%; object-fit: cover; }
 .playlist-item .info { flex: 1; overflow: hidden; }
 .playlist-item .info .name { font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -1722,9 +1726,13 @@ body {
   transition: max-height 0.45s ease-in, opacity 0.3s ease 0.05s;
 }
 .album-cover {
-  width: 56px; height: 56px; border-radius: 6px; background: #333;
-  overflow: hidden; flex-shrink: 0;
+  width: 56px; height: 56px; border-radius: 6px; background: rgba(255,255,255,0.06);
+  overflow: hidden; flex-shrink: 0; display: flex; align-items: center; justify-content: center;
+  color: rgba(255,255,255,0.12); font-size: 22px;
 }
+.album-cover::after { content: '\266B'; }
+.album-cover:has(img) { color: transparent; }
+.album-cover:has(img)::after { display: none; }
 .album-cover img { width: 100%; height: 100%; object-fit: cover; }
 .album-info { flex: 1; display: flex; flex-direction: column; justify-content: center; overflow: hidden; }
 .album-name { font-size: 14px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -2896,8 +2904,8 @@ function renderTracks() {
     var i = indices[ii];
     var t = tracks[i];
     var coverHtml = t.has_cover
-      ? '<img src="/api/cover/' + encodeURIComponent(t.file) + '" loading="lazy">'
-      : '<span style="color:rgba(255,255,255,0.2);font-size:16px">&#9835;</span>';
+      ? '<img src="/api/cover/' + encodeURIComponent(t.file) + '" loading="lazy" onerror="loadCachedImg(this,\'' + encodeURIComponent(t.file).replace(/'/g,"\\'") + '\')">'
+      : '';
     if (isEditMode) {
       html += '<div class="playlist-item' + (i === currentIdx ? ' active' : '') + '" data-idx="' + i + '"'
         + ' draggable="true" ondragstart="onDragStart(event,' + i + ')" ondragend="onDragEnd(event)"'
@@ -2934,7 +2942,7 @@ function renderAlbums() {
     var a = indices[ai];
     var alb = albums[a];
     var coverHtml = alb.cover_file
-      ? '<img src="/api/cover/' + encodeURIComponent(alb.cover_file) + '" loading="lazy">'
+      ? '<img src="/api/cover/' + encodeURIComponent(alb.cover_file) + '" loading="lazy" onerror="loadCachedImg(this,\'' + encodeURIComponent(alb.cover_file).replace(/'/g,"\\'") + '\')">'
       : '';
     var isExp = expandedAlbum === a;
     // Check if all album tracks are cached
@@ -5665,6 +5673,20 @@ function getCachedCover(file, cb) {
     var req = tx.objectStore('audio').get('cover:' + file);
     req.onsuccess = function() { cb(req.result || null); };
     req.onerror = function() { cb(null); };
+  });
+}
+
+// Fallback for broken cover images: try IndexedDB cache, else remove img
+function loadCachedImg(img, encodedFile) {
+  var file = decodeURIComponent(encodedFile);
+  img.onerror = null; // prevent loop
+  getCachedCover(file, function(buf) {
+    if (buf) {
+      var blob = new Blob([buf]);
+      img.src = URL.createObjectURL(blob);
+    } else {
+      img.remove();
+    }
   });
 }
 
