@@ -1158,6 +1158,38 @@ def fetch_cover_art(meta):
     return None
 
 
+def _update_tags(filepath, title, artist):
+    """Update only title and artist tags in a file (preserves everything else)."""
+    ext = Path(filepath).suffix.lower()
+    if ext == '.mp3':
+        try:
+            tags = ID3(filepath)
+        except ID3NoHeaderError:
+            tags = ID3()
+        tags["TIT2"] = TIT2(encoding=3, text=title)
+        if artist:
+            tags["TPE1"] = TPE1(encoding=3, text=artist)
+        tags.save(filepath)
+    elif ext == '.flac':
+        audio = FLAC(filepath)
+        audio["title"] = title
+        if artist:
+            audio["artist"] = artist
+        audio.save()
+    elif ext == '.m4a':
+        audio = MP4(filepath)
+        audio.tags["\xa9nam"] = [title]
+        if artist:
+            audio.tags["\xa9ART"] = [artist]
+        audio.save()
+    elif ext == '.ogg':
+        audio = OggVorbis(filepath)
+        audio["title"] = [title]
+        if artist:
+            audio["artist"] = [artist]
+        audio.save()
+
+
 def write_metadata_to_file(filepath, meta, cover_data, overwrite=False):
     """Записывает метаданные в файл. НЕ перезаписывает существующие поля (если overwrite=False)."""
     if not HAS_MUTAGEN:
@@ -2154,7 +2186,7 @@ body { overflow: hidden; touch-action: none; position: fixed; width: 100%; heigh
 </div>
 
 <!-- Meta confirm -->
-<div class="meta-overlay" id="metaConfirmOverlay" onclick="if(event.target===this)metaConfirmClose()">
+<div class="meta-overlay" id="metaConfirmOverlay" onmousedown="this._mdt=event.target" onclick="if(event.target===this&&this._mdt===this)metaConfirmClose()">
   <div class="meta-modal" style="width:400px">
     <h3>Meta-данные</h3>
     <p style="font-size:13px;color:rgba(255,255,255,0.6);margin:12px 0">Начать поиск Meta-данных для всех треков в каталоге?</p>
@@ -2170,7 +2202,7 @@ body { overflow: hidden; touch-action: none; position: fixed; width: 100%; heigh
 </div>
 
 <!-- Meta search modal -->
-<div class="meta-overlay" id="metaOverlay" onclick="if(event.target===this)closeMetaModal()">
+<div class="meta-overlay" id="metaOverlay" onmousedown="this._mdt=event.target" onclick="if(event.target===this&&this._mdt===this)closeMetaModal()">
   <div class="meta-modal" style="width:min(550px,94vw);max-height:90vh;overflow-y:auto">
     <h3>Поиск метаданных</h3>
     <div style="font-size:11px;color:rgba(255,255,255,0.3);margin-bottom:8px">Deezer + iTunes + Genius + Last.fm + MusicBrainz</div>
@@ -2195,7 +2227,7 @@ body { overflow: hidden; touch-action: none; position: fixed; width: 100%; heigh
 </div>
 
 <!-- Import help modal -->
-<div class="meta-overlay" id="importHelpOverlay" onclick="if(event.target===this)this.classList.remove('show')" style="z-index:110">
+<div class="meta-overlay" id="importHelpOverlay" onmousedown="this._mdt=event.target" onclick="if(event.target===this&&this._mdt===this)this.classList.remove('show')" style="z-index:110">
   <div class="meta-modal" style="width:min(500px,92vw);max-height:85vh;overflow-y:auto">
     <h3>Как работает загрузка</h3>
     <div style="font-size:12px;color:rgba(255,255,255,0.6);line-height:1.6">
@@ -2337,7 +2369,7 @@ body { overflow: hidden; touch-action: none; position: fixed; width: 100%; heigh
 <div class="tip-popup" id="tipPopup"></div>
 
 <!-- WAN mode modal -->
-<div class="meta-overlay" id="wanModeOverlay" onclick="if(event.target===this){this.classList.remove('show');setToggle('wanToggle','wanDot',false)}">
+<div class="meta-overlay" id="wanModeOverlay" onmousedown="this._mdt=event.target" onclick="if(event.target===this&&this._mdt===this){this.classList.remove('show');setToggle('wanToggle','wanDot',false)}">
   <div class="meta-modal" style="width:min(400px,90vw)">
     <h3>Внешний доступ (WAN)</h3>
     <div style="display:flex;flex-direction:column;gap:6px;margin:12px 0">
@@ -2363,7 +2395,7 @@ body { overflow: hidden; touch-action: none; position: fixed; width: 100%; heigh
 </div>
 
 <!-- Playlist edit modal -->
-<div class="meta-overlay" id="plEditOverlay" onclick="if(event.target===this)this.classList.remove('show')">
+<div class="meta-overlay" id="plEditOverlay" onmousedown="this._mdt=event.target" onclick="if(event.target===this&&this._mdt===this)this.classList.remove('show')">
   <div class="meta-modal" style="width:min(480px,92vw);max-height:85vh;display:flex;flex-direction:column;overflow:hidden">
     <div style="display:flex;align-items:center;gap:8px;flex-shrink:0">
       <h3 id="plEditTitle" style="flex:1">Плейлист</h3>
@@ -2382,7 +2414,7 @@ body { overflow: hidden; touch-action: none; position: fixed; width: 100%; heigh
 </div>
 
 <!-- Playlist add tracks modal -->
-<div class="meta-overlay" id="plAddOverlay" onclick="if(event.target===this)this.classList.remove('show')" style="z-index:110">
+<div class="meta-overlay" id="plAddOverlay" onmousedown="this._mdt=event.target" onclick="if(event.target===this&&this._mdt===this)this.classList.remove('show')" style="z-index:110">
   <div class="meta-modal" style="width:min(440px,90vw);max-height:80vh;display:flex;flex-direction:column;overflow:hidden">
     <h3>Выбрать треки</h3>
     <input type="text" id="plAddSearch" class="folder-path-input" style="margin:6px 0;flex-shrink:0" placeholder="Поиск..." oninput="filterPlAddTracks(this.value)">
@@ -2392,7 +2424,7 @@ body { overflow: hidden; touch-action: none; position: fixed; width: 100%; heigh
 </div>
 
 <!-- Track edit modal -->
-<div class="meta-overlay" id="trackEditOverlay" onclick="if(event.target===this)this.classList.remove('show')">
+<div class="meta-overlay" id="trackEditOverlay" onmousedown="this._mdt=event.target" onclick="if(event.target===this&&this._mdt===this)this.classList.remove('show')">
   <div class="meta-modal" style="width:min(400px,90vw)">
     <h3>Редактирование трека</h3>
     <div style="font-size:11px;color:rgba(255,255,255,0.3);margin-bottom:10px" id="trackEditFile"></div>
@@ -2420,7 +2452,7 @@ body { overflow: hidden; touch-action: none; position: fixed; width: 100%; heigh
 </div>
 
 <!-- Browse modal -->
-<div class="meta-overlay" id="browseOverlay" onclick="if(event.target===this)this.classList.remove('show')">
+<div class="meta-overlay" id="browseOverlay" onmousedown="this._mdt=event.target" onclick="if(event.target===this&&this._mdt===this)this.classList.remove('show')">
   <div class="meta-modal" style="width:480px;max-height:80vh;display:flex;flex-direction:column">
     <h3>Выбор каталога</h3>
     <div style="display:flex;gap:6px;margin-bottom:8px;align-items:center">
@@ -2436,7 +2468,7 @@ body { overflow: hidden; touch-action: none; position: fixed; width: 100%; heigh
 </div>
 
 <!-- Profile modal -->
-<div class="meta-overlay" id="profileOverlay" onclick="if(event.target===this)this.classList.remove('show')">
+<div class="meta-overlay" id="profileOverlay" onmousedown="this._mdt=event.target" onclick="if(event.target===this&&this._mdt===this)this.classList.remove('show')">
   <div class="meta-modal" style="width:360px">
     <h3>Профиль</h3>
     <div style="font-size:14px;color:rgba(255,255,255,0.6);margin:8px 0 16px" id="profileUser"></div>
@@ -2459,7 +2491,7 @@ body { overflow: hidden; touch-action: none; position: fixed; width: 100%; heigh
 </div>
 
 <!-- Admin modal -->
-<div class="meta-overlay" id="adminOverlay" onclick="if(event.target===this)this.classList.remove('show')">
+<div class="meta-overlay" id="adminOverlay" onmousedown="this._mdt=event.target" onclick="if(event.target===this&&this._mdt===this)this.classList.remove('show')">
   <div class="meta-modal" style="width:440px;max-height:80vh;display:flex;flex-direction:column;overflow:hidden">
     <h3>Управление пользователями</h3>
     <div id="adminUserList" style="flex:1;overflow-y:auto;margin:10px 0;min-height:0"></div>
@@ -2494,7 +2526,7 @@ body { overflow: hidden; touch-action: none; position: fixed; width: 100%; heigh
 </div>
 
 <!-- Roles help modal -->
-<div class="meta-overlay" id="rolesHelpOverlay" onclick="if(event.target===this)this.classList.remove('show')">
+<div class="meta-overlay" id="rolesHelpOverlay" onmousedown="this._mdt=event.target" onclick="if(event.target===this&&this._mdt===this)this.classList.remove('show')">
   <div class="meta-modal" style="width:min(480px,92vw);max-height:85vh;overflow-y:auto">
     <h3>Роли пользователей</h3>
     <table style="width:100%;border-collapse:collapse;font-size:12px;margin:12px 0">
@@ -2525,7 +2557,7 @@ body { overflow: hidden; touch-action: none; position: fixed; width: 100%; heigh
 </div>
 
 <!-- Admin password change modal -->
-<div class="meta-overlay" id="pwChangeOverlay" onclick="if(event.target===this)this.classList.remove('show')">
+<div class="meta-overlay" id="pwChangeOverlay" onmousedown="this._mdt=event.target" onclick="if(event.target===this&&this._mdt===this)this.classList.remove('show')">
   <div class="meta-modal" style="width:380px">
     <h3>Сменить пароль</h3>
     <div style="font-size:14px;color:rgba(255,255,255,0.5);margin-bottom:12px" id="pwChangeUser"></div>
@@ -2539,7 +2571,7 @@ body { overflow: hidden; touch-action: none; position: fixed; width: 100%; heigh
 </div>
 
 <!-- App info -->
-<div class="meta-overlay" id="appInfoOverlay" onclick="if(event.target===this)this.classList.remove('show')">
+<div class="meta-overlay" id="appInfoOverlay" onmousedown="this._mdt=event.target" onclick="if(event.target===this&&this._mdt===this)this.classList.remove('show')">
   <div class="meta-modal" style="width:min(360px,88vw);text-align:center">
     <div id="appInfoContent" style="padding:12px 0"></div>
     <button class="folder-btn folder-btn-secondary" style="margin-top:12px" onclick="document.getElementById('appInfoOverlay').classList.remove('show')">Закрыть</button>
@@ -6810,7 +6842,14 @@ class Handler(BaseHTTPRequestHandler):
                     new_path = old_path.parent / new_name
                     if new_path != old_path:
                         old_path.rename(new_path)
-                # Run meta if requested
+                # Always update title/artist tags in the file
+                if new_name and HAS_MUTAGEN:
+                    try:
+                        fp = str(Path(folder) / new_name)
+                        _update_tags(fp, new_title, new_artist)
+                    except Exception:
+                        pass
+                # Run meta search if requested
                 if run_meta and new_name:
                     def do_meta():
                         fp = str(Path(folder) / new_name)
