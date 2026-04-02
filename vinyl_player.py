@@ -5030,10 +5030,31 @@ function renderPlEditTracks() {
 }
 
 var pleDragIdx = null;
-function pleDragStart(e,i){pleDragIdx=i;e.target.closest('.playlist-item').style.opacity='0.4';}
-function pleDragEnd(e){pleDragIdx=null;e.target.closest('.playlist-item').style.opacity='';}
-function pleDragOver(e,i){e.preventDefault();}
-function pleDrop(e,t){e.preventDefault();if(pleDragIdx===null||pleDragIdx===t)return;var item=plEditTracks.splice(pleDragIdx,1)[0];plEditTracks.splice(t,0,item);pleDragIdx=null;renderPlEditTracks();}
+function pleDragStart(e, i) {
+  pleDragIdx = i;
+  e.dataTransfer.effectAllowed = 'move';
+  e.target.closest('.playlist-item').classList.add('dragging');
+}
+function pleDragEnd(e) {
+  pleDragIdx = null;
+  var items = document.querySelectorAll('#plEditTracks .playlist-item');
+  for (var j = 0; j < items.length; j++) items[j].classList.remove('dragging', 'drag-over');
+}
+function pleDragOver(e, i) {
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'move';
+  var items = document.querySelectorAll('#plEditTracks .playlist-item');
+  for (var j = 0; j < items.length; j++) items[j].classList.remove('drag-over');
+  e.target.closest('.playlist-item').classList.add('drag-over');
+}
+function pleDrop(e, t) {
+  e.preventDefault();
+  if (pleDragIdx === null || pleDragIdx === t) return;
+  var item = plEditTracks.splice(pleDragIdx, 1)[0];
+  plEditTracks.splice(t, 0, item);
+  pleDragIdx = null;
+  renderPlEditTracks();
+}
 
 function plAddTracks() {
   var html = '';
