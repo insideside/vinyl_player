@@ -1753,7 +1753,7 @@ body {
   opacity: 0;
 }
 .album-tracks.open {
-  max-height: 2000px;
+  max-height: 50000px;
   opacity: 1;
   transition: max-height 0.45s ease-in, opacity 0.3s ease 0.05s;
 }
@@ -2836,10 +2836,15 @@ requestAnimationFrame(animationLoop);
 audio.addEventListener('loadedmetadata', function() {
   document.getElementById('timeDuration').textContent = formatTime(audio.duration);
 });
+var _trackSrcGen = 0; // incremented on each src change to detect stale ended events
+
 audio.addEventListener('ended', function() {
-  // Ignore 'ended' if track just started (src change can fire spurious ended)
-  if (audio.currentTime < 0.5 && audio.duration > 1) return;
-  nextTrack();
+  var gen = _trackSrcGen;
+  // Ignore stale 'ended' from previous src (race when switching near end of track)
+  setTimeout(function() {
+    if (_trackSrcGen !== gen) return; // src changed since ended fired — stale event
+    nextTrack();
+  }, 0);
 });
 
 // ── Vinyl drag to seek ──
@@ -3169,11 +3174,13 @@ function prepareNearbyBlobs() {
 function selectTrack(i, autoplay) {
   if (i < 0 || i >= tracks.length) return;
   currentIdx = i;
+  _trackSrcGen++;
   var t = tracks[i];
 
   vinylAngle = 0;
   vinylSpeed = 0;
 
+  audio.pause();
   var streamUrl = '/api/stream/' + encodeURIComponent(t.file);
   if (_blobUrlCache[t.file]) {
     audio.src = _blobUrlCache[t.file];
@@ -3279,6 +3286,8 @@ function setPlayState(playing) {
 }
 
 function showMobileControls() {
+  // Don't show on vinyl view — player has its own controls
+  if (document.body.classList.contains('mobile-view-vinyl')) return;
   var pb = document.getElementById('mobilePlayBtn');
   var nb = document.getElementById('mobileNextBtn');
   if (pb) pb.classList.add('show');
@@ -3697,6 +3706,11 @@ function showLoadingIndicator() {
 function enterOfflineMode() {
   _isOffline = true;
   showOfflineBanner(true);
+  // Auto-activate cached-only filter
+  showCachedOnly = true;
+  var cBtn = document.getElementById('cachedOnlyBtn');
+  if (cBtn) cBtn.classList.add('active');
+  showToast('Офлайн — показаны только кэшированные треки');
   // Restore config from localStorage
   try {
     var saved = localStorage.getItem('_vc_config');
@@ -3853,9 +3867,8 @@ function applyFolderData(data) {
   }
   if (activeTab === 'albums') {
     document.getElementById('playlistHeader').textContent = albums.length + ' альбомов';
-  } else {
-    var vis = getVisibleIndices();
-    document.getElementById('playlistHeader').textContent = (_isOffline ? vis.length + ' из ' : '') + tracks.length + ' треков';
+  } else if (activeTab === 'tracks') {
+    updateTrackCounter();
   }
 }
 
@@ -3967,13 +3980,15 @@ function togglePublic(enabled) {
     body: JSON.stringify({enabled: enabled})})
   .then(function(r){return r.json()})
   .then(function(d) {
-    if (d.public && d.lan_url) {
-      info.textContent = 'Перенаправление на ' + d.lan_url + '...';
-      setTimeout(function() { window.location.href = d.lan_url; }, 2500);
+    if (d.public) {
+      info.textContent = 'LAN включён. Перезапуск...';
     } else {
-      setTimeout(function() { window.location.href = 'http://127.0.0.1:PORT_PLACEHOLDER'; }, 2500);
+      info.textContent = 'LAN выключен. Перезапуск...';
     }
-  }).catch(function(){});
+    // Server restarts on new bind address + possibly HTTPS; redirect accordingly
+    var url = d.redirect_url || ('http://127.0.0.1:' + location.port);
+    setTimeout(function() { window.location.href = url; }, 2500);
+  }).catch(function(){ info.textContent = 'Ошибка соединения'; });
 }
 
 // ── WAN (Cloudflare Tunnel) ──
@@ -4739,6 +4754,16 @@ function mobileShow(view) {
   document.getElementById('btnVinyl').classList.toggle('active', view === 'vinyl');
   document.getElementById('btnPlaylist').classList.toggle('active', view === 'playlist');
   document.getElementById('toggleBg').classList.toggle('right', view === 'playlist');
+  // Hide play/next buttons on vinyl view — player has its own controls
+  var pb = document.getElementById('mobilePlayBtn');
+  var nb = document.getElementById('mobileNextBtn');
+  if (view === 'vinyl') {
+    if (pb) pb.classList.remove('show');
+    if (nb) nb.classList.remove('show');
+  } else if (currentIdx >= 0) {
+    if (pb) pb.classList.add('show');
+    if (nb) nb.classList.add('show');
+  }
 }
 
 function mobileToggleView() {
@@ -4772,22 +4797,37 @@ function openProfile() {
   document.getElementById('profileOverlay').classList.add('show');
   // Calculate cache size asynchronously
   if (count) {
-    openCacheDB(function(db) {
-      var tx = db.transaction('audio', 'readonly');
-      var store = tx.objectStore('audio');
-      var req = store.openCursor();
-      var totalBytes = 0;
-      req.onsuccess = function(e) {
-        var cursor = e.target.result;
-        if (cursor) {
-          if (cursor.value && cursor.value.byteLength) totalBytes += cursor.value.byteLength;
-          cursor.continue();
-        } else {
-          var gb = (totalBytes / (1024 * 1024 * 1024)).toFixed(1);
-          infoEl.textContent = count + ' треков в кэше (' + gb + ' GB)';
+    try {
+      openCacheDB(function(db) {
+        try {
+          var tx = db.transaction('audio', 'readonly');
+          var store = tx.objectStore('audio');
+          var req = store.openCursor();
+          var totalBytes = 0;
+          req.onsuccess = function(e) {
+            var cursor = e.target.result;
+            if (cursor) {
+              var val = cursor.value;
+              if (val) totalBytes += (val.byteLength || val.size || 0);
+              cursor.continue();
+            } else {
+              var sizeStr;
+              if (totalBytes >= 1024 * 1024 * 1024) {
+                sizeStr = (totalBytes / (1024 * 1024 * 1024)).toFixed(1) + ' GB';
+              } else {
+                sizeStr = (totalBytes / (1024 * 1024)).toFixed(0) + ' MB';
+              }
+              infoEl.textContent = count + ' треков в кэше (' + sizeStr + ')';
+            }
+          };
+          req.onerror = function() {
+            infoEl.textContent = count + ' треков в кэше';
+          };
+        } catch(ex) {
+          infoEl.textContent = count + ' треков в кэше';
         }
-      };
-    });
+      });
+    } catch(ex) {}
   }
 }
 
@@ -6115,6 +6155,17 @@ function toggleCachedOnly() {
   var btn = document.getElementById('cachedOnlyBtn');
   if (btn) btn.classList.toggle('active', showCachedOnly);
   renderTracks();
+  updateTrackCounter();
+}
+
+function updateTrackCounter() {
+  if (activeTab !== 'tracks') return;
+  var vis = getVisibleIndices();
+  if (showCachedOnly) {
+    document.getElementById('playlistHeader').textContent = vis.length + ' из ' + tracks.length + ' треков';
+  } else {
+    document.getElementById('playlistHeader').textContent = tracks.length + ' треков';
+  }
 }
 
 function clearAllCache() {
@@ -6792,30 +6843,29 @@ class Handler(BaseHTTPRequestHandler):
             global IS_PUBLIC, _use_https
             IS_PUBLIC = enabled
             local_ip = get_local_ip()
+            s = load_settings()
             if enabled:
-                # Auto-enable HTTPS for LAN (needed for SW offline shell)
-                https_ok = _use_https
+                # Auto-enable HTTPS for LAN (needed for SW on non-localhost)
                 if not _use_https:
                     if _generate_self_signed_cert():
                         _use_https = True
-                        https_ok = True
-                        s = load_settings()
-                        s["https"] = True
-                        save_settings(s)
-                proto = "https" if https_ok else "http"
+                s["lan"] = True
+                s["https"] = _use_https
+                save_settings(s)
                 all_ips = get_all_local_ips()
+                proto = "https" if _use_https else "http"
+                redirect_url = "{}://127.0.0.1:{}".format(proto, SERVER_PORT)
                 lan_url = "{}://{}:{}".format(proto, local_ip, SERVER_PORT)
                 all_urls = ["{}://{}:{}".format(proto, ip, SERVER_PORT) for ip in all_ips]
-                self._respond_json({"ok": True, "public": True, "lan_url": lan_url, "ip": local_ip, "all_urls": all_urls, "https": https_ok})
+                self._respond_json({"ok": True, "public": True, "redirect_url": redirect_url, "lan_url": lan_url, "ip": local_ip, "all_urls": all_urls})
                 try: self.wfile.flush()
                 except Exception: pass
                 threading.Timer(1.0, _restart_server, args=["0.0.0.0"]).start()
             else:
-                if _use_https:
-                    _use_https = False
-                    s = load_settings()
-                    s["https"] = False
-                    save_settings(s)
+                _use_https = False
+                s["lan"] = False
+                s["https"] = False
+                save_settings(s)
                 self._respond_json({"ok": True, "public": False})
                 try: self.wfile.flush()
                 except Exception: pass
@@ -7698,7 +7748,18 @@ def _start_server(bind_addr):
 
 def _restart_server(bind_addr):
     """Перезапускает HTTP-сервер на новом адресе."""
-    _start_server(bind_addr)
+    try:
+        _start_server(bind_addr)
+    except Exception as ex:
+        print("ОШИБКА перезапуска сервера: {}".format(ex))
+        # Fallback: try to start without HTTPS
+        try:
+            global _use_https
+            _use_https = False
+            _start_server(bind_addr)
+            print("Сервер запущен без HTTPS (fallback)")
+        except Exception as ex2:
+            print("КРИТИЧЕСКАЯ ОШИБКА: сервер не запустился: {}".format(ex2))
 
 
 def main():
@@ -7708,18 +7769,29 @@ def main():
     IS_PUBLIC = public
     bind_addr = "0.0.0.0" if public else "127.0.0.1"
 
-    # Auto-restore saved WAN static IP config
+    # Auto-restore saved LAN mode
     s = load_settings()
+    if s.get("lan"):
+        IS_PUBLIC = True
+        bind_addr = "0.0.0.0"
+        print("Restoring LAN mode")
+
+    # Auto-restore saved WAN static IP config
     if s.get("wan_mode") == "static" and s.get("wan_ip"):
         IS_PUBLIC = True
         bind_addr = "0.0.0.0"
         print("Restoring WAN static: http://{}:{}".format(s["wan_ip"], s.get("wan_port", SERVER_PORT)))
 
-    # Auto-restore HTTPS only when public (LAN/WAN), never on localhost-only
-    if IS_PUBLIC and s.get("https"):
+    # Auto-enable HTTPS when public (LAN/WAN) — needed for SW on non-localhost
+    if IS_PUBLIC:
         if _generate_self_signed_cert():
             _use_https = True
+            s["https"] = True
+            save_settings(s)
             print("HTTPS enabled")
+        else:
+            _use_https = False
+            print("HTTPS: не удалось создать сертификат, работаю по HTTP")
     else:
         _use_https = False
 
