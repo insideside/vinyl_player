@@ -2440,7 +2440,10 @@ body { overflow: hidden; touch-action: none; position: fixed; width: 100%; heigh
     <h3>Выбрать треки</h3>
     <input type="text" id="plAddSearch" class="folder-path-input" style="margin:6px 0;flex-shrink:0" placeholder="Поиск..." oninput="filterPlAddTracks(this.value)">
     <div id="plAddList" style="flex:1;overflow-y:auto;min-height:0"></div>
-    <button class="folder-btn folder-btn-primary" style="width:100%;margin-top:8px;flex-shrink:0" onclick="confirmPlAdd()">Добавить выбранные</button>
+    <div style="display:flex;gap:6px;margin-top:8px;flex-shrink:0">
+      <button class="folder-btn folder-btn-primary" style="flex:1" onclick="confirmPlAdd('start')">В начало</button>
+      <button class="folder-btn folder-btn-primary" style="flex:1" onclick="confirmPlAdd('end')">В конец</button>
+    </div>
   </div>
 </div>
 
@@ -5226,18 +5229,20 @@ function filterPlAddTracks(q) {
   }
 }
 
-function confirmPlAdd() {
+function confirmPlAdd(where) {
   var checks = document.querySelectorAll('#plAddList input:checked');
   var files = [];
   for (var i = 0; i < checks.length; i++) files.push(checks[i].value);
   // Add new files that aren't already in plEditTracks
+  var newFiles = [];
   for (var j = 0; j < files.length; j++) {
-    if (plEditTracks.indexOf(files[j]) < 0) plEditTracks.push(files[j]);
+    if (plEditTracks.indexOf(files[j]) < 0) newFiles.push(files[j]);
   }
-  // Remove unchecked
-  var checkedSet = {};
-  for (var k = 0; k < files.length; k++) checkedSet[files[k]] = true;
-  // Keep order but sync with checkboxes
+  if (where === 'start') {
+    plEditTracks = newFiles.concat(plEditTracks);
+  } else {
+    plEditTracks = plEditTracks.concat(newFiles);
+  }
   document.getElementById('plAddOverlay').classList.remove('show');
   renderPlEditTracks();
 }
