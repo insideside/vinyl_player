@@ -1632,8 +1632,7 @@ body {
 }
 .cassette-label-title {
   font-family: -apple-system, 'Helvetica Neue', Arial, sans-serif;
-  font-size: clamp(11px, 3vmin, 15px); font-weight: 500; color: #1a1a1a;
-  font-style: italic;
+  font-size: clamp(11px, 3vmin, 15px); font-weight: 600; color: #1a1a1a;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   line-height: 1.3;
 }
