@@ -2414,6 +2414,7 @@ body {
   background: rgba(30,30,50,0.95); color: #eee; padding: 12px 24px; border-radius: 12px;
   font-size: 14px; z-index: 200; transition: transform 0.3s ease; pointer-events: none;
   backdrop-filter: blur(10px); border: 1px solid rgba(255,255,255,0.1);
+  max-width: calc(100vw - 32px); text-align: center; word-wrap: break-word;
 }
 .toast.show { transform: translateX(-50%) translateY(0); }
 
@@ -4557,8 +4558,8 @@ function showOfflineBanner(show) {
   if (!banner) {
     banner = document.createElement('div');
     banner.id = 'offlineBanner';
-    banner.style.cssText = 'position:fixed;bottom:72px;left:50%;transform:translateX(-50%);z-index:9999;background:rgba(30,30,30,0.85);color:rgba(255,255,255,0.6);text-align:center;padding:6px 16px;font-size:11px;border-radius:20px;pointer-events:none;transition:opacity .3s;backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);border:1px solid rgba(255,255,255,0.08);';
-    banner.textContent = 'Офлайн — только кэшированные треки';
+    banner.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:9999;background:rgba(233,69,96,0.9);color:#fff;text-align:center;padding:6px 16px;padding-top:max(6px,env(safe-area-inset-top));font-size:12px;font-weight:500;pointer-events:none;transition:opacity .3s;backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);';
+    banner.textContent = 'Офлайн-режим';
     document.body.appendChild(banner);
   }
   banner.style.opacity = show ? '1' : '0';
@@ -4756,15 +4757,20 @@ function applyFolderData(data) {
   renderAlbums();
   checkIfNumbered();
   buildDefaultQueue();
-  // Prefetch playlists for offline (even if not on playlists tab)
-  if (!_isOffline) {
-    var folder = document.getElementById('folderSelect').value;
-    if (folder) {
+  // Playlists: prefetch for offline, or load from cache in offline
+  var folder = document.getElementById('folderSelect').value;
+  if (folder) {
+    if (!_isOffline) {
       fetch('/api/playlists', {method:'POST', headers:{'Content-Type':'application/json'},
         body: JSON.stringify({folder: folder, action: 'list'})})
       .then(function(r){return r.json()}).then(function(d) {
         if (d.playlists) try { localStorage.setItem('_vc_playlists_' + folder, JSON.stringify(d.playlists)); } catch(e){}
       }).catch(function(){});
+    } else {
+      try {
+        var savedPl = localStorage.getItem('_vc_playlists_' + folder);
+        if (savedPl) userPlaylists = JSON.parse(savedPl);
+      } catch(e){}
     }
   }
   if (activeTab === 'albums') {
@@ -5050,7 +5056,8 @@ function showToast(msg) {
   if (_toastTimer) clearTimeout(_toastTimer);
   t.textContent = msg;
   t.classList.add('show');
-  _toastTimer = setTimeout(function(){ t.classList.remove('show'); _toastTimer = null; }, 2500);
+  var dur = Math.max(2500, Math.min(msg.length * 60, 5000));
+  _toastTimer = setTimeout(function(){ t.classList.remove('show'); _toastTimer = null; }, dur);
 }
 
 // ── Meta search ──
