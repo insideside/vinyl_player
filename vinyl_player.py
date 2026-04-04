@@ -1574,10 +1574,10 @@ body {
 /* Horizontal stripes across body */
 .cassette-stripes {
   position: absolute; left: 0; right: 0; top: 0; bottom: 0; border-radius: 10px 10px 5px 5px;
-  pointer-events: none; overflow: hidden;
+  pointer-events: none; overflow: hidden; z-index: 1;
 }
 .cassette-stripes::before {
-  content: ''; position: absolute; left: 0; right: 0; top: 28%; height: 12%;
+  content: ''; position: absolute; left: 0; right: 0; top: 32%; height: 10%;
   background:
     repeating-linear-gradient(180deg,
       transparent, transparent 3px,
@@ -1587,12 +1587,12 @@ body {
 
 /* Label — vintage paper with warm tone */
 .cassette-label {
-  position: absolute; top: 4%; left: 5%; right: 5%; height: 26%;
-  background: linear-gradient(180deg, #c5bfb2 0%, #ccc5b6 40%, #c0b9aa 100%);
+  position: absolute; top: 4%; left: 5%; right: 5%; bottom: 18%;
+  background: linear-gradient(180deg, #d0c9bb 0%, #ccc5b6 30%, #c5bfb0 70%, #c0b9aa 100%);
   border-radius: 3px;
   box-shadow: 0 1px 4px rgba(0,0,0,0.4), inset 0 0 0 1px rgba(0,0,0,0.06);
-  display: flex; flex-direction: column; align-items: stretch; justify-content: center;
-  padding: 4px 14px; overflow: hidden;
+  display: flex; flex-direction: column; align-items: stretch; justify-content: flex-start;
+  padding: 8px 14px; overflow: hidden;
 }
 /* Faint ruled lines */
 .cassette-label::before {
@@ -1654,7 +1654,7 @@ body {
 
 /* Tape window */
 .cassette-window {
-  position: absolute; top: 34%; left: 14%; right: 14%; bottom: 16%;
+  position: absolute; top: 38%; left: 14%; right: 14%; bottom: 18%;
   background: radial-gradient(ellipse at center, #151515, #0a0a0a);
   border-radius: 5px;
   box-shadow:
@@ -1662,6 +1662,7 @@ body {
     inset 0 -1px 3px rgba(0,0,0,0.5),
     0 1px 0 rgba(255,255,255,0.05);
   overflow: visible;
+  z-index: 2;
 }
 
 /* Reels — sized via JS in px to guarantee perfect circles */
