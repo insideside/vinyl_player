@@ -1550,6 +1550,166 @@ body {
   container-type: inline-size;
 }
 
+/* ── iPod Classic ── */
+.ipod-scene { display: none; }
+.player-mode-ipod .ipod-scene { display: flex; align-items: center; justify-content: center; }
+.player-mode-ipod .vinyl-scene { display: none; }
+.player-mode-ipod .track-info { display: none; }
+.player-mode-ipod .controls { display: none; }
+.player-mode-ipod .progress-wrap { display: none; }
+.player-mode-ipod .volume-wrap { display: none; }
+
+.ipod-body {
+  width: min(32vw, 38vh); min-width: 220px;
+  aspect-ratio: 0.54;
+  background: linear-gradient(180deg, #e8e8ea 0%, #d8d8dc 5%, #ccccd0 50%, #c0c0c5 95%, #b8b8bd 100%);
+  border-radius: 16px;
+  position: relative;
+  box-shadow:
+    0 20px 60px rgba(0,0,0,0.5),
+    0 2px 4px rgba(0,0,0,0.3),
+    inset 0 1px 0 rgba(255,255,255,0.8),
+    inset 0 -1px 0 rgba(0,0,0,0.1),
+    inset 1px 0 0 rgba(255,255,255,0.3),
+    inset -1px 0 0 rgba(255,255,255,0.3);
+}
+/* Edge bevel */
+.ipod-body::before {
+  content: ''; position: absolute; inset: 1px; border-radius: 15px;
+  border: 1px solid rgba(255,255,255,0.4);
+  pointer-events: none;
+}
+
+/* Screen */
+.ipod-screen {
+  position: absolute; top: 6%; left: 10%; right: 10%; height: 38%;
+  background: #1c2a1c;
+  border-radius: 4px;
+  box-shadow: inset 0 2px 6px rgba(0,0,0,0.5), 0 1px 0 rgba(255,255,255,0.3);
+  overflow: hidden;
+  display: flex; flex-direction: column;
+}
+/* Screen content — now playing */
+.ipod-np {
+  flex: 1; display: flex; flex-direction: column;
+  padding: 6%; color: #8fbc6a; font-family: 'Chicago', 'Helvetica Neue', Arial, sans-serif;
+}
+.ipod-np-header {
+  font-size: clamp(7px, 1.8vmin, 10px); text-align: center;
+  border-bottom: 1px solid rgba(143,188,106,0.3);
+  padding-bottom: 3px; margin-bottom: 4px;
+  font-weight: 600; letter-spacing: 0.5px;
+}
+.ipod-np-body {
+  flex: 1; display: flex; gap: 6%; align-items: center;
+  min-height: 0; overflow: hidden;
+}
+.ipod-np-cover {
+  width: 42%; aspect-ratio: 1; border-radius: 2px; flex-shrink: 0;
+  background: #253525; display: flex; align-items: center; justify-content: center;
+  overflow: hidden;
+}
+.ipod-np-cover img {
+  width: 100%; height: 100%; object-fit: cover;
+}
+.ipod-np-cover-ph { color: rgba(143,188,106,0.3); font-size: 20px; }
+.ipod-np-info {
+  flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px;
+}
+.ipod-np-title {
+  font-size: clamp(8px, 2vmin, 12px); font-weight: 700;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.ipod-np-artist {
+  font-size: clamp(7px, 1.6vmin, 10px); color: #6a9a4a;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  cursor: pointer; border-radius: 2px; padding: 0 3px; margin-left: -3px;
+  transition: background 0.15s;
+}
+.ipod-np-artist:hover { background: rgba(143,188,106,0.15); }
+.ipod-np-album {
+  font-size: clamp(6px, 1.4vmin, 9px); color: #5a8a3a;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.ipod-np-progress {
+  margin-top: auto; padding-top: 4px;
+}
+.ipod-np-bar {
+  height: 3px; background: rgba(143,188,106,0.2); border-radius: 2px; overflow: hidden;
+}
+.ipod-np-bar-fill {
+  height: 100%; background: #8fbc6a; width: 0%; transition: width 0.3s linear;
+}
+.ipod-np-time {
+  display: flex; justify-content: space-between;
+  font-size: clamp(6px, 1.2vmin, 8px); color: #5a8a3a; margin-top: 2px;
+}
+
+/* Screen — track list mode */
+.ipod-list {
+  flex: 1; display: none; flex-direction: column;
+  color: #8fbc6a; font-family: 'Chicago', 'Helvetica Neue', Arial, sans-serif;
+  overflow: hidden;
+}
+.ipod-list.active { display: flex; }
+.ipod-np-wrap { display: flex; flex-direction: column; flex: 1; }
+.ipod-np-wrap.hidden { display: none; }
+.ipod-list-header {
+  font-size: clamp(7px, 1.8vmin, 10px); text-align: center;
+  border-bottom: 1px solid rgba(143,188,106,0.3);
+  padding: 6% 6% 3px; font-weight: 600; letter-spacing: 0.5px;
+}
+.ipod-list-items {
+  flex: 1; overflow: hidden; padding: 2px 0;
+}
+.ipod-list-item {
+  padding: 3px 6%;
+  font-size: clamp(7px, 1.6vmin, 10px);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  cursor: pointer; transition: background 0.1s, color 0.1s;
+}
+.ipod-list-item.selected {
+  background: #8fbc6a; color: #1c2a1c;
+}
+
+/* Click Wheel */
+.ipod-wheel {
+  position: absolute; bottom: 6%; left: 50%; transform: translateX(-50%);
+  width: 68%; aspect-ratio: 1;
+  border-radius: 50%;
+  background: radial-gradient(circle at 48% 45%, #e0e0e3, #c8c8cc 40%, #b8b8bd 80%, #a8a8b0 100%);
+  box-shadow:
+    0 2px 8px rgba(0,0,0,0.2),
+    inset 0 1px 2px rgba(255,255,255,0.5),
+    inset 0 -1px 2px rgba(0,0,0,0.1);
+  cursor: pointer; user-select: none; touch-action: none;
+  -webkit-user-select: none;
+}
+/* Center button */
+.ipod-wheel-center {
+  position: absolute; top: 50%; left: 50%;
+  width: 38%; height: 38%;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  background: radial-gradient(circle at 48% 45%, #e8e8ec, #d0d0d5 60%, #c0c0c6 100%);
+  box-shadow:
+    0 1px 4px rgba(0,0,0,0.15),
+    inset 0 1px 1px rgba(255,255,255,0.6);
+  cursor: pointer; z-index: 2;
+}
+.ipod-wheel-center:active { background: radial-gradient(circle, #d8d8dc, #c0c0c6); }
+
+/* Wheel labels */
+.ipod-wheel-label {
+  position: absolute; font-size: clamp(7px, 1.4vmin, 10px); font-weight: 600;
+  color: rgba(80,80,90,0.7); pointer-events: none;
+  font-family: -apple-system, 'Helvetica Neue', Arial, sans-serif;
+}
+.ipod-wl-menu { top: 8%; left: 50%; transform: translateX(-50%); }
+.ipod-wl-fwd { right: 8%; top: 50%; transform: translateY(-50%); font-size: clamp(10px,2vmin,14px); }
+.ipod-wl-back { left: 8%; top: 50%; transform: translateY(-50%); font-size: clamp(10px,2vmin,14px); }
+.ipod-wl-play { bottom: 8%; left: 50%; transform: translateX(-50%); font-size: clamp(8px,1.6vmin,12px); }
+
 /* ── Cassette ── */
 .cassette-scene { display: none; }
 .player-mode-cassette .cassette-scene { display: flex; align-items: center; justify-content: center; }
@@ -2321,6 +2481,7 @@ body { overflow: hidden; touch-action: none; position: fixed; width: 100%; heigh
     <div class="player-mode-toggle">
       <button class="player-mode-btn active" id="modeVinyl" onclick="setPlayerMode('vinyl')" data-tip="Пластинка"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="1.5"/><circle cx="12" cy="12" r="3" fill="currentColor"/></svg></button>
       <button class="player-mode-btn" id="modeCassette" onclick="setPlayerMode('cassette')" data-tip="Кассета"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><rect x="2" y="5" width="20" height="14" rx="2" fill="none" stroke="currentColor" stroke-width="1.5"/><circle cx="8.5" cy="13" r="2.5" fill="none" stroke="currentColor" stroke-width="1"/><circle cx="15.5" cy="13" r="2.5" fill="none" stroke="currentColor" stroke-width="1"/><line x1="11" y1="13" x2="13" y2="13" stroke="currentColor" stroke-width="1"/><rect x="6" y="6.5" width="12" height="4" rx="1" fill="none" stroke="currentColor" stroke-width="0.8"/></svg></button>
+      <button class="player-mode-btn" id="modeIpod" onclick="setPlayerMode('ipod')" data-tip="iPod"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="5" y="1" width="14" height="22" rx="3"/><rect x="7" y="3" width="10" height="8" rx="1"/><circle cx="12" cy="17" r="3.5"/><circle cx="12" cy="17" r="1.5"/></svg></button>
     </div>
     <div class="cassette-scene">
       <div class="cassette-body">
@@ -2353,6 +2514,40 @@ body { overflow: hidden; touch-action: none; position: fixed; width: 100%; heigh
         </div>
         <div class="cassette-bottom">
           <div class="cassette-bottom-holes"><div class="cassette-bottom-hole"></div><div class="cassette-bottom-hole"></div><div class="cassette-bottom-hole"></div><div class="cassette-bottom-hole"></div><div class="cassette-bottom-hole"></div></div>
+        </div>
+      </div>
+    </div>
+    <div class="ipod-scene">
+      <div class="ipod-body">
+        <div class="ipod-screen">
+          <div class="ipod-np-wrap" id="ipodNpWrap">
+            <div class="ipod-np">
+              <div class="ipod-np-header">Now Playing</div>
+              <div class="ipod-np-body">
+                <div class="ipod-np-cover" id="ipodCoverWrap"><span class="ipod-np-cover-ph" id="ipodCoverPh">&#9835;</span><img id="ipodCover" style="display:none"></div>
+                <div class="ipod-np-info">
+                  <div class="ipod-np-title" id="ipodTitle"></div>
+                  <div class="ipod-np-artist" id="ipodArtist" onclick="searchArtist(this.textContent)"></div>
+                  <div class="ipod-np-album" id="ipodAlbum"></div>
+                </div>
+              </div>
+              <div class="ipod-np-progress">
+                <div class="ipod-np-bar"><div class="ipod-np-bar-fill" id="ipodProgress"></div></div>
+                <div class="ipod-np-time"><span id="ipodTimeCur">0:00</span><span id="ipodTimeDur">0:00</span></div>
+              </div>
+            </div>
+          </div>
+          <div class="ipod-list" id="ipodList">
+            <div class="ipod-list-header">Tracks</div>
+            <div class="ipod-list-items" id="ipodListItems"></div>
+          </div>
+        </div>
+        <div class="ipod-wheel" id="ipodWheel">
+          <span class="ipod-wheel-label ipod-wl-menu">MENU</span>
+          <span class="ipod-wheel-label ipod-wl-fwd">&#9654;&#9654;&#124;</span>
+          <span class="ipod-wheel-label ipod-wl-back">&#124;&#9664;&#9664;</span>
+          <span class="ipod-wheel-label ipod-wl-play">&#9654;&#10073;&#10073;</span>
+          <div class="ipod-wheel-center" id="ipodCenter"></div>
         </div>
       </div>
     </div>
@@ -2968,25 +3163,82 @@ document.title=_n;
 
 // ── Player mode (vinyl / cassette) ──
 var _playerMode = localStorage.getItem('_vc_player_mode') || 'vinyl';
+var _ipodListMode = false;
+var _ipodListOffset = 0;
+var _ipodSelectedIdx = 0;
+
 function setPlayerMode(mode) {
   _playerMode = mode;
   localStorage.setItem('_vc_player_mode', mode);
-  document.getElementById('modeVinyl').classList.toggle('active', mode === 'vinyl');
-  document.getElementById('modeCassette').classList.toggle('active', mode === 'cassette');
+  ['modeVinyl','modeCassette','modeIpod'].forEach(function(id) {
+    document.getElementById(id).classList.remove('active');
+  });
+  document.getElementById(mode === 'vinyl' ? 'modeVinyl' : mode === 'cassette' ? 'modeCassette' : 'modeIpod').classList.add('active');
   var vs = document.querySelector('.vinyl-side');
-  vs.classList.toggle('player-mode-cassette', mode === 'cassette');
-  // Sync cassette label with current track
-  if (mode === 'cassette' && currentIdx >= 0 && currentIdx < tracks.length) {
-    document.getElementById('cassetteTitle').textContent = tracks[currentIdx].title;
-    document.getElementById('cassetteArtist').textContent = tracks[currentIdx].artist;
+  vs.classList.remove('player-mode-cassette', 'player-mode-ipod');
+  if (mode !== 'vinyl') vs.classList.add('player-mode-' + mode);
+  // Sync alt player with current track
+  if (currentIdx >= 0 && currentIdx < tracks.length) {
+    var t = tracks[currentIdx];
+    if (mode === 'cassette') {
+      document.getElementById('cassetteTitle').textContent = t.title;
+      document.getElementById('cassetteArtist').textContent = t.artist;
+    }
+    if (mode === 'ipod') _ipodSyncTrack(t);
+  }
+  if (mode === 'ipod') {
+    _ipodListMode = false;
+    _ipodShowNp();
   }
 }
+
+function _ipodSyncTrack(t) {
+  document.getElementById('ipodTitle').textContent = t.title;
+  document.getElementById('ipodArtist').textContent = t.artist;
+  document.getElementById('ipodAlbum').textContent = t.album || '';
+  var ic = document.getElementById('ipodCover');
+  var icp = document.getElementById('ipodCoverPh');
+  if (t.has_cover) {
+    ic.src = '/api/cover/' + encodeURIComponent(t.file);
+    ic.style.display = ''; icp.style.display = 'none';
+  } else { ic.style.display = 'none'; icp.style.display = ''; }
+}
+
+function _ipodShowNp() {
+  document.getElementById('ipodNpWrap').classList.remove('hidden');
+  document.getElementById('ipodList').classList.remove('active');
+  _ipodListMode = false;
+}
+
+function _ipodShowList() {
+  _ipodListMode = true;
+  _ipodSelectedIdx = currentIdx >= 0 ? currentIdx : 0;
+  _ipodListOffset = Math.max(0, _ipodSelectedIdx - 3);
+  document.getElementById('ipodNpWrap').classList.add('hidden');
+  document.getElementById('ipodList').classList.add('active');
+  _ipodRenderList();
+}
+
+function _ipodRenderList() {
+  var container = document.getElementById('ipodListItems');
+  var maxVisible = 7;
+  var html = '';
+  for (var i = _ipodListOffset; i < Math.min(tracks.length, _ipodListOffset + maxVisible); i++) {
+    var t = tracks[i];
+    var sel = i === _ipodSelectedIdx ? ' selected' : '';
+    html += '<div class="ipod-list-item' + sel + '" data-idx="' + i + '">'
+      + esc(t.artist ? t.artist + ' — ' : '') + esc(t.title) + '</div>';
+  }
+  container.innerHTML = html;
+}
+
 // Init mode on load
 (function() {
   if (_playerMode !== 'vinyl') {
     document.getElementById('modeVinyl').classList.remove('active');
-    document.getElementById('modeCassette').classList.add('active');
-    document.querySelector('.vinyl-side').classList.add('player-mode-cassette');
+    if (_playerMode === 'cassette') document.getElementById('modeCassette').classList.add('active');
+    if (_playerMode === 'ipod') document.getElementById('modeIpod').classList.add('active');
+    document.querySelector('.vinyl-side').classList.add('player-mode-' + _playerMode);
   }
 })();
 
@@ -3169,6 +3421,12 @@ function animationLoop(ts) {
     var pctBar = audio.currentTime / audio.duration * 100;
     document.getElementById('progressFill').style.width = pctBar + '%';
     document.getElementById('timeCurrent').textContent = formatTime(audio.currentTime);
+    // iPod progress sync
+    if (_playerMode === 'ipod') {
+      document.getElementById('ipodProgress').style.width = pctBar + '%';
+      document.getElementById('ipodTimeCur').textContent = formatTime(audio.currentTime);
+      document.getElementById('ipodTimeDur').textContent = formatTime(audio.duration);
+    }
   }
 
   requestAnimationFrame(animationLoop);
@@ -3376,6 +3634,115 @@ function applyInertia() {
     document.addEventListener('touchmove', hubMove, {passive:false});
     document.addEventListener('mouseup', hubUp);
     document.addEventListener('touchend', hubUp);
+  });
+})();
+
+// ── iPod Click Wheel ──
+(function() {
+  var wheelDragging = false, wheelLastAngle = 0, wheelAccum = 0;
+  var WHEEL_STEP = 30; // degrees per scroll step
+
+  function wheelAngle(el, cx, cy) {
+    var r = el.getBoundingClientRect();
+    return Math.atan2(cy - (r.top + r.height/2), cx - (r.left + r.width/2)) * 180 / Math.PI;
+  }
+
+  function wheelDown(e) {
+    if (_playerMode !== 'ipod') return;
+    // Ignore if clicking center button or labels
+    if (e.target.id === 'ipodCenter' || e.target.closest('.ipod-wheel-center')) return;
+    e.preventDefault();
+    wheelDragging = true;
+    wheelAccum = 0;
+    var cx = e.clientX || (e.touches && e.touches[0].clientX);
+    var cy = e.clientY || (e.touches && e.touches[0].clientY);
+    wheelLastAngle = wheelAngle(document.getElementById('ipodWheel'), cx, cy);
+  }
+
+  function wheelMove(e) {
+    if (!wheelDragging) return;
+    e.preventDefault();
+    var cx = e.clientX || (e.touches && e.touches[0].clientX);
+    var cy = e.clientY || (e.touches && e.touches[0].clientY);
+    var wheel = document.getElementById('ipodWheel');
+    var angle = wheelAngle(wheel, cx, cy);
+    var delta = angle - wheelLastAngle;
+    if (delta > 180) delta -= 360;
+    if (delta < -180) delta += 360;
+    wheelLastAngle = angle;
+    wheelAccum += delta;
+
+    if (_ipodListMode) {
+      // Scroll track list
+      while (wheelAccum > WHEEL_STEP) { wheelAccum -= WHEEL_STEP; _ipodScrollList(1); }
+      while (wheelAccum < -WHEEL_STEP) { wheelAccum += WHEEL_STEP; _ipodScrollList(-1); }
+    } else {
+      // Seek in track
+      if (audio.duration && !isNaN(audio.duration)) {
+        var seekDelta = (delta / 360) * 10; // 10 sec per full rotation
+        audio.currentTime = Math.max(0, Math.min(audio.duration, audio.currentTime + seekDelta));
+      }
+    }
+  }
+
+  function wheelUp() { wheelDragging = false; }
+
+  function _ipodScrollList(dir) {
+    _ipodSelectedIdx = Math.max(0, Math.min(tracks.length - 1, _ipodSelectedIdx + dir));
+    var maxVisible = 7;
+    if (_ipodSelectedIdx < _ipodListOffset) _ipodListOffset = _ipodSelectedIdx;
+    if (_ipodSelectedIdx >= _ipodListOffset + maxVisible) _ipodListOffset = _ipodSelectedIdx - maxVisible + 1;
+    _ipodRenderList();
+  }
+
+  document.addEventListener('DOMContentLoaded', function() {
+    var wheel = document.getElementById('ipodWheel');
+    if (!wheel) return;
+    wheel.addEventListener('mousedown', wheelDown);
+    wheel.addEventListener('touchstart', wheelDown, {passive:false});
+    document.addEventListener('mousemove', wheelMove);
+    document.addEventListener('touchmove', wheelMove, {passive:false});
+    document.addEventListener('mouseup', wheelUp);
+    document.addEventListener('touchend', wheelUp);
+
+    // Center button — play/pause or select track
+    document.getElementById('ipodCenter').addEventListener('click', function() {
+      if (_playerMode !== 'ipod') return;
+      if (_ipodListMode) {
+        // Select track from list
+        if (_ipodSelectedIdx >= 0 && _ipodSelectedIdx < tracks.length) {
+          playFromList(_ipodSelectedIdx);
+          _ipodShowNp();
+        }
+      } else {
+        togglePlay();
+      }
+    });
+
+    // Wheel quadrant buttons via click position
+    wheel.addEventListener('click', function(e) {
+      if (_playerMode !== 'ipod') return;
+      if (e.target.closest('.ipod-wheel-center')) return;
+      var r = wheel.getBoundingClientRect();
+      var x = (e.clientX - r.left) / r.width - 0.5;
+      var y = (e.clientY - r.top) / r.height - 0.5;
+      var dist = Math.sqrt(x*x + y*y);
+      if (dist < 0.2) return; // too close to center
+
+      // Determine quadrant
+      if (Math.abs(x) > Math.abs(y)) {
+        // Left or Right
+        if (x > 0) nextTrack(); else prevTrack();
+      } else {
+        // Top or Bottom
+        if (y < 0) {
+          // MENU — toggle list/np
+          if (_ipodListMode) _ipodShowNp(); else _ipodShowList();
+        } else {
+          togglePlay(); // bottom — play/pause
+        }
+      }
+    });
   });
 })();
 
@@ -3620,6 +3987,8 @@ function selectTrack(i, autoplay) {
     } else {
       ccov.style.display = 'none'; ccph.style.display = '';
     }
+    // iPod sync
+    _ipodSyncTrack(t);
   }, 150);
 
   var img = document.getElementById('vinylCover');
