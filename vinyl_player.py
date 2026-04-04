@@ -1441,7 +1441,7 @@ self.addEventListener('fetch', function(e) {
   // Audio streams and covers — do NOT intercept, let browser handle directly.
   // Offline playback is handled client-side via IndexedDB blob URLs.
   // Intercepting audio breaks iOS PWA standalone mode (Range request issues).
-  if (url.pathname.startsWith('/api/stream/') || url.pathname.startsWith('/api/cover/') || url.pathname === '/reset') {
+  if (url.pathname.startsWith('/api/stream/') || url.pathname.startsWith('/api/cover/') || url.pathname === '/reset' || url.pathname === '/icon.png') {
     return;
   }
 
@@ -1490,8 +1490,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
 <meta name="apple-mobile-web-app-title" content="">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="theme-color" content="#1a1a1a">
-<link rel="apple-touch-icon" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxODAgMTgwIj4KPHJlY3Qgd2lkdGg9IjE4MCIgaGVpZ2h0PSIxODAiIHJ4PSI0MCIgZmlsbD0iIzFhMWEyZSIvPgo8Y2lyY2xlIGN4PSI5MCIgY3k9IjkwIiByPSI2OCIgZmlsbD0iIzExMSIgc3Ryb2tlPSIjMzMzIiBzdHJva2Utd2lkdGg9IjEuNSIvPgo8Y2lyY2xlIGN4PSI5MCIgY3k9IjkwIiByPSI1NSIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjMjIyIiBzdHJva2Utd2lkdGg9IjAuNSIvPgo8Y2lyY2xlIGN4PSI5MCIgY3k9IjkwIiByPSI0MiIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjMjIyIiBzdHJva2Utd2lkdGg9IjAuNSIvPgo8Y2lyY2xlIGN4PSI5MCIgY3k9IjkwIiByPSIyMiIgZmlsbD0iI2U5NDU2MCIvPgo8Y2lyY2xlIGN4PSI5MCIgY3k9IjkwIiByPSI0IiBmaWxsPSIjMWExYTJlIi8+Cjwvc3ZnPg==">
-<link rel="icon" type="image/svg+xml" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxODAgMTgwIj4KPHJlY3Qgd2lkdGg9IjE4MCIgaGVpZ2h0PSIxODAiIHJ4PSI0MCIgZmlsbD0iIzFhMWEyZSIvPgo8Y2lyY2xlIGN4PSI5MCIgY3k9IjkwIiByPSI2OCIgZmlsbD0iIzExMSIgc3Ryb2tlPSIjMzMzIiBzdHJva2Utd2lkdGg9IjEuNSIvPgo8Y2lyY2xlIGN4PSI5MCIgY3k9IjkwIiByPSI1NSIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjMjIyIiBzdHJva2Utd2lkdGg9IjAuNSIvPgo8Y2lyY2xlIGN4PSI5MCIgY3k9IjkwIiByPSI0MiIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjMjIyIiBzdHJva2Utd2lkdGg9IjAuNSIvPgo8Y2lyY2xlIGN4PSI5MCIgY3k9IjkwIiByPSIyMiIgZmlsbD0iI2U5NDU2MCIvPgo8Y2lyY2xlIGN4PSI5MCIgY3k9IjkwIiByPSI0IiBmaWxsPSIjMWExYTJlIi8+Cjwvc3ZnPg==">
+<link rel="apple-touch-icon" sizes="180x180" href="/icon.png">
+<link rel="icon" type="image/png" sizes="180x180" href="/icon.png">
 <title></title>
 <style>
 * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; -webkit-user-select: none; }
@@ -7310,6 +7310,50 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         parsed = urlparse(self.path)
         path = parsed.path
+
+        # PWA icon — 180x180 PNG vinyl record
+        if path == "/icon.png":
+            import struct, zlib
+            W = 180
+            cx, cy = W // 2, W // 2
+            pixels = []
+            for y in range(W):
+                row = []
+                for x in range(W):
+                    dx, dy = x - cx, y - cy
+                    d = (dx*dx + dy*dy) ** 0.5
+                    # Rounded square mask (superellipse)
+                    sx = abs(x - cx) / (W/2); sy = abs(y - cy) / (W/2)
+                    if (sx**4 + sy**4) > 0.75:
+                        row.extend([0, 0, 0, 0])  # transparent
+                    elif d < 5:
+                        row.extend([26, 26, 46, 255])  # center hole
+                    elif d < 26:
+                        row.extend([233, 69, 96, 255])  # red label
+                    elif d < 28:
+                        row.extend([50, 50, 50, 255])  # label edge
+                    elif d < 70:
+                        g = int(17 + (d - 28) * 0.3) if int(d) % 6 < 3 else int(20 + (d - 28) * 0.2)
+                        row.extend([g, g, g, 255])  # grooves
+                    elif d < 72:
+                        row.extend([40, 40, 40, 255])  # outer edge
+                    else:
+                        row.extend([26, 26, 46, 255])  # background
+                pixels.append(bytes([0] + row))  # filter byte + RGBA
+            raw = b''.join(pixels)
+            def _png_chunk(ctype, data):
+                c = ctype + data
+                return struct.pack('>I', len(data)) + c + struct.pack('>I', zlib.crc32(c) & 0xffffffff)
+            sig = b'\x89PNG\r\n\x1a\n'
+            ihdr = struct.pack('>IIBBBBB', W, W, 8, 6, 0, 0, 0)
+            png = sig + _png_chunk(b'IHDR', ihdr) + _png_chunk(b'IDAT', zlib.compress(raw, 9)) + _png_chunk(b'IEND', b'')
+            self.send_response(200)
+            self.send_header("Content-Type", "image/png")
+            self.send_header("Content-Length", str(len(png)))
+            self.send_header("Cache-Control", "public, max-age=604800")
+            self.end_headers()
+            self.wfile.write(png)
+            return
 
         # Reset page — clears SW cache, not intercepted by SW
         if path == "/reset":
