@@ -1536,7 +1536,7 @@ body {
   background: rgba(255,255,255,0.06); border-radius: 8px; padding: 3px;
 }
 .player-mode-btn {
-  width: 32px; height: 32px; border: none; border-radius: 6px; background: none;
+  width: 40px; height: 40px; border: none; border-radius: 8px; background: none;
   color: rgba(255,255,255,0.3); cursor: pointer; display: flex; align-items: center; justify-content: center;
   transition: all 0.2s;
 }
@@ -2499,7 +2499,7 @@ body { overflow: hidden; touch-action: none; position: fixed; width: 100%; heigh
   .ipod-body { width: min(72vw, 50vh); min-width: 200px; }
   .cassette-body { --cw: min(90vw, 50vh); min-width: 260px; }
   .player-mode-toggle { position: fixed; top: auto; bottom: 0; left: 16px; right: auto; z-index: 51; margin-bottom: 10px; margin-bottom: max(10px, env(safe-area-inset-bottom)); }
-  .player-mode-btn { width: 28px; height: 28px; }
+  .player-mode-btn[data-tip]::after { display: none !important; }
 }
 /* Force portrait on narrow screens */
 @media (max-width: 768px) and (orientation: landscape) {
