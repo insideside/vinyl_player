@@ -1533,9 +1533,7 @@ body {
 .player-mode-toggle {
   position: absolute; top: 12px; right: 12px; z-index: 20;
   display: flex; gap: 4px;
-  background: rgba(0,0,0,0.35); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
-  border-radius: 10px; padding: 3px;
-  border: 1px solid rgba(255,255,255,0.06);
+  background: rgba(255,255,255,0.06); border-radius: 8px; padding: 3px;
 }
 .player-mode-btn {
   width: 32px; height: 32px; border: none; border-radius: 6px; background: none;
@@ -1775,7 +1773,7 @@ body {
 
 /* Label — horizontal strip at top only */
 .cassette-label {
-  position: absolute; top: 4%; left: 5%; right: 5%; height: 28%;
+  position: absolute; top: 4%; left: 6%; right: 6%; height: 28%;
   background: linear-gradient(180deg, #b5ae9e 0%, #b0a999 30%, #aaa393 70%, #a59e8e 100%);
   border-radius: 3px;
   box-shadow: 0 1px 3px rgba(0,0,0,0.25), inset 0 0 0 1px rgba(0,0,0,0.04);
@@ -2498,9 +2496,9 @@ body { overflow: hidden; touch-action: none; position: fixed; width: 100%; heigh
   .vinyl-side { padding-bottom: 70px; }
   .vinyl-scene { width: min(80vw, 50vh); height: min(80vw, 50vh); }
   .track-title { max-width: 80vw; }
-  .ipod-body { width: min(65vw, 45vh); min-width: 180px; }
+  .ipod-body { width: min(72vw, 50vh); min-width: 200px; }
   .cassette-body { --cw: min(90vw, 50vh); min-width: 260px; }
-  .player-mode-toggle { top: 8px; right: 8px; }
+  .player-mode-toggle { top: auto; bottom: 76px; left: 12px; right: auto; }
   .player-mode-btn { width: 28px; height: 28px; }
 }
 /* Force portrait on narrow screens */
@@ -3258,6 +3256,17 @@ function _ipodSyncTrack(t) {
   } else { ic.style.display = 'none'; icp.style.display = ''; }
 }
 
+function _ipodPlayOrToggle() {
+  if (_ipodListMode) {
+    if (_ipodSelectedIdx >= 0 && _ipodSelectedIdx < tracks.length) {
+      playFromList(_ipodSelectedIdx);
+      _ipodShowNp();
+    }
+  } else {
+    togglePlay();
+  }
+}
+
 function _ipodShowNp() {
   document.getElementById('ipodNpWrap').classList.remove('hidden');
   document.getElementById('ipodList').classList.remove('active');
@@ -3764,9 +3773,11 @@ function ipodClick() {
       while (wheelAccum > WHEEL_STEP) { wheelAccum -= WHEEL_STEP; _ipodScrollList(1); ipodClick(); }
       while (wheelAccum < -WHEEL_STEP) { wheelAccum += WHEEL_STEP; _ipodScrollList(-1); ipodClick(); }
     } else {
-      // Volume control in Now Playing
-      var volDelta = delta / 360; // full rotation = full volume range
-      audio.volume = Math.max(0, Math.min(1, audio.volume + volDelta));
+      // Seek in Now Playing
+      if (audio.duration && !isNaN(audio.duration)) {
+        var seekDelta = (delta / 360) * 15; // full rotation ≈ 15 sec
+        audio.currentTime = Math.max(0, Math.min(audio.duration, audio.currentTime + seekDelta));
+      }
     }
   }
 
@@ -3810,13 +3821,7 @@ function ipodClick() {
       var dist = Math.sqrt(x*x + y*y);
       if (dist < 0.18) {
         // Center tap
-        ipodClick();
-        if (_ipodListMode) {
-          if (_ipodSelectedIdx >= 0 && _ipodSelectedIdx < tracks.length) {
-            playFromList(_ipodSelectedIdx);
-            _ipodShowNp();
-          }
-        } else { togglePlay(); }
+        ipodClick(); _ipodPlayOrToggle();
         return;
       }
       if (dist > 0.5) return;
@@ -3827,7 +3832,7 @@ function ipodClick() {
       } else {
         if (y < 0) {
           if (_ipodListMode) _ipodShowNp(); else _ipodShowList();
-        } else { togglePlay(); }
+        } else { ipodClick(); _ipodPlayOrToggle(); }
       }
     });
 
@@ -3847,7 +3852,7 @@ function ipodClick() {
       } else {
         if (y < 0) {
           if (_ipodListMode) _ipodShowNp(); else _ipodShowList();
-        } else { togglePlay(); }
+        } else { _ipodPlayOrToggle(); }
       }
     });
   }
@@ -3856,13 +3861,7 @@ function ipodClick() {
     center.addEventListener('click', function() {
       if (_playerMode !== 'ipod') return;
       if (_ipodWheelMoved) { _ipodWheelMoved = false; return; }
-      ipodClick();
-      if (_ipodListMode) {
-        if (_ipodSelectedIdx >= 0 && _ipodSelectedIdx < tracks.length) {
-          playFromList(_ipodSelectedIdx);
-          _ipodShowNp();
-        }
-      } else { togglePlay(); }
+      ipodClick(); _ipodPlayOrToggle();
     });
   }
 })();
