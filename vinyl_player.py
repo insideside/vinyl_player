@@ -1531,8 +1531,11 @@ body {
 
 /* ── Player mode toggle ── */
 .player-mode-toggle {
-  position: absolute; top: 16px; right: 16px; z-index: 5;
-  display: flex; gap: 4px; background: rgba(255,255,255,0.06); border-radius: 8px; padding: 3px;
+  position: absolute; top: 12px; right: 12px; z-index: 20;
+  display: flex; gap: 4px;
+  background: rgba(0,0,0,0.35); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+  border-radius: 10px; padding: 3px;
+  border: 1px solid rgba(255,255,255,0.06);
 }
 .player-mode-btn {
   width: 32px; height: 32px; border: none; border-radius: 6px; background: none;
@@ -2495,6 +2498,10 @@ body { overflow: hidden; touch-action: none; position: fixed; width: 100%; heigh
   .vinyl-side { padding-bottom: 70px; }
   .vinyl-scene { width: min(80vw, 50vh); height: min(80vw, 50vh); }
   .track-title { max-width: 80vw; }
+  .ipod-body { width: min(65vw, 45vh); min-width: 180px; }
+  .cassette-body { --cw: min(90vw, 50vh); min-width: 260px; }
+  .player-mode-toggle { top: 8px; right: 8px; }
+  .player-mode-btn { width: 28px; height: 28px; }
 }
 /* Force portrait on narrow screens */
 @media (max-width: 768px) and (orientation: landscape) {
@@ -3773,9 +3780,10 @@ function ipodClick() {
     _ipodRenderList();
   }
 
-  document.addEventListener('DOMContentLoaded', function() {
-    var wheel = document.getElementById('ipodWheel');
-    if (!wheel) return;
+  // Bind immediately (script is inline at bottom of body, DOM is ready)
+  var wheel = document.getElementById('ipodWheel');
+  var center = document.getElementById('ipodCenter');
+  if (wheel) {
     wheel.addEventListener('mousedown', wheelDown);
     wheel.addEventListener('touchstart', wheelDown, {passive:false});
     document.addEventListener('mousemove', wheelMove);
@@ -3783,22 +3791,47 @@ function ipodClick() {
     document.addEventListener('mouseup', wheelUp);
     document.addEventListener('touchend', wheelUp);
 
-    // Center button — play/pause or select track (suppressed after drag)
-    document.getElementById('ipodCenter').addEventListener('click', function() {
+    // Track touch position for quadrant tap detection
+    var _wheelTouchStart = null;
+
+    wheel.addEventListener('touchstart', function(e) {
+      var t = e.touches[0];
+      _wheelTouchStart = {x: t.clientX, y: t.clientY};
+    }, {passive: true});
+
+    wheel.addEventListener('touchend', function(e) {
       if (_playerMode !== 'ipod') return;
       if (_ipodWheelMoved) { _ipodWheelMoved = false; return; }
+      if (!_wheelTouchStart) return;
+      var r = wheel.getBoundingClientRect();
+      var x = (_wheelTouchStart.x - r.left) / r.width - 0.5;
+      var y = (_wheelTouchStart.y - r.top) / r.height - 0.5;
+      _wheelTouchStart = null;
+      var dist = Math.sqrt(x*x + y*y);
+      if (dist < 0.18) {
+        // Center tap
+        ipodClick();
+        if (_ipodListMode) {
+          if (_ipodSelectedIdx >= 0 && _ipodSelectedIdx < tracks.length) {
+            playFromList(_ipodSelectedIdx);
+            _ipodShowNp();
+          }
+        } else { togglePlay(); }
+        return;
+      }
+      if (dist > 0.5) return;
+      // Quadrant tap
       ipodClick();
-      if (_ipodListMode) {
-        if (_ipodSelectedIdx >= 0 && _ipodSelectedIdx < tracks.length) {
-          playFromList(_ipodSelectedIdx);
-          _ipodShowNp();
-        }
+      if (Math.abs(x) > Math.abs(y)) {
+        if (x > 0) nextTrack(); else prevTrack();
       } else {
-        togglePlay();
+        if (y < 0) {
+          if (_ipodListMode) _ipodShowNp(); else _ipodShowList();
+        } else { togglePlay(); }
       }
     });
 
-    // Wheel quadrant buttons via click position (suppressed after drag)
+    // Mouse click — desktop only
     wheel.addEventListener('click', function(e) {
       if (_playerMode !== 'ipod') return;
       if (_ipodWheelMoved) { _ipodWheelMoved = false; return; }
@@ -3807,21 +3840,31 @@ function ipodClick() {
       var x = (e.clientX - r.left) / r.width - 0.5;
       var y = (e.clientY - r.top) / r.height - 0.5;
       var dist = Math.sqrt(x*x + y*y);
-      if (dist < 0.2) return; // too close to center
-
-      // Determine quadrant
+      if (dist < 0.2) return;
       ipodClick();
       if (Math.abs(x) > Math.abs(y)) {
         if (x > 0) nextTrack(); else prevTrack();
       } else {
         if (y < 0) {
           if (_ipodListMode) _ipodShowNp(); else _ipodShowList();
-        } else {
-          togglePlay();
-        }
+        } else { togglePlay(); }
       }
     });
-  });
+  }
+
+  if (center) {
+    center.addEventListener('click', function() {
+      if (_playerMode !== 'ipod') return;
+      if (_ipodWheelMoved) { _ipodWheelMoved = false; return; }
+      ipodClick();
+      if (_ipodListMode) {
+        if (_ipodSelectedIdx >= 0 && _ipodSelectedIdx < tracks.length) {
+          playFromList(_ipodSelectedIdx);
+          _ipodShowNp();
+        }
+      } else { togglePlay(); }
+    });
+  }
 })();
 
 function formatTime(s) {
