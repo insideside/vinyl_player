@@ -1641,6 +1641,11 @@ body {
   font-size: clamp(8px, 1.8vmin, 11px); font-weight: 500; color: #5a5548;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   line-height: 1.3; letter-spacing: 0.3px; text-transform: uppercase; margin-top: 1px;
+  cursor: pointer; border-radius: 3px; padding: 1px 4px; margin-left: -4px;
+  transition: background 0.15s ease;
+}
+.cassette-label-artist:hover { background: rgba(0,0,0,0.08); }
+.cassette-label-artist:active { background: rgba(0,0,0,0.12);
 }
 .cassette-label-brand {
   position: absolute; bottom: 3px; right: 8px;
@@ -1862,6 +1867,12 @@ body {
   font-size: 15px; color: rgba(255,255,255,0.5); margin-top: 2px;
   transition: opacity 0.3s ease; line-height: 20px; min-height: 20px;
 }
+.artist-link {
+  cursor: pointer; border-radius: 4px; padding: 1px 6px; margin: -1px -6px;
+  transition: background 0.15s ease;
+}
+.artist-link:hover { background: rgba(255,255,255,0.1); }
+.artist-link:active { background: rgba(255,255,255,0.15); }
 .vinyl-cover-img { width: 100%; height: 100%; object-fit: cover; transition: opacity 0.4s ease; }
 
 /* ── Controls ── */
@@ -2329,7 +2340,7 @@ body { overflow: hidden; touch-action: none; position: fixed; width: 100%; heigh
             </div>
             <div class="cassette-label-text">
               <div class="cassette-label-title" id="cassetteTitle"></div>
-              <div class="cassette-label-artist" id="cassetteArtist"></div>
+              <div class="cassette-label-artist" id="cassetteArtist" onclick="searchArtist(this.textContent)"></div>
             </div>
           </div>
         </div>
@@ -2366,7 +2377,7 @@ body { overflow: hidden; touch-action: none; position: fixed; width: 100%; heigh
 
     <div class="track-info">
       <div class="track-title" id="trackTitle" style="opacity:0.3" data-idle="1"></div>
-      <div class="track-artist" id="trackArtist" style="opacity:0.3">Выберите трек</div>
+      <div class="track-artist"><span class="artist-link" id="trackArtist" onclick="searchArtist(this.textContent)" style="opacity:0.3">Выберите трек</span></div>
     </div>
 
     <div class="controls">
@@ -4462,6 +4473,18 @@ function pollWanStatus() {
 // ── Search ──
 var searchTimer = null;
 var filteredAlbums = null;
+
+function searchArtist(name) {
+  if (!name || !name.trim()) return;
+  // Switch to playlist view on mobile
+  if (window.innerWidth <= 768) mobileShow('playlist');
+  // Switch to tracks tab
+  showTab('tracks');
+  var input = document.getElementById('searchInput');
+  input.value = name.trim();
+  onSearchInput(name.trim());
+  input.focus();
+}
 
 function onSearchInput(q) {
   var btn = document.getElementById('searchClear');
