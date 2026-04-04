@@ -3014,16 +3014,19 @@ body { overflow: hidden; touch-action: none; position: fixed; width: 100%; heigh
   <div class="meta-modal" style="width:360px">
     <h3>Профиль</h3>
     <div style="font-size:14px;color:rgba(255,255,255,0.6);margin:8px 0 16px" id="profileUser"></div>
-    <div style="font-size:12px;color:rgba(255,255,255,0.4);margin-bottom:8px">Сменить пароль</div>
-    <div class="pw-field"><input type="password" id="profOldPw" placeholder="Текущий пароль"><button class="pw-eye" onclick="togglePwVis('profOldPw',this)"><img src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIGZpbGw9IiM4ODgiIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZD0iTTEyIDQuNUM3IDQuNSAyLjczIDcuNjEgMSAxMmMxLjczIDQuMzkgNiA3LjUgMTEgNy41czkuMjctMy4xMSAxMS03LjVjLTEuNzMtNC4zOS02LTcuNS0xMS03LjV6TTEyIDE3Yy0yLjc2IDAtNS0yLjI0LTUtNXMyLjI0LTUgNS01IDUgMi4yNCA1IDUtMi4yNCA1LTUgNXptMC04Yy0xLjY2IDAtMyAxLjM0LTMgM3MxLjM0IDMgMyAzIDMtMS4zNCAzLTMtMS4zNC0zLTMtM3oiLz48L3N2Zz4="></button></div>
-    <div class="pw-field" style="margin-top:6px"><input type="password" id="profNewPw" placeholder="Новый пароль"><button class="pw-eye" onclick="togglePwVis('profNewPw',this)"><img src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIGZpbGw9IiM4ODgiIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZD0iTTEyIDQuNUM3IDQuNSAyLjczIDcuNjEgMSAxMmMxLjczIDQuMzkgNiA3LjUgMTEgNy41czkuMjctMy4xMSAxMS03LjVjLTEuNzMtNC4zOS02LTcuNS0xMS03LjV6TTEyIDE3Yy0yLjc2IDAtNS0yLjI0LTUtNXMyLjI0LTUgNS01IDUgMi4yNCA1IDUtMi4yNCA1LTUgNXptMC04Yy0xLjY2IDAtMyAxLjM0LTMgM3MxLjM0IDMgMyAzIDMtMS4zNCAzLTMtMS4zNC0zLTMtM3oiLz48L3N2Zz4="></button></div>
-    <button class="folder-btn folder-btn-primary" style="width:100%;margin-top:12px" onclick="changeMyPassword()">Сменить пароль</button>
+    <button class="folder-btn folder-btn-secondary" style="width:100%" onclick="document.getElementById('profPwSection').style.display=document.getElementById('profPwSection').style.display==='none'?'':'none'">Сменить пароль</button>
+    <div id="profPwSection" style="display:none;margin-top:10px">
+      <div class="pw-field"><input type="password" id="profOldPw" placeholder="Текущий пароль"><button class="pw-eye" onclick="togglePwVis('profOldPw',this)"><img src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIGZpbGw9IiM4ODgiIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZD0iTTEyIDQuNUM3IDQuNSAyLjczIDcuNjEgMSAxMmMxLjczIDQuMzkgNiA3LjUgMTEgNy41czkuMjctMy4xMSAxMS03LjVjLTEuNzMtNC4zOS02LTcuNS0xMS03LjV6TTEyIDE3Yy0yLjc2IDAtNS0yLjI0LTUtNXMyLjI0LTUgNS01IDUgMi4yNCA1IDUtMi4yNCA1LTUgNXptMC04Yy0xLjY2IDAtMyAxLjM0LTMgM3MxLjM0IDMgMyAzIDMtMS4zNCAzLTMtMS4zNC0zLTMtM3oiLz48L3N2Zz4="></button></div>
+      <div class="pw-field" style="margin-top:6px"><input type="password" id="profNewPw" placeholder="Новый пароль"><button class="pw-eye" onclick="togglePwVis('profNewPw',this)"><img src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIGZpbGw9IiM4ODgiIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZD0iTTEyIDQuNUM3IDQuNSAyLjczIDcuNjEgMSAxMmMxLjczIDQuMzkgNiA3LjUgMTEgNy41czkuMjctMy4xMSAxMS03LjVjLTEuNzMtNC4zOS02LTcuNS0xMS03LjV6TTEyIDE3Yy0yLjc2IDAtNS0yLjI0LTUtNXMyLjI0LTUgNS01IDUgMi4yNCA1IDUtMi4yNCA1LTUgNXptMC04Yy0xLjY2IDAtMyAxLjM0LTMgM3MxLjM0IDMgMyAzIDMtMS4zNCAzLTMtMS4zNC0zLTMtM3oiLz48L3N2Zz4="></button></div>
+      <button class="folder-btn folder-btn-primary" style="width:100%;margin-top:8px" onclick="changeMyPassword()">Сохранить</button>
+    </div>
     <div style="margin-top:16px;padding-top:12px;border-top:1px solid rgba(255,255,255,0.06)">
       <div style="font-size:12px;color:rgba(255,255,255,0.4);margin-bottom:8px">Офлайн-кэш</div>
       <div style="display:flex;align-items:center;gap:8px">
         <span style="font-size:12px;color:rgba(255,255,255,0.5);flex:1" id="profileCacheInfo"></span>
         <button class="folder-btn folder-btn-secondary" style="padding:6px 12px;font-size:12px;color:#e94560" onclick="clearAllCache()">Очистить кэш</button>
       </div>
+      <button class="folder-btn folder-btn-secondary" style="width:100%;margin-top:8px;font-size:12px" onclick="location.href='/reset'">Обновить приложение</button>
     </div>
     <div style="display:flex;gap:8px;margin-top:16px;padding-top:12px;border-top:1px solid rgba(255,255,255,0.06)">
       <button class="folder-btn folder-btn-secondary" style="flex:1" onclick="doLogout()">Выйти</button>
