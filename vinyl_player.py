@@ -1559,67 +1559,102 @@ body {
 .player-mode-ipod .progress-wrap { display: none; }
 .player-mode-ipod .volume-wrap { display: none; }
 
-/* iPod Dark (default) — graphite aluminum */
+/* iPod Dark (default) — graphite aluminum with 3D volume */
 .ipod-body {
   width: min(28vw, 34vh); min-width: 200px;
   aspect-ratio: 0.6;
   background:
-    linear-gradient(170deg, #6a6a6e 0%, #555558 4%, #4a4a4e 12%, #434347 30%, #3e3e42 50%, #434347 70%, #4a4a4e 88%, #555558 96%, #6a6a6e 100%);
+    linear-gradient(90deg,
+      #555 0%, #4a4a4e 3%, #434347 8%, #3e3e42 20%,
+      #3c3c40 40%, #3c3c40 60%,
+      #3e3e42 80%, #434347 92%, #4a4a4e 97%, #555 100%);
   border-radius: 18px;
   position: relative;
   box-shadow:
-    0 20px 60px rgba(0,0,0,0.6),
-    0 4px 12px rgba(0,0,0,0.4),
-    inset 0 2px 0 rgba(255,255,255,0.12),
-    inset 0 -2px 0 rgba(0,0,0,0.2),
-    inset 2px 0 0 rgba(255,255,255,0.06),
-    inset -2px 0 0 rgba(255,255,255,0.06);
+    0 24px 60px rgba(0,0,0,0.65),
+    0 6px 16px rgba(0,0,0,0.4),
+    inset 0 2px 1px rgba(255,255,255,0.15),
+    inset 0 -2px 1px rgba(0,0,0,0.25),
+    inset 4px 0 6px -2px rgba(255,255,255,0.08),
+    inset -4px 0 6px -2px rgba(255,255,255,0.08);
 }
-/* Brushed aluminum texture */
+/* Brushed aluminum texture + top highlight */
 .ipod-body::before {
   content: ''; position: absolute; inset: 0; border-radius: 18px;
   background:
-    repeating-linear-gradient(90deg, transparent, transparent 1px, rgba(255,255,255,0.015) 1px, rgba(255,255,255,0.015) 2px),
-    radial-gradient(ellipse at 30% 20%, rgba(255,255,255,0.08) 0%, transparent 50%);
+    repeating-linear-gradient(90deg, transparent, transparent 1px, rgba(255,255,255,0.01) 1px, rgba(255,255,255,0.01) 2px),
+    linear-gradient(180deg, rgba(255,255,255,0.06) 0%, transparent 15%, transparent 85%, rgba(0,0,0,0.08) 100%),
+    radial-gradient(ellipse at 35% 10%, rgba(255,255,255,0.1) 0%, transparent 40%);
   pointer-events: none;
 }
-/* Inner edge highlight */
+/* Inner bevel for depth */
 .ipod-body::after {
   content: ''; position: absolute; inset: 2px; border-radius: 16px;
-  border: 1px solid rgba(255,255,255,0.06);
+  border-top: 1px solid rgba(255,255,255,0.08);
+  border-bottom: 1px solid rgba(0,0,0,0.2);
+  border-left: 1px solid rgba(255,255,255,0.04);
+  border-right: 1px solid rgba(255,255,255,0.04);
   pointer-events: none;
 }
 
-/* iPod Light (silver) — full override */
+/* iPod Light (silver aluminum) */
 .ipod-light.ipod-body {
   background:
-    linear-gradient(170deg, #eaeaee 0%, #dddde2 4%, #d4d4da 12%, #ccccd2 30%, #c8c8ce 50%, #ccccd2 70%, #d4d4da 88%, #dddde2 96%, #eaeaee 100%);
+    linear-gradient(90deg,
+      #ccccd0 0%, #c0c0c6 3%, #b8b8bf 8%, #b0b0b8 20%,
+      #acacb4 40%, #acacb4 60%,
+      #b0b0b8 80%, #b8b8bf 92%, #c0c0c6 97%, #ccccd0 100%);
+  box-shadow:
+    0 24px 60px rgba(0,0,0,0.35),
+    0 6px 16px rgba(0,0,0,0.2),
+    inset 0 2px 1px rgba(255,255,255,0.45),
+    inset 0 -2px 1px rgba(0,0,0,0.1),
+    inset 4px 0 6px -2px rgba(255,255,255,0.2),
+    inset -4px 0 6px -2px rgba(255,255,255,0.2);
 }
 .ipod-light.ipod-body::before {
   background:
-    repeating-linear-gradient(90deg, transparent, transparent 1px, rgba(255,255,255,0.04) 1px, rgba(255,255,255,0.04) 2px),
-    radial-gradient(ellipse at 30% 20%, rgba(255,255,255,0.2) 0%, transparent 50%);
+    repeating-linear-gradient(90deg, transparent, transparent 1px, rgba(255,255,255,0.025) 1px, rgba(255,255,255,0.025) 2px),
+    linear-gradient(180deg, rgba(255,255,255,0.15) 0%, transparent 15%, transparent 85%, rgba(0,0,0,0.05) 100%),
+    radial-gradient(ellipse at 35% 10%, rgba(255,255,255,0.3) 0%, transparent 40%);
 }
-.ipod-light.ipod-body::after { border-color: rgba(255,255,255,0.5); }
-.ipod-light .ipod-screen {
-  box-shadow: inset 0 2px 8px rgba(0,0,0,0.5), 0 1px 0 rgba(255,255,255,0.5);
+.ipod-light.ipod-body::after {
+  border-top-color: rgba(255,255,255,0.4);
+  border-bottom-color: rgba(0,0,0,0.08);
+  border-left-color: rgba(255,255,255,0.15);
+  border-right-color: rgba(255,255,255,0.15);
 }
+/* Light: white screen with dark text */
+.ipod-light .ipod-screen { background: #eaeaea !important; box-shadow: inset 0 2px 8px rgba(0,0,0,0.25), 0 1px 0 rgba(255,255,255,0.5) !important; }
+.ipod-light .ipod-screen::after { background: linear-gradient(180deg, rgba(255,255,255,0.4) 0%, transparent 100%) !important; }
+.ipod-light .ipod-np, .ipod-light .ipod-list { color: #222 !important; }
+.ipod-light .ipod-np-header, .ipod-light .ipod-list-header { color: #666 !important; border-bottom-color: rgba(0,0,0,0.1) !important; }
+.ipod-light .ipod-np-title { color: #111 !important; }
+.ipod-light .ipod-np-artist { color: rgba(0,0,0,0.5) !important; }
+.ipod-light .ipod-np-artist:hover { background: rgba(0,0,0,0.06) !important; }
+.ipod-light .ipod-np-album { color: rgba(0,0,0,0.3) !important; }
+.ipod-light .ipod-np-cover { background: #d0d0d0 !important; }
+.ipod-light .ipod-np-cover-ph { color: rgba(0,0,0,0.1) !important; }
+.ipod-light .ipod-np-bar { background: rgba(0,0,0,0.1) !important; }
+.ipod-light .ipod-np-time { color: rgba(0,0,0,0.3) !important; }
+.ipod-light .ipod-list-item { border-bottom-color: rgba(0,0,0,0.06) !important; }
+.ipod-light .ipod-list-item.selected { background: #4a9eff !important; color: #fff !important; }
 .ipod-light .ipod-wheel {
-  background: radial-gradient(circle at 48% 45%, #f0f0f4, #e4e4ea 30%, #d8d8de 60%, #ccccd3 100%) !important;
-  box-shadow: 0 2px 8px rgba(0,0,0,0.12), inset 0 1px 2px rgba(255,255,255,0.7) !important;
+  background: radial-gradient(circle at 48% 45%, #f2f2f6, #e6e6ec 30%, #dcdce3 60%, #d0d0d8 100%) !important;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.1), inset 0 1px 2px rgba(255,255,255,0.7) !important;
 }
 .ipod-light .ipod-wheel-center {
-  background: radial-gradient(circle at 48% 45%, #fcfcfe, #f0f0f5 50%, #e6e6ec 100%) !important;
-  box-shadow: 0 1px 4px rgba(0,0,0,0.1), inset 0 1px 1px rgba(255,255,255,0.8) !important;
+  background: radial-gradient(circle at 48% 45%, #fcfcfe, #f2f2f6 50%, #eaeaef 100%) !important;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.08), inset 0 1px 1px rgba(255,255,255,0.8) !important;
 }
-.ipod-light .ipod-wheel-label { color: rgba(50,50,60,0.5) !important; }
+.ipod-light .ipod-wheel-label { color: rgba(50,50,60,0.45) !important; }
 
 /* Color toggle button */
 .ipod-color-toggle {
   position: absolute; top: 4px; right: 4px; z-index: 10;
   width: 14px; height: 14px; border-radius: 50%; border: 1.5px solid rgba(255,255,255,0.15);
   cursor: pointer; transition: all 0.2s;
-  background: linear-gradient(135deg, #ccc 50%, #444 50%);
+  background: linear-gradient(135deg, #bbb 50%, #444 50%);
 }
 .ipod-color-toggle:hover { border-color: rgba(255,255,255,0.35); }
 
@@ -1766,16 +1801,20 @@ body {
   --cw: min(54vw, 46vh);
   width: var(--cw); aspect-ratio: 1.6;
   min-width: 300px;
-  background: linear-gradient(180deg, #5a5550 0%, #504b46 3%, #4a4540 10%, #454039 50%, #403b35 90%, #3a352f 97%, #4a4540 100%);
+  background:
+    linear-gradient(90deg,
+      #3a3530 0%, #33302b 4%, #2e2b26 10%, #2a2723 30%,
+      #282520 50%,
+      #2a2723 70%, #2e2b26 90%, #33302b 96%, #3a3530 100%);
   border-radius: 10px 10px 5px 5px;
   position: relative;
   box-shadow:
-    0 14px 50px rgba(0,0,0,0.5),
-    0 2px 4px rgba(0,0,0,0.3),
+    0 14px 50px rgba(0,0,0,0.6),
+    0 2px 4px rgba(0,0,0,0.4),
     inset 0 1px 0 rgba(255,255,255,0.08),
-    inset 0 -1px 0 rgba(0,0,0,0.2),
-    inset 1px 0 0 rgba(255,255,255,0.03),
-    inset -1px 0 0 rgba(255,255,255,0.03);
+    inset 0 -1px 0 rgba(0,0,0,0.3),
+    inset 3px 0 4px -2px rgba(255,255,255,0.05),
+    inset -3px 0 4px -2px rgba(255,255,255,0.05);
 }
 /* Horizontal stripes across body */
 .cassette-stripes {
@@ -1962,19 +2001,28 @@ body {
   z-index: 1;
 }
 
-/* Bottom edge strip */
+/* Bottom chin — separate strip like real cassette */
 .cassette-bottom {
-  position: absolute; bottom: 0; left: 5%; right: 5%; height: 13%;
-  background: linear-gradient(180deg, #4a4540, #403b35);
-  border-radius: 0 0 3px 3px;
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.03);
+  position: absolute; bottom: -1px; left: 8%; right: 8%; height: 15%;
+  background:
+    linear-gradient(90deg, #5a554e 0%, #4e493f 5%, #464138 20%, #403b32 50%, #464138 80%, #4e493f 95%, #5a554e 100%);
+  border-radius: 2px 2px 4px 4px;
+  box-shadow:
+    0 2px 4px rgba(0,0,0,0.3),
+    inset 0 1px 0 rgba(255,255,255,0.06),
+    inset 2px 0 3px -1px rgba(255,255,255,0.04),
+    inset -2px 0 3px -1px rgba(255,255,255,0.04);
 }
 .cassette-bottom-holes {
   position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
-  display: flex; gap: 8px;
+  display: flex; align-items: center; gap: 5px;
 }
 .cassette-bottom-hole {
-  width: 6px; height: 6px; border-radius: 50%;
+  width: 5px; height: 5px; border-radius: 50%;
+  background: #111; box-shadow: inset 0 1px 2px rgba(0,0,0,0.9);
+}
+.cassette-bottom-hole-oval {
+  width: 10px; height: 5px; border-radius: 3px;
   background: #111; box-shadow: inset 0 1px 2px rgba(0,0,0,0.9);
 }
 
@@ -2559,7 +2607,7 @@ body { overflow: hidden; touch-action: none; position: fixed; width: 100%; heigh
           <div class="cassette-tape-path"></div>
         </div>
         <div class="cassette-bottom">
-          <div class="cassette-bottom-holes"><div class="cassette-bottom-hole"></div><div class="cassette-bottom-hole"></div><div class="cassette-bottom-hole"></div><div class="cassette-bottom-hole"></div><div class="cassette-bottom-hole"></div></div>
+          <div class="cassette-bottom-holes"><div class="cassette-bottom-hole"></div><div class="cassette-bottom-hole-oval"></div><div class="cassette-bottom-hole"></div><div class="cassette-bottom-hole-oval"></div><div class="cassette-bottom-hole"></div><div class="cassette-bottom-hole-oval"></div><div class="cassette-bottom-hole"></div></div>
         </div>
       </div>
     </div>
@@ -3698,6 +3746,25 @@ function toggleIpodColor() {
 })();
 var _ipodWheelMoved = false; // track if wheel was rotated during drag
 
+// iPod click sound via Web Audio API
+var _ipodClickCtx = null;
+function ipodClick() {
+  try {
+    if (!_ipodClickCtx) _ipodClickCtx = new (window.AudioContext || window.webkitAudioContext)();
+    var ctx = _ipodClickCtx;
+    var osc = ctx.createOscillator();
+    var gain = ctx.createGain();
+    osc.type = 'square';
+    osc.frequency.value = 1200;
+    gain.gain.setValueAtTime(0.06, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.03);
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start(ctx.currentTime);
+    osc.stop(ctx.currentTime + 0.03);
+  } catch(e) {}
+}
+
 // ── iPod Click Wheel ──
 (function() {
   var wheelDragging = false, wheelLastAngle = 0, wheelAccum = 0;
@@ -3737,8 +3804,8 @@ var _ipodWheelMoved = false; // track if wheel was rotated during drag
 
     if (_ipodListMode) {
       // Scroll track list
-      while (wheelAccum > WHEEL_STEP) { wheelAccum -= WHEEL_STEP; _ipodScrollList(1); }
-      while (wheelAccum < -WHEEL_STEP) { wheelAccum += WHEEL_STEP; _ipodScrollList(-1); }
+      while (wheelAccum > WHEEL_STEP) { wheelAccum -= WHEEL_STEP; _ipodScrollList(1); ipodClick(); }
+      while (wheelAccum < -WHEEL_STEP) { wheelAccum += WHEEL_STEP; _ipodScrollList(-1); ipodClick(); }
     } else {
       // Volume control in Now Playing
       var volDelta = delta / 360; // full rotation = full volume range
@@ -3770,8 +3837,8 @@ var _ipodWheelMoved = false; // track if wheel was rotated during drag
     document.getElementById('ipodCenter').addEventListener('click', function() {
       if (_playerMode !== 'ipod') return;
       if (_ipodWheelMoved) { _ipodWheelMoved = false; return; }
+      ipodClick();
       if (_ipodListMode) {
-        // Select track from list
         if (_ipodSelectedIdx >= 0 && _ipodSelectedIdx < tracks.length) {
           playFromList(_ipodSelectedIdx);
           _ipodShowNp();
@@ -3793,16 +3860,14 @@ var _ipodWheelMoved = false; // track if wheel was rotated during drag
       if (dist < 0.2) return; // too close to center
 
       // Determine quadrant
+      ipodClick();
       if (Math.abs(x) > Math.abs(y)) {
-        // Left or Right
         if (x > 0) nextTrack(); else prevTrack();
       } else {
-        // Top or Bottom
         if (y < 0) {
-          // MENU — toggle list/np
           if (_ipodListMode) _ipodShowNp(); else _ipodShowList();
         } else {
-          togglePlay(); // bottom — play/pause
+          togglePlay();
         }
       }
     });
