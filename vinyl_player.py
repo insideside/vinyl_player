@@ -1597,76 +1597,6 @@ body {
   pointer-events: none;
 }
 
-/* iPod Light (silver aluminum) */
-.ipod-light.ipod-body {
-  background:
-    linear-gradient(90deg,
-      #ccccd0 0%, #c0c0c6 3%, #b8b8bf 8%, #b0b0b8 20%,
-      #acacb4 40%, #acacb4 60%,
-      #b0b0b8 80%, #b8b8bf 92%, #c0c0c6 97%, #ccccd0 100%);
-  box-shadow:
-    0 24px 60px rgba(0,0,0,0.35),
-    0 6px 16px rgba(0,0,0,0.2),
-    inset 0 2px 1px rgba(255,255,255,0.45),
-    inset 0 -2px 1px rgba(0,0,0,0.1),
-    inset 4px 0 6px -2px rgba(255,255,255,0.2),
-    inset -4px 0 6px -2px rgba(255,255,255,0.2);
-}
-.ipod-light.ipod-body::before {
-  background:
-    repeating-linear-gradient(90deg, transparent, transparent 1px, rgba(255,255,255,0.025) 1px, rgba(255,255,255,0.025) 2px),
-    linear-gradient(180deg, rgba(255,255,255,0.15) 0%, transparent 15%, transparent 85%, rgba(0,0,0,0.05) 100%),
-    radial-gradient(ellipse at 35% 10%, rgba(255,255,255,0.3) 0%, transparent 40%);
-}
-.ipod-light.ipod-body::after {
-  border-top-color: rgba(255,255,255,0.4);
-  border-bottom-color: rgba(0,0,0,0.08);
-  border-left-color: rgba(255,255,255,0.15);
-  border-right-color: rgba(255,255,255,0.15);
-}
-/* Light: white screen with dark text */
-.ipod-light .ipod-screen { background: #c8ccc5 !important; box-shadow: inset 0 2px 8px rgba(0,0,0,0.2), 0 1px 0 rgba(255,255,255,0.5) !important; }
-.ipod-light .ipod-screen::after { background: linear-gradient(180deg, rgba(255,255,255,0.2) 0%, transparent 100%) !important; }
-.ipod-light .ipod-np, .ipod-light .ipod-list { color: #2a2e28 !important; }
-.ipod-light .ipod-np-header, .ipod-light .ipod-list-header { color: #4a4e48 !important; border-bottom-color: rgba(0,0,0,0.1) !important; }
-.ipod-light .ipod-np-title { color: #1a1e18 !important; }
-.ipod-light .ipod-np-artist { color: #4a5045 !important; }
-.ipod-light .ipod-np-artist:hover { background: rgba(0,0,0,0.06) !important; }
-.ipod-light .ipod-np-album { color: #5a6055 !important; }
-.ipod-light .ipod-np-cover { background: #b0b4ad !important; }
-.ipod-light .ipod-np-cover-ph { color: rgba(0,0,0,0.12) !important; }
-.ipod-light .ipod-np-bar { background: rgba(0,0,0,0.12) !important; }
-.ipod-light .ipod-np-bar-fill { background: #3a6e3a !important; }
-.ipod-light .ipod-np-time { color: #5a6055 !important; }
-.ipod-light .ipod-list-item { border-bottom-color: rgba(0,0,0,0.08) !important; }
-.ipod-light .ipod-list-item.selected { background: #3a6e3a !important; color: #e8ece5 !important; }
-.ipod-light .ipod-wheel {
-  background: radial-gradient(circle at 48% 45%, #f2f2f6, #e6e6ec 30%, #dcdce3 60%, #d0d0d8 100%) !important;
-  box-shadow: 0 2px 8px rgba(0,0,0,0.1), inset 0 1px 2px rgba(255,255,255,0.7) !important;
-}
-.ipod-light .ipod-wheel-center {
-  background: radial-gradient(circle at 48% 45%, #c8c8ce, #bcbcc4 50%, #b4b4bc 100%) !important;
-  box-shadow: 0 1px 4px rgba(0,0,0,0.12), inset 0 1px 1px rgba(255,255,255,0.3) !important;
-}
-.ipod-light .ipod-wheel-label { color: rgba(50,50,60,0.45) !important; }
-
-/* Color picker dots under iPod */
-.ipod-colors {
-  display: flex; gap: 8px; margin-top: 14px; justify-content: center;
-}
-.ipod-color-dot {
-  width: 16px; height: 16px; border-radius: 50%; cursor: pointer;
-  border: 2px solid transparent; transition: border-color 0.2s, transform 0.15s;
-  box-shadow: 0 1px 4px rgba(0,0,0,0.4);
-}
-.ipod-color-dot:hover { transform: scale(1.15); }
-.ipod-color-dot.active { border-color: #e94560; }
-.ipod-dot-dark {
-  background: linear-gradient(135deg, #555, #3a3a3e);
-}
-.ipod-dot-light {
-  background: linear-gradient(135deg, #c8c8ce, #acacb4);
-}
 
 /* Screen */
 .ipod-screen {
@@ -2658,10 +2588,6 @@ body { overflow: hidden; touch-action: none; position: fixed; width: 100%; heigh
           <span class="ipod-wheel-label ipod-wl-play">&#9654;&#10073;&#10073;</span>
           <div class="ipod-wheel-center" id="ipodCenter"></div>
         </div>
-      </div>
-      <div class="ipod-colors">
-        <div class="ipod-color-dot ipod-dot-dark active" id="ipodDotDark" onclick="setIpodColor('dark')"></div>
-        <div class="ipod-color-dot ipod-dot-light" id="ipodDotLight" onclick="setIpodColor('light')"></div>
       </div>
     </div>
     <div class="vinyl-scene">
@@ -3760,25 +3686,6 @@ function applyInertia() {
   });
 })();
 
-// ── iPod color ──
-function setIpodColor(color) {
-  var body = document.getElementById('ipodBody');
-  body.classList.toggle('ipod-light', color === 'light');
-  localStorage.setItem('_vc_ipod_color', color);
-  document.getElementById('ipodDotDark').classList.toggle('active', color === 'dark');
-  document.getElementById('ipodDotLight').classList.toggle('active', color === 'light');
-}
-(function() {
-  var c = localStorage.getItem('_vc_ipod_color') || 'dark';
-  if (c === 'light') {
-    var b = document.getElementById('ipodBody');
-    if (b) b.classList.add('ipod-light');
-    var dd = document.getElementById('ipodDotDark');
-    var dl = document.getElementById('ipodDotLight');
-    if (dd) dd.classList.remove('active');
-    if (dl) dl.classList.add('active');
-  }
-})();
 var _ipodWheelMoved = false; // track if wheel was rotated during drag
 
 // iPod click sound via Web Audio API
