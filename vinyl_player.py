@@ -3775,9 +3775,11 @@ function ipodClick() {
     } else {
       // Seek in Now Playing
       if (audio.duration && !isNaN(audio.duration)) {
-        var seekDelta = (delta / 360) * 15; // full rotation ≈ 15 sec
+        var seekDelta = (delta / 360) * 15;
         audio.currentTime = Math.max(0, Math.min(audio.duration, audio.currentTime + seekDelta));
       }
+      while (wheelAccum > WHEEL_STEP) { wheelAccum -= WHEEL_STEP; ipodClick(); }
+      while (wheelAccum < -WHEEL_STEP) { wheelAccum += WHEEL_STEP; ipodClick(); }
     }
   }
 
