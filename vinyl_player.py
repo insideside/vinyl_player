@@ -1963,8 +1963,8 @@ body {
   pointer-events: none; z-index: 1;
   background: conic-gradient(
     from 0deg,
-    #5c3a1e, #7a5230, #5c3a1e, #704828, #5c3a1e, #7a5230,
-    #5c3a1e, #704828, #5c3a1e, #7a5230, #5c3a1e, #704828
+    #2a1a0e, #3a2818, #2a1a0e, #352214, #2a1a0e, #3a2818,
+    #2a1a0e, #352214, #2a1a0e, #3a2818, #2a1a0e, #352214
   );
   box-shadow: inset 0 0 3px rgba(0,0,0,0.5);
 }
@@ -1979,7 +1979,7 @@ body {
 /* Two lines — tape going from left reel down and across, then up to right reel */
 .cassette-tape-path::before {
   content: ''; position: absolute; inset: 0;
-  background: #4a3018;
+  background: #2a1a0e;
 }
 
 /* Corner screws */
