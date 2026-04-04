@@ -2960,6 +2960,7 @@ body { overflow: hidden; touch-action: none; position: fixed; width: 100%; heigh
     <div id="plAddList" style="flex:1;overflow-y:auto;min-height:0"></div>
     <div style="display:flex;gap:6px;margin-top:8px;flex-shrink:0">
       <button class="folder-btn folder-btn-primary" style="flex:1" onclick="confirmPlAdd('start')">В начало</button>
+      <button class="folder-btn folder-btn-primary" style="flex:1" onclick="confirmPlAdd('order')">По порядку</button>
       <button class="folder-btn folder-btn-primary" style="flex:1" onclick="confirmPlAdd('end')">В конец</button>
     </div>
   </div>
@@ -6167,6 +6168,15 @@ function confirmPlAdd(where) {
   }
   if (where === 'start') {
     plEditTracks = newFiles.concat(plEditTracks);
+  } else if (where === 'order') {
+    // Merge: all tracks (old + new) sorted by their position in the main tracklist
+    var allFiles = {};
+    for (var k = 0; k < plEditTracks.length; k++) allFiles[plEditTracks[k]] = true;
+    for (var m = 0; m < newFiles.length; m++) allFiles[newFiles[m]] = true;
+    plEditTracks = [];
+    for (var n = 0; n < tracks.length; n++) {
+      if (allFiles[tracks[n].file]) plEditTracks.push(tracks[n].file);
+    }
   } else {
     plEditTracks = plEditTracks.concat(newFiles);
   }
