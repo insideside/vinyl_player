@@ -1552,7 +1552,7 @@ body {
 
 /* ── iPod Classic ── */
 .ipod-scene { display: none; }
-.player-mode-ipod .ipod-scene { display: flex; align-items: center; justify-content: center; }
+.player-mode-ipod .ipod-scene { display: flex; flex-direction: column; align-items: center; justify-content: center; }
 .player-mode-ipod .vinyl-scene { display: none; }
 .player-mode-ipod .track-info { display: none; }
 .player-mode-ipod .controls { display: none; }
@@ -1650,14 +1650,23 @@ body {
 }
 .ipod-light .ipod-wheel-label { color: rgba(50,50,60,0.45) !important; }
 
-/* Color toggle button */
-.ipod-color-toggle {
-  position: absolute; top: 4px; right: 4px; z-index: 10;
-  width: 14px; height: 14px; border-radius: 50%; border: 1.5px solid rgba(255,255,255,0.15);
-  cursor: pointer; transition: all 0.2s;
-  background: linear-gradient(135deg, #bbb 50%, #444 50%);
+/* Color picker dots under iPod */
+.ipod-colors {
+  display: flex; gap: 8px; margin-top: 14px; justify-content: center;
 }
-.ipod-color-toggle:hover { border-color: rgba(255,255,255,0.35); }
+.ipod-color-dot {
+  width: 16px; height: 16px; border-radius: 50%; cursor: pointer;
+  border: 2px solid transparent; transition: border-color 0.2s, transform 0.15s;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.4);
+}
+.ipod-color-dot:hover { transform: scale(1.15); }
+.ipod-color-dot.active { border-color: #e94560; }
+.ipod-dot-dark {
+  background: linear-gradient(135deg, #555, #3a3a3e);
+}
+.ipod-dot-light {
+  background: linear-gradient(135deg, #c8c8ce, #acacb4);
+}
 
 /* Screen */
 .ipod-screen {
@@ -2619,7 +2628,6 @@ body { overflow: hidden; touch-action: none; position: fixed; width: 100%; heigh
     </div>
     <div class="ipod-scene">
       <div class="ipod-body" id="ipodBody">
-        <div class="ipod-color-toggle" id="ipodColorToggle" onclick="toggleIpodColor()"></div>
         <div class="ipod-screen">
           <div class="ipod-np-wrap" id="ipodNpWrap">
             <div class="ipod-np">
@@ -2650,6 +2658,10 @@ body { overflow: hidden; touch-action: none; position: fixed; width: 100%; heigh
           <span class="ipod-wheel-label ipod-wl-play">&#9654;&#10073;&#10073;</span>
           <div class="ipod-wheel-center" id="ipodCenter"></div>
         </div>
+      </div>
+      <div class="ipod-colors">
+        <div class="ipod-color-dot ipod-dot-dark active" id="ipodDotDark" onclick="setIpodColor('dark')"></div>
+        <div class="ipod-color-dot ipod-dot-light" id="ipodDotLight" onclick="setIpodColor('light')"></div>
       </div>
     </div>
     <div class="vinyl-scene">
@@ -3748,16 +3760,23 @@ function applyInertia() {
   });
 })();
 
-// ── iPod color toggle ──
-function toggleIpodColor() {
+// ── iPod color ──
+function setIpodColor(color) {
   var body = document.getElementById('ipodBody');
-  var isLight = body.classList.toggle('ipod-light');
-  localStorage.setItem('_vc_ipod_color', isLight ? 'light' : 'dark');
+  body.classList.toggle('ipod-light', color === 'light');
+  localStorage.setItem('_vc_ipod_color', color);
+  document.getElementById('ipodDotDark').classList.toggle('active', color === 'dark');
+  document.getElementById('ipodDotLight').classList.toggle('active', color === 'light');
 }
 (function() {
-  if (localStorage.getItem('_vc_ipod_color') === 'light') {
+  var c = localStorage.getItem('_vc_ipod_color') || 'dark';
+  if (c === 'light') {
     var b = document.getElementById('ipodBody');
     if (b) b.classList.add('ipod-light');
+    var dd = document.getElementById('ipodDotDark');
+    var dl = document.getElementById('ipodDotLight');
+    if (dd) dd.classList.remove('active');
+    if (dl) dl.classList.add('active');
   }
 })();
 var _ipodWheelMoved = false; // track if wheel was rotated during drag
