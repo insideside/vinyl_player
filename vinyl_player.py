@@ -1441,7 +1441,7 @@ self.addEventListener('fetch', function(e) {
   // Audio streams and covers — do NOT intercept, let browser handle directly.
   // Offline playback is handled client-side via IndexedDB blob URLs.
   // Intercepting audio breaks iOS PWA standalone mode (Range request issues).
-  if (url.pathname.startsWith('/api/stream/') || url.pathname.startsWith('/api/cover/')) {
+  if (url.pathname.startsWith('/api/stream/') || url.pathname.startsWith('/api/cover/') || url.pathname === '/reset') {
     return;
   }
 
@@ -4583,7 +4583,7 @@ function loadConfig() {
   if (!hadCache) showLoadingIndicator();
   fetch('/api/config').then(function(r){return r.json()}).then(function(cfg) {
     if (cfg.error === 'unauthorized') {
-      if ('caches' in window) caches.keys().then(function(n){n.forEach(function(k){caches.delete(k)})});
+      if ('caches' in window) caches.keys().then(function(n){n.filter(function(k){return k.startsWith('app-')}).forEach(function(k){caches.delete(k)})});
       window.location.reload();
       return;
     }
@@ -5766,10 +5766,10 @@ function changeMyPassword() {
 
 function doLogout() {
   fetch('/api/auth/logout', {method:'POST'}).then(function() {
-    // Clear SW cache so login page is fetched fresh (not cached app)
+    // Clear only app caches (preserve audio IndexedDB)
     if ('caches' in window) {
       caches.keys().then(function(names) {
-        return Promise.all(names.map(function(n) { return caches.delete(n); }));
+        return Promise.all(names.filter(function(n){return n.startsWith('app-')}).map(function(n) { return caches.delete(n); }));
       }).then(function() { window.location.reload(); });
     } else {
       window.location.reload();
@@ -7165,11 +7165,12 @@ function warmAppCache() {
   function checkUpdate() {
     fetch('/api/version').then(function(r){return r.json()}).then(function(d) {
       if (d.version && d.version !== curVersion) {
-        // Server has newer version — clear caches and reload
+        // Server has newer version — clear only SW app caches (NOT IndexedDB audio)
         showToast('Обновление приложения...');
         if ('caches' in window) {
           caches.keys().then(function(names) {
-            return Promise.all(names.map(function(n){return caches.delete(n)}));
+            // Only delete app-* caches, preserve everything else
+            return Promise.all(names.filter(function(n){ return n.startsWith('app-'); }).map(function(n){return caches.delete(n)}));
           }).then(function() {
             if (navigator.serviceWorker) {
               navigator.serviceWorker.getRegistrations().then(function(regs) {
