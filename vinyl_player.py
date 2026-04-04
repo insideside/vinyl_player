@@ -2499,7 +2499,6 @@ body { overflow: hidden; touch-action: none; position: fixed; width: 100%; heigh
   .ipod-body { width: min(72vw, 50vh); min-width: 200px; }
   .cassette-body { --cw: min(90vw, 50vh); min-width: 260px; }
   .player-mode-toggle { position: fixed; top: auto; bottom: 0; left: 16px; right: auto; z-index: 51; margin-bottom: 10px; margin-bottom: max(10px, env(safe-area-inset-bottom)); }
-  .player-mode-btn[data-tip]::after { display: none !important; }
 }
 /* Force portrait on narrow screens */
 @media (max-width: 768px) and (orientation: landscape) {
@@ -6888,11 +6887,17 @@ function scrollTracklistTop() {
     tip.classList.add('show');
     var r = el.getBoundingClientRect();
     var tw = tip.offsetWidth;
+    var th = tip.offsetHeight;
     var left = r.left + r.width / 2 - tw / 2;
     if (left < 4) left = 4;
     if (left + tw > window.innerWidth - 4) left = window.innerWidth - tw - 4;
     tip.style.left = left + 'px';
-    tip.style.top = (r.bottom + 6) + 'px';
+    // Show above if near bottom of screen
+    if (r.bottom + th + 10 > window.innerHeight) {
+      tip.style.top = (r.top - th - 6) + 'px';
+    } else {
+      tip.style.top = (r.bottom + 6) + 'px';
+    }
   });
   document.addEventListener('mouseout', function(e) {
     if (e.target.closest('[data-tip]')) tip.classList.remove('show');
