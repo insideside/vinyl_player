@@ -1560,16 +1560,16 @@ body {
   --cw: min(54vw, 46vh);
   width: var(--cw); aspect-ratio: 1.6;
   min-width: 300px;
-  background: linear-gradient(180deg, #444 0%, #383838 3%, #333 10%, #2e2e2e 50%, #2a2a2a 90%, #252525 97%, #333 100%);
+  background: linear-gradient(180deg, #5a5550 0%, #504b46 3%, #4a4540 10%, #454039 50%, #403b35 90%, #3a352f 97%, #4a4540 100%);
   border-radius: 10px 10px 5px 5px;
   position: relative;
   box-shadow:
-    0 14px 50px rgba(0,0,0,0.7),
-    0 2px 4px rgba(0,0,0,0.4),
-    inset 0 1px 0 rgba(255,255,255,0.1),
-    inset 0 -1px 0 rgba(0,0,0,0.4),
-    inset 1px 0 0 rgba(255,255,255,0.04),
-    inset -1px 0 0 rgba(255,255,255,0.04);
+    0 14px 50px rgba(0,0,0,0.5),
+    0 2px 4px rgba(0,0,0,0.3),
+    inset 0 1px 0 rgba(255,255,255,0.08),
+    inset 0 -1px 0 rgba(0,0,0,0.2),
+    inset 1px 0 0 rgba(255,255,255,0.03),
+    inset -1px 0 0 rgba(255,255,255,0.03);
 }
 /* Horizontal stripes across body */
 .cassette-stripes {
@@ -1588,9 +1588,9 @@ body {
 /* Label — vintage paper with warm tone */
 .cassette-label {
   position: absolute; top: 4%; left: 5%; right: 5%; bottom: 18%;
-  background: linear-gradient(180deg, #d0c9bb 0%, #ccc5b6 30%, #c5bfb0 70%, #c0b9aa 100%);
+  background: linear-gradient(180deg, #b5ae9e 0%, #b0a999 30%, #aaa393 70%, #a59e8e 100%);
   border-radius: 3px;
-  box-shadow: 0 1px 4px rgba(0,0,0,0.4), inset 0 0 0 1px rgba(0,0,0,0.06);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.25), inset 0 0 0 1px rgba(0,0,0,0.04);
   display: flex; flex-direction: column; align-items: stretch; justify-content: flex-start;
   padding: 8px 14px; overflow: hidden;
 }
@@ -1614,7 +1614,7 @@ body {
 .cassette-cover-wrap {
   width: clamp(26px, 5vmin, 38px); height: clamp(26px, 5vmin, 38px);
   flex-shrink: 0; position: relative; border-radius: 3px; overflow: hidden;
-  background: linear-gradient(135deg, #ccc5b7, #b8b0a2);
+  background: linear-gradient(135deg, #9e9888, #8f8978);
   box-shadow: 0 1px 3px rgba(0,0,0,0.2);
 }
 .cassette-cover {
@@ -1632,13 +1632,13 @@ body {
 }
 .cassette-label-title {
   font-family: -apple-system, 'Helvetica Neue', Arial, sans-serif;
-  font-size: clamp(11px, 3vmin, 15px); font-weight: 600; color: #1a1a1a;
+  font-size: clamp(11px, 3vmin, 15px); font-weight: 600; color: #2a2520;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   line-height: 1.3;
 }
 .cassette-label-artist {
   font-family: -apple-system, 'Helvetica Neue', Arial, sans-serif;
-  font-size: clamp(8px, 1.8vmin, 11px); font-weight: 500; color: #777;
+  font-size: clamp(8px, 1.8vmin, 11px); font-weight: 500; color: #5a5548;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   line-height: 1.3; letter-spacing: 0.3px; text-transform: uppercase; margin-top: 1px;
 }
@@ -1655,12 +1655,12 @@ body {
 /* Tape window */
 .cassette-window {
   position: absolute; top: 38%; left: 14%; right: 14%; bottom: 18%;
-  background: radial-gradient(ellipse at center, #151515, #0a0a0a);
+  background: radial-gradient(ellipse at center, #1e1c18, #141210);
   border-radius: 5px;
   box-shadow:
-    inset 0 2px 8px rgba(0,0,0,0.9),
-    inset 0 -1px 3px rgba(0,0,0,0.5),
-    0 1px 0 rgba(255,255,255,0.05);
+    inset 0 2px 6px rgba(0,0,0,0.7),
+    inset 0 -1px 2px rgba(0,0,0,0.3),
+    0 1px 0 rgba(255,255,255,0.04);
   overflow: visible;
   z-index: 2;
 }
@@ -1669,11 +1669,11 @@ body {
 .cassette-reel {
   position: absolute; top: 50%;
   border-radius: 50%;
-  background: radial-gradient(circle at 45% 40%, #999 0%, #888 15%, #777 30%, #666 50%, #555 75%, #4a4a4a 100%);
+  background: radial-gradient(circle at 45% 40%, #8a8578 0%, #7d786c 15%, #706b60 30%, #635e54 50%, #565148 75%, #4a4640 100%);
   box-shadow:
-    0 0 0 1px rgba(0,0,0,0.6),
-    inset 0 1px 3px rgba(255,255,255,0.08),
-    inset 0 -1px 3px rgba(0,0,0,0.4);
+    0 0 0 1px rgba(0,0,0,0.4),
+    inset 0 1px 2px rgba(255,255,255,0.06),
+    inset 0 -1px 2px rgba(0,0,0,0.3);
   transform: translate(-50%, -50%);
   z-index: 2;
 }
@@ -1725,8 +1725,8 @@ body {
 /* Corner screws */
 .cassette-screw {
   position: absolute; width: 12px; height: 12px; border-radius: 50%;
-  background: radial-gradient(circle at 35% 35%, #777, #444, #333);
-  box-shadow: inset 0 1px 1px rgba(255,255,255,0.25), 0 1px 3px rgba(0,0,0,0.6);
+  background: radial-gradient(circle at 35% 35%, #6b665c, #4a4640, #3a3530);
+  box-shadow: inset 0 1px 1px rgba(255,255,255,0.12), 0 1px 2px rgba(0,0,0,0.4);
   z-index: 3;
 }
 .cassette-screw::before {
@@ -1745,7 +1745,7 @@ body {
 /* Bottom edge strip */
 .cassette-bottom {
   position: absolute; bottom: 0; left: 5%; right: 5%; height: 13%;
-  background: linear-gradient(180deg, #353535, #2a2a2a);
+  background: linear-gradient(180deg, #4a4540, #403b35);
   border-radius: 0 0 3px 3px;
   box-shadow: inset 0 1px 0 rgba(255,255,255,0.03);
 }
