@@ -3718,7 +3718,7 @@ function ipodClick() {
     osc.frequency.setValueAtTime(800, t);
     osc.frequency.exponentialRampToValueAtTime(200, t + 0.008);
     var gain = ctx.createGain();
-    gain.gain.setValueAtTime(0.03, t);
+    gain.gain.setValueAtTime(0.015, t);
     gain.gain.exponentialRampToValueAtTime(0.001, t + 0.015);
     // Low-pass to soften
     var lp = ctx.createBiquadFilter();
