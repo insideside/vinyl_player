@@ -7159,6 +7159,34 @@ function warmAppCache() {
   });
 }
 
+// ── Auto-update check ──
+(function() {
+  var curVersion = 'APP_BUILD_HASH';
+  function checkUpdate() {
+    fetch('/api/version').then(function(r){return r.json()}).then(function(d) {
+      if (d.version && d.version !== curVersion) {
+        // Server has newer version — clear caches and reload
+        showToast('Обновление приложения...');
+        if ('caches' in window) {
+          caches.keys().then(function(names) {
+            return Promise.all(names.map(function(n){return caches.delete(n)}));
+          }).then(function() {
+            if (navigator.serviceWorker) {
+              navigator.serviceWorker.getRegistrations().then(function(regs) {
+                regs.forEach(function(r){r.unregister()});
+                setTimeout(function(){ window.location.reload(); }, 500);
+              });
+            } else { window.location.reload(); }
+          });
+        } else { window.location.reload(); }
+      }
+    }).catch(function(){});
+  }
+  // Check on load (after 5s) and every 60s
+  setTimeout(checkUpdate, 5000);
+  setInterval(checkUpdate, 60000);
+})();
+
 initBgCanvas();
 // Hide volume slider on iOS (audio.volume is read-only)
 if(_isIOS){var vw=document.querySelector('.volume-wrap input[type=range]');if(vw)vw.style.display='none';var vs=document.querySelector('.volume-wrap span');if(vs)vs.style.display='none';}
@@ -7329,6 +7357,12 @@ class Handler(BaseHTTPRequestHandler):
             build_hash = hashlib.md5(HTML_PAGE.encode()).hexdigest()[:8]
             sw_code = SW_JS.replace("BUILD_HASH", build_hash)
             self._respond(200, "application/javascript", sw_code.encode("utf-8"))
+            return
+
+        # Version check — no auth needed, used for force-update
+        if path == "/api/version":
+            build_hash = hashlib.md5(HTML_PAGE.encode()).hexdigest()[:8]
+            self._respond_json({"version": build_hash})
             return
 
         if not user:
