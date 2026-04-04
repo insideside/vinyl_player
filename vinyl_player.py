@@ -1529,6 +1529,19 @@ body {
 .sidebar-collapsed .playlist-side { transform: translateX(100%); }
 .sidebar-collapsed .vinyl-side { right: 0; }
 
+/* ── Player mode toggle ── */
+.player-mode-toggle {
+  position: absolute; top: 16px; right: 16px; z-index: 5;
+  display: flex; gap: 4px; background: rgba(255,255,255,0.06); border-radius: 8px; padding: 3px;
+}
+.player-mode-btn {
+  width: 32px; height: 32px; border: none; border-radius: 6px; background: none;
+  color: rgba(255,255,255,0.3); cursor: pointer; display: flex; align-items: center; justify-content: center;
+  transition: all 0.2s;
+}
+.player-mode-btn.active { background: rgba(255,255,255,0.1); color: #e94560; }
+.player-mode-btn:hover { color: rgba(255,255,255,0.6); }
+
 /* ── Vinyl Scene ── */
 .vinyl-scene {
   position: relative;
@@ -1536,6 +1549,119 @@ body {
   height: min(55vw, 55vh);
   container-type: inline-size;
 }
+
+/* ── Cassette ── */
+.cassette-scene { display: none; }
+.player-mode-cassette .cassette-scene { display: block; }
+.player-mode-cassette .vinyl-scene { display: none; }
+.player-mode-cassette .track-info { display: none; }
+
+.cassette-body {
+  width: min(52vw, 52vh); height: min(34vw, 34vh);
+  min-width: 280px; min-height: 182px;
+  background: linear-gradient(180deg, #3a3a3a 0%, #2a2a2a 8%, #333 50%, #2a2a2a 92%, #3a3a3a 100%);
+  border-radius: 12px 12px 6px 6px;
+  position: relative;
+  box-shadow: 0 8px 40px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.08), inset 0 -1px 0 rgba(0,0,0,0.3);
+  border: 1px solid rgba(255,255,255,0.06);
+}
+.cassette-body::before {
+  content: ''; position: absolute; top: 4px; left: 50%; transform: translateX(-50%);
+  width: 60%; height: 3px; background: rgba(255,255,255,0.04); border-radius: 2px;
+}
+
+.cassette-label {
+  position: absolute; top: 10%; left: 8%; right: 8%; height: 48%;
+  background: linear-gradient(135deg, #e8e0d4 0%, #f5efe6 30%, #ebe4d8 100%);
+  border-radius: 6px 6px 3px 3px;
+  box-shadow: inset 0 1px 3px rgba(0,0,0,0.1), 0 1px 0 rgba(255,255,255,0.05);
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  padding: 8px 12px; overflow: hidden;
+}
+.cassette-label-lines {
+  position: absolute; top: 0; left: 0; right: 0; bottom: 0;
+  background: repeating-linear-gradient(0deg, transparent, transparent 7px, rgba(180,170,155,0.2) 7px, rgba(180,170,155,0.2) 8px);
+  pointer-events: none;
+}
+.cassette-label-title {
+  font-size: 14px; font-weight: 700; color: #2a2a2a; text-align: center;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  max-width: 100%; position: relative; z-index: 1; line-height: 1.3;
+}
+.cassette-label-artist {
+  font-size: 11px; font-weight: 500; color: #666; text-align: center;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  max-width: 100%; position: relative; z-index: 1; line-height: 1.3;
+}
+.cassette-label-brand {
+  position: absolute; top: 5px; right: 8px;
+  font-size: 7px; font-weight: 700; color: rgba(0,0,0,0.15);
+  letter-spacing: 1px; text-transform: uppercase;
+}
+
+.cassette-window {
+  position: absolute; top: 60%; left: 50%; transform: translateX(-50%);
+  width: 60%; height: 28%;
+  background: linear-gradient(180deg, #1a1a1a 0%, #111 100%);
+  border-radius: 4px;
+  box-shadow: inset 0 2px 6px rgba(0,0,0,0.6), 0 1px 0 rgba(255,255,255,0.05);
+  display: flex; align-items: center; justify-content: center; gap: 0;
+  overflow: hidden; padding: 6px 10px;
+}
+
+.cassette-reel {
+  width: 36%; aspect-ratio: 1; border-radius: 50%;
+  background: radial-gradient(circle, #666 0%, #555 30%, #444 60%, #333 100%);
+  box-shadow: inset 0 0 4px rgba(0,0,0,0.5), 0 0 3px rgba(0,0,0,0.3);
+  position: relative; flex-shrink: 0;
+}
+.cassette-reel::before {
+  content: ''; position: absolute; inset: 25%; border-radius: 50%;
+  background: #222;
+  box-shadow: inset 0 0 3px rgba(0,0,0,0.8);
+}
+.cassette-reel::after {
+  content: ''; position: absolute; inset: 15%; border-radius: 50%;
+  border: 1px solid rgba(255,255,255,0.08);
+}
+.cassette-reel-spokes {
+  position: absolute; inset: 20%; border-radius: 50%;
+}
+.cassette-reel-spokes::before, .cassette-reel-spokes::after {
+  content: ''; position: absolute; background: rgba(255,255,255,0.08);
+}
+.cassette-reel-spokes::before {
+  top: 50%; left: 15%; right: 15%; height: 1px; margin-top: -0.5px;
+}
+.cassette-reel-spokes::after {
+  left: 50%; top: 15%; bottom: 15%; width: 1px; margin-left: -0.5px;
+}
+
+.cassette-tape {
+  flex: 1; height: 2px; min-width: 10px;
+  background: rgba(139,90,43,0.6);
+  position: relative; margin: 0 -2px;
+}
+.cassette-tape::before, .cassette-tape::after {
+  content: ''; position: absolute; top: -1px; width: 4px; height: 4px;
+  background: rgba(139,90,43,0.4); border-radius: 50%;
+}
+.cassette-tape::before { left: -1px; }
+.cassette-tape::after { right: -1px; }
+
+.cassette-screws {
+  position: absolute; width: 8px; height: 8px; border-radius: 50%;
+  background: radial-gradient(circle, #666, #444);
+  box-shadow: inset 0 1px 1px rgba(255,255,255,0.15);
+}
+.cassette-screws::after {
+  content: '+'; position: absolute; inset: 0; display: flex; align-items: center;
+  justify-content: center; font-size: 6px; color: rgba(0,0,0,0.4); font-weight: 700;
+}
+.cassette-screw-tl { top: 6px; left: 6px; }
+.cassette-screw-tr { top: 6px; right: 6px; }
+.cassette-screw-bl { bottom: 6px; left: 6px; }
+.cassette-screw-br { bottom: 6px; right: 6px; }
 
 /* ── Vinyl Record ── */
 .vinyl-record {
@@ -2077,6 +2203,29 @@ body { overflow: hidden; touch-action: none; position: fixed; width: 100%; heigh
   <!-- Left: Vinyl -->
   <div class="vinyl-side">
     <button onclick="showAppInfo()" style="position:absolute;top:16px;left:16px;z-index:5;width:36px;height:36px;border:none;border-radius:50%;background:rgba(255,255,255,0.06);color:rgba(255,255,255,0.2);cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:18px;font-style:italic;font-weight:700;transition:color 0.15s" onmouseover="this.style.color='rgba(255,255,255,0.5)'" onmouseout="this.style.color='rgba(255,255,255,0.2)'">i</button>
+    <div class="player-mode-toggle">
+      <button class="player-mode-btn active" id="modeVinyl" onclick="setPlayerMode('vinyl')" data-tip="Пластинка"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="1.5"/><circle cx="12" cy="12" r="3" fill="currentColor"/></svg></button>
+      <button class="player-mode-btn" id="modeCassette" onclick="setPlayerMode('cassette')" data-tip="Кассета"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><rect x="2" y="5" width="20" height="14" rx="2" fill="none" stroke="currentColor" stroke-width="1.5"/><circle cx="8.5" cy="13" r="2.5" fill="none" stroke="currentColor" stroke-width="1"/><circle cx="15.5" cy="13" r="2.5" fill="none" stroke="currentColor" stroke-width="1"/><line x1="11" y1="13" x2="13" y2="13" stroke="currentColor" stroke-width="1"/><rect x="6" y="6.5" width="12" height="4" rx="1" fill="none" stroke="currentColor" stroke-width="0.8"/></svg></button>
+    </div>
+    <div class="cassette-scene">
+      <div class="cassette-body">
+        <div class="cassette-screws cassette-screw-tl"></div>
+        <div class="cassette-screws cassette-screw-tr"></div>
+        <div class="cassette-screws cassette-screw-bl"></div>
+        <div class="cassette-screws cassette-screw-br"></div>
+        <div class="cassette-label">
+          <div class="cassette-label-lines"></div>
+          <div class="cassette-label-brand">insideside</div>
+          <div class="cassette-label-title" id="cassetteTitle"></div>
+          <div class="cassette-label-artist" id="cassetteArtist"></div>
+        </div>
+        <div class="cassette-window">
+          <div class="cassette-reel" id="cassetteReelL"><div class="cassette-reel-spokes"></div></div>
+          <div class="cassette-tape"></div>
+          <div class="cassette-reel" id="cassetteReelR"><div class="cassette-reel-spokes"></div></div>
+        </div>
+      </div>
+    </div>
     <div class="vinyl-scene">
       <div class="tonearm-pivot">
         <div class="tonearm-base"></div>
@@ -2687,6 +2836,30 @@ document.title=_n;
   var ti=document.getElementById('trackTitle');if(ti&&ti.dataset.idle)ti.textContent=_n;
 })();
 
+// ── Player mode (vinyl / cassette) ──
+var _playerMode = localStorage.getItem('_vc_player_mode') || 'vinyl';
+function setPlayerMode(mode) {
+  _playerMode = mode;
+  localStorage.setItem('_vc_player_mode', mode);
+  document.getElementById('modeVinyl').classList.toggle('active', mode === 'vinyl');
+  document.getElementById('modeCassette').classList.toggle('active', mode === 'cassette');
+  var vs = document.querySelector('.vinyl-side');
+  vs.classList.toggle('player-mode-cassette', mode === 'cassette');
+  // Sync cassette label with current track
+  if (mode === 'cassette' && currentIdx >= 0 && currentIdx < tracks.length) {
+    document.getElementById('cassetteTitle').textContent = tracks[currentIdx].title;
+    document.getElementById('cassetteArtist').textContent = tracks[currentIdx].artist;
+  }
+}
+// Init mode on load
+(function() {
+  if (_playerMode !== 'vinyl') {
+    document.getElementById('modeVinyl').classList.remove('active');
+    document.getElementById('modeCassette').classList.add('active');
+    document.querySelector('.vinyl-side').classList.add('player-mode-cassette');
+  }
+})();
+
 var tracks = [];
 var filteredTracks = null; // null = show all
 var albums = [];
@@ -2823,6 +2996,24 @@ function animationLoop(ts) {
   if (!isDragging) {
     currentArmAngle += (targetArm - currentArmAngle) * 0.12;
     tonearmEl.style.transform = 'rotate(' + currentArmAngle + 'deg)';
+  }
+
+  // Cassette reel animation
+  if (_playerMode === 'cassette') {
+    var reelL = document.getElementById('cassetteReelL');
+    var reelR = document.getElementById('cassetteReelR');
+    if (reelL && reelR) {
+      // Left reel (supply) spins slower as tape unwinds, right (takeup) spins faster
+      var tPct = (audio.duration && !isNaN(audio.duration)) ? audio.currentTime / audio.duration : 0;
+      var reelSpeedL = isPlaying ? TARGET_SPEED * (1.0 - tPct * 0.5) : 0;
+      var reelSpeedR = isPlaying ? TARGET_SPEED * (0.5 + tPct * 0.5) : 0;
+      if (!reelL._angle) reelL._angle = 0;
+      if (!reelR._angle) reelR._angle = 0;
+      reelL._angle += reelSpeedL;
+      reelR._angle += reelSpeedR;
+      reelL.style.transform = 'rotate(' + (reelL._angle % 360) + 'deg)';
+      reelR.style.transform = 'rotate(' + (reelR._angle % 360) + 'deg)';
+    }
   }
 
   // Progress bar & time
@@ -3219,6 +3410,9 @@ function selectTrack(i, autoplay) {
     artistEl.textContent = t.artist;
     titleEl.style.opacity = '1';
     artistEl.style.opacity = '1';
+    // Cassette label
+    document.getElementById('cassetteTitle').textContent = t.title;
+    document.getElementById('cassetteArtist').textContent = t.artist;
   }, 150);
 
   var img = document.getElementById('vinylCover');
