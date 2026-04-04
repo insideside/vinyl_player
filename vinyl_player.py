@@ -1585,14 +1585,14 @@ body {
     );
 }
 
-/* Label — vintage paper with warm tone */
+/* Label — horizontal strip at top only */
 .cassette-label {
-  position: absolute; top: 4%; left: 5%; right: 5%; bottom: 18%;
+  position: absolute; top: 4%; left: 5%; right: 5%; height: 28%;
   background: linear-gradient(180deg, #b5ae9e 0%, #b0a999 30%, #aaa393 70%, #a59e8e 100%);
   border-radius: 3px;
   box-shadow: 0 1px 3px rgba(0,0,0,0.25), inset 0 0 0 1px rgba(0,0,0,0.04);
-  display: flex; flex-direction: column; align-items: stretch; justify-content: flex-start;
-  padding: 8px 14px; overflow: hidden;
+  display: flex; flex-direction: column; align-items: stretch; justify-content: center;
+  padding: 4px 14px; overflow: hidden;
 }
 /* Faint ruled lines */
 .cassette-label::before {
@@ -1654,7 +1654,7 @@ body {
 
 /* Tape window */
 .cassette-window {
-  position: absolute; top: 38%; left: 14%; right: 14%; bottom: 18%;
+  position: absolute; top: 37%; left: 16%; right: 16%; bottom: 18%;
   background: radial-gradient(ellipse at center, #1e1c18, #141210);
   border-radius: 5px;
   box-shadow:
@@ -1741,6 +1741,15 @@ body {
 .cs-tr { top: 6px; right: 6px; }
 .cs-bl { bottom: 6px; left: 6px; }
 .cs-br { bottom: 6px; right: 6px; }
+
+/* Dark panel below label (around tape window) */
+.cassette-dark-panel {
+  position: absolute; top: 34%; left: 5%; right: 5%; bottom: 15%;
+  background: linear-gradient(180deg, #1a1816, #151310, #1a1816);
+  border-radius: 2px;
+  box-shadow: inset 0 1px 4px rgba(0,0,0,0.5);
+  z-index: 1;
+}
 
 /* Bottom edge strip */
 .cassette-bottom {
@@ -2308,6 +2317,7 @@ body { overflow: hidden; touch-action: none; position: fixed; width: 100%; heigh
         <div class="cassette-screw cs-tr"></div>
         <div class="cassette-screw cs-bl"></div>
         <div class="cassette-screw cs-br"></div>
+        <div class="cassette-dark-panel"></div>
         <div class="cassette-stripes"></div>
         <div class="cassette-label">
           <div class="cassette-label-side">A</div>
