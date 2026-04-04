@@ -3272,6 +3272,14 @@ function setPlayerMode(mode) {
   var vs = document.querySelector('.vinyl-side');
   vs.classList.remove('player-mode-cassette', 'player-mode-ipod');
   if (mode !== 'vinyl') vs.classList.add('player-mode-' + mode);
+  // Update mobile toggle icon to match current mode
+  var modeIcons = {
+    vinyl: '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="1.5"/><circle cx="12" cy="12" r="4" fill="currentColor"/></svg>',
+    cassette: '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><rect x="2" y="5" width="20" height="14" rx="2" fill="none" stroke="currentColor" stroke-width="1.5"/><circle cx="9" cy="13" r="2.5" fill="none" stroke="currentColor" stroke-width="1"/><circle cx="15" cy="13" r="2.5" fill="none" stroke="currentColor" stroke-width="1"/></svg>',
+    ipod: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="5" y="1" width="14" height="22" rx="3"/><rect x="7" y="3" width="10" height="8" rx="1"/><circle cx="12" cy="17" r="3.5"/><circle cx="12" cy="17" r="1.5"/></svg>'
+  };
+  var mb = document.getElementById('btnVinyl');
+  if (mb) mb.innerHTML = modeIcons[mode] || modeIcons.vinyl;
   // Sync alt player with current track
   if (currentIdx >= 0 && currentIdx < tracks.length) {
     var t = tracks[currentIdx];
@@ -3334,6 +3342,8 @@ function _ipodRenderList() {
     if (_playerMode === 'cassette') document.getElementById('modeCassette').classList.add('active');
     if (_playerMode === 'ipod') document.getElementById('modeIpod').classList.add('active');
     document.querySelector('.vinyl-side').classList.add('player-mode-' + _playerMode);
+    // Update mobile toggle icon
+    setPlayerMode(_playerMode);
   }
 })();
 
