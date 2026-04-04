@@ -1577,7 +1577,7 @@ body {
   pointer-events: none; overflow: hidden;
 }
 .cassette-stripes::before {
-  content: ''; position: absolute; left: 0; right: 0; top: 40%; height: 20%;
+  content: ''; position: absolute; left: 0; right: 0; top: 28%; height: 12%;
   background:
     repeating-linear-gradient(180deg,
       transparent, transparent 3px,
@@ -1587,32 +1587,32 @@ body {
 
 /* Label — vintage paper with warm tone */
 .cassette-label {
-  position: absolute; top: 4%; left: 5%; right: 5%; height: 38%;
-  background: linear-gradient(180deg, #ece6d9 0%, #e8e1d3 40%, #e3dccf 100%);
+  position: absolute; top: 4%; left: 5%; right: 5%; height: 26%;
+  background: linear-gradient(180deg, #c5bfb2 0%, #ccc5b6 40%, #c0b9aa 100%);
   border-radius: 3px;
   box-shadow: 0 1px 4px rgba(0,0,0,0.4), inset 0 0 0 1px rgba(0,0,0,0.06);
   display: flex; flex-direction: column; align-items: stretch; justify-content: center;
-  padding: 8px 14px; overflow: hidden;
+  padding: 4px 14px; overflow: hidden;
 }
 /* Faint ruled lines */
 .cassette-label::before {
   content: ''; position: absolute; inset: 0;
-  background: repeating-linear-gradient(0deg, transparent, transparent 8px, rgba(180,170,155,0.15) 8px, rgba(180,170,155,0.15) 9px);
+  background: repeating-linear-gradient(0deg, transparent, transparent 8px, rgba(0,0,0,0.04) 8px, rgba(0,0,0,0.04) 9px);
   pointer-events: none;
 }
-/* Accent stripe — top edge of label */
+/* Subtle top edge line */
 .cassette-label::after {
-  content: ''; position: absolute; top: 0; left: 0; right: 0; height: 5px;
-  background: linear-gradient(90deg, #e94560, #d63a55);
+  content: ''; position: absolute; top: 0; left: 0; right: 0; height: 2px;
+  background: rgba(0,0,0,0.08);
   border-radius: 3px 3px 0 0;
 }
 .cassette-label-content {
   display: flex; align-items: center; gap: 10px;
   position: relative; z-index: 1; width: 100%;
-  margin-top: 4px; overflow: hidden;
+  overflow: hidden;
 }
 .cassette-cover-wrap {
-  width: clamp(32px, 7vmin, 48px); height: clamp(32px, 7vmin, 48px);
+  width: clamp(26px, 5vmin, 38px); height: clamp(26px, 5vmin, 38px);
   flex-shrink: 0; position: relative; border-radius: 3px; overflow: hidden;
   background: linear-gradient(135deg, #ccc5b7, #b8b0a2);
   box-shadow: 0 1px 3px rgba(0,0,0,0.2);
@@ -1632,13 +1632,14 @@ body {
 }
 .cassette-label-title {
   font-family: -apple-system, 'Helvetica Neue', Arial, sans-serif;
-  font-size: clamp(12px, 3.5vmin, 17px); font-weight: 700; color: #222;
+  font-size: clamp(11px, 3vmin, 15px); font-weight: 500; color: #1a1a1a;
+  font-style: italic;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   line-height: 1.3;
 }
 .cassette-label-artist {
   font-family: -apple-system, 'Helvetica Neue', Arial, sans-serif;
-  font-size: clamp(9px, 2.2vmin, 12px); font-weight: 500; color: #888;
+  font-size: clamp(8px, 1.8vmin, 11px); font-weight: 500; color: #777;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   line-height: 1.3; letter-spacing: 0.3px; text-transform: uppercase; margin-top: 1px;
 }
@@ -1654,7 +1655,7 @@ body {
 
 /* Tape window */
 .cassette-window {
-  position: absolute; top: 46%; left: 14%; right: 14%; bottom: 16%;
+  position: absolute; top: 34%; left: 14%; right: 14%; bottom: 16%;
   background: radial-gradient(ellipse at center, #151515, #0a0a0a);
   border-radius: 5px;
   box-shadow:
