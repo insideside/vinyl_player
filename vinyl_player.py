@@ -7324,16 +7324,16 @@ class Handler(BaseHTTPRequestHandler):
                 for x in range(W):
                     dx, dy = x - cx, y - cy
                     d = (dx*dx + dy*dy) ** 0.5
-                    if d < 5:
-                        row.extend([20, 20, 30])     # center hole
-                    elif d < 26:
+                    if d < 6:
+                        row.extend([17, 17, 22])     # center hole
+                    elif d < 30:
                         row.extend([233, 69, 96])    # red label
-                    elif d < 28:
-                        row.extend([45, 45, 45])     # label edge
-                    elif d < 70:
-                        g = int(22 + (d - 28) * 0.25) if int(d) % 5 < 2 else int(18 + (d - 28) * 0.2)
+                    elif d < 33:
+                        row.extend([40, 40, 40])     # label edge
+                    elif d < 85:
+                        g = int(22 + (d - 33) * 0.15) if int(d) % 4 < 2 else int(17 + (d - 33) * 0.12)
                         row.extend([g, g, g])        # grooves
-                    elif d < 72:
+                    elif d < 88:
                         row.extend([35, 35, 35])     # outer edge
                     else:
                         row.extend([17, 17, 22])     # background
