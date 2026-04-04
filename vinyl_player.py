@@ -1552,116 +1552,179 @@ body {
 
 /* ── Cassette ── */
 .cassette-scene { display: none; }
-.player-mode-cassette .cassette-scene { display: block; }
+.player-mode-cassette .cassette-scene { display: flex; align-items: center; justify-content: center; }
 .player-mode-cassette .vinyl-scene { display: none; }
 .player-mode-cassette .track-info { display: none; }
 
 .cassette-body {
-  width: min(52vw, 52vh); height: min(34vw, 34vh);
-  min-width: 280px; min-height: 182px;
-  background: linear-gradient(180deg, #3a3a3a 0%, #2a2a2a 8%, #333 50%, #2a2a2a 92%, #3a3a3a 100%);
-  border-radius: 12px 12px 6px 6px;
+  width: min(58vw, 50vh); aspect-ratio: 1.58;
+  min-width: 300px;
+  background: #2c2c2c;
+  border-radius: 8px;
   position: relative;
-  box-shadow: 0 8px 40px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.08), inset 0 -1px 0 rgba(0,0,0,0.3);
-  border: 1px solid rgba(255,255,255,0.06);
+  box-shadow: 0 12px 50px rgba(0,0,0,0.6), inset 0 1px 0 rgba(255,255,255,0.06);
+  border: 2px solid #222;
 }
+/* Inner bezel */
 .cassette-body::before {
-  content: ''; position: absolute; top: 4px; left: 50%; transform: translateX(-50%);
-  width: 60%; height: 3px; background: rgba(255,255,255,0.04); border-radius: 2px;
-}
-
-.cassette-label {
-  position: absolute; top: 10%; left: 8%; right: 8%; height: 48%;
-  background: linear-gradient(135deg, #e8e0d4 0%, #f5efe6 30%, #ebe4d8 100%);
-  border-radius: 6px 6px 3px 3px;
-  box-shadow: inset 0 1px 3px rgba(0,0,0,0.1), 0 1px 0 rgba(255,255,255,0.05);
-  display: flex; flex-direction: column; align-items: center; justify-content: center;
-  padding: 8px 12px; overflow: hidden;
-}
-.cassette-label-lines {
-  position: absolute; top: 0; left: 0; right: 0; bottom: 0;
-  background: repeating-linear-gradient(0deg, transparent, transparent 7px, rgba(180,170,155,0.2) 7px, rgba(180,170,155,0.2) 8px);
+  content: ''; position: absolute; inset: 3px; border-radius: 6px;
+  border: 1px solid rgba(255,255,255,0.04);
   pointer-events: none;
 }
+/* Decorative stripes across the middle */
+.cassette-stripes {
+  position: absolute; left: 0; right: 0; top: 38%; height: 24%;
+  background:
+    linear-gradient(180deg,
+      transparent 0%, rgba(80,80,80,0.3) 2%, rgba(80,80,80,0.3) 4%, transparent 6%,
+      transparent 20%, rgba(60,60,60,0.4) 22%, rgba(60,60,60,0.4) 24%, transparent 26%,
+      transparent 74%, rgba(60,60,60,0.4) 76%, rgba(60,60,60,0.4) 78%, transparent 80%,
+      transparent 94%, rgba(80,80,80,0.3) 96%, rgba(80,80,80,0.3) 98%, transparent 100%
+    );
+  pointer-events: none;
+}
+
+/* Label area — top portion, styled like vintage sticker */
+.cassette-label {
+  position: absolute; top: 5%; left: 6%; right: 6%; height: 36%;
+  background: linear-gradient(180deg, #d4cec2 0%, #e0d9cd 20%, #ddd6c8 80%, #ccc5b7 100%);
+  border-radius: 4px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.3), inset 0 1px 0 rgba(255,255,255,0.5);
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  padding: 6px 16px; overflow: hidden;
+}
+.cassette-label::before {
+  content: ''; position: absolute; inset: 0; border-radius: 4px;
+  background: repeating-linear-gradient(0deg, transparent, transparent 5px, rgba(170,160,140,0.12) 5px, rgba(170,160,140,0.12) 6px);
+  pointer-events: none;
+}
+/* Colored stripe on label */
+.cassette-label::after {
+  content: ''; position: absolute; top: 0; left: 0; right: 0; height: 6px;
+  background: linear-gradient(90deg, #e94560, #c23152);
+  border-radius: 4px 4px 0 0;
+}
 .cassette-label-title {
-  font-size: 14px; font-weight: 700; color: #2a2a2a; text-align: center;
+  font-family: 'Helvetica Neue', Arial, sans-serif;
+  font-size: clamp(11px, 2.2cqi, 16px); font-weight: 700; color: #2a2a2a; text-align: center;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-  max-width: 100%; position: relative; z-index: 1; line-height: 1.3;
+  max-width: 100%; position: relative; z-index: 1; line-height: 1.4;
+  margin-top: 4px;
 }
 .cassette-label-artist {
-  font-size: 11px; font-weight: 500; color: #666; text-align: center;
+  font-family: 'Helvetica Neue', Arial, sans-serif;
+  font-size: clamp(9px, 1.6cqi, 12px); font-weight: 500; color: #777; text-align: center;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   max-width: 100%; position: relative; z-index: 1; line-height: 1.3;
+  letter-spacing: 0.5px; text-transform: uppercase;
 }
 .cassette-label-brand {
-  position: absolute; top: 5px; right: 8px;
-  font-size: 7px; font-weight: 700; color: rgba(0,0,0,0.15);
-  letter-spacing: 1px; text-transform: uppercase;
+  position: absolute; bottom: 4px; right: 8px;
+  font-size: clamp(6px, 1cqi, 8px); font-weight: 600; color: rgba(0,0,0,0.12);
+  letter-spacing: 1.5px; text-transform: uppercase;
+  font-family: 'Helvetica Neue', Arial, sans-serif;
+}
+.cassette-label-side {
+  position: absolute; bottom: 4px; left: 8px;
+  font-size: clamp(6px, 1cqi, 8px); font-weight: 700; color: rgba(0,0,0,0.18);
+  font-family: 'Helvetica Neue', Arial, sans-serif;
 }
 
+/* Tape window — transparent view into reels and tape */
 .cassette-window {
-  position: absolute; top: 60%; left: 50%; transform: translateX(-50%);
-  width: 60%; height: 28%;
-  background: linear-gradient(180deg, #1a1a1a 0%, #111 100%);
-  border-radius: 4px;
-  box-shadow: inset 0 2px 6px rgba(0,0,0,0.6), 0 1px 0 rgba(255,255,255,0.05);
-  display: flex; align-items: center; justify-content: center; gap: 0;
-  overflow: hidden; padding: 6px 10px;
+  position: absolute; top: 48%; left: 18%; right: 18%; height: 32%;
+  background: #0a0a0a;
+  border-radius: 6px;
+  box-shadow: inset 0 2px 8px rgba(0,0,0,0.8), 0 1px 0 rgba(255,255,255,0.04);
+  overflow: hidden;
+  container-type: inline-size;
+}
+/* Window inner border */
+.cassette-window::before {
+  content: ''; position: absolute; inset: 0; border-radius: 6px;
+  border: 1px solid rgba(255,255,255,0.03);
+  pointer-events: none; z-index: 5;
 }
 
+/* Tape reels */
 .cassette-reel {
-  width: 36%; aspect-ratio: 1; border-radius: 50%;
-  background: radial-gradient(circle, #666 0%, #555 30%, #444 60%, #333 100%);
-  box-shadow: inset 0 0 4px rgba(0,0,0,0.5), 0 0 3px rgba(0,0,0,0.3);
-  position: relative; flex-shrink: 0;
+  position: absolute; top: 50%; width: 38cqi; height: 38cqi;
+  border-radius: 50%;
+  background: radial-gradient(circle, #888 0%, #777 20%, #666 40%, #555 70%, #444 100%);
+  box-shadow: 0 0 0 1px rgba(0,0,0,0.5), inset 0 0 6px rgba(0,0,0,0.4);
+  transform: translateY(-50%);
 }
+.cassette-reel-l { left: 8cqi; }
+.cassette-reel-r { right: 8cqi; }
+/* Hub (center pentagon-ish shape) */
 .cassette-reel::before {
-  content: ''; position: absolute; inset: 25%; border-radius: 50%;
-  background: #222;
-  box-shadow: inset 0 0 3px rgba(0,0,0,0.8);
+  content: ''; position: absolute; inset: 30%; border-radius: 50%;
+  background: #1a1a1a;
+  box-shadow: inset 0 0 4px rgba(0,0,0,0.9), 0 0 0 1px rgba(255,255,255,0.05);
 }
-.cassette-reel::after {
-  content: ''; position: absolute; inset: 15%; border-radius: 50%;
-  border: 1px solid rgba(255,255,255,0.08);
-}
+/* Spoke marks */
 .cassette-reel-spokes {
-  position: absolute; inset: 20%; border-radius: 50%;
-}
-.cassette-reel-spokes::before, .cassette-reel-spokes::after {
-  content: ''; position: absolute; background: rgba(255,255,255,0.08);
+  position: absolute; inset: 0; border-radius: 50%;
 }
 .cassette-reel-spokes::before {
-  top: 50%; left: 15%; right: 15%; height: 1px; margin-top: -0.5px;
+  content: ''; position: absolute;
+  top: 50%; left: 20%; right: 20%; height: 1px; margin-top: -0.5px;
+  background: rgba(0,0,0,0.3);
 }
 .cassette-reel-spokes::after {
-  left: 50%; top: 15%; bottom: 15%; width: 1px; margin-left: -0.5px;
+  content: ''; position: absolute;
+  left: 50%; top: 20%; bottom: 20%; width: 1px; margin-left: -0.5px;
+  background: rgba(0,0,0,0.3);
 }
 
-.cassette-tape {
-  flex: 1; height: 2px; min-width: 10px;
-  background: rgba(139,90,43,0.6);
-  position: relative; margin: 0 -2px;
+/* Tape wound around reels — dynamic radius via JS */
+.cassette-tape-spool {
+  position: absolute; top: 50%; border-radius: 50%;
+  background: radial-gradient(circle, transparent 40%, #3d2b1a 42%, #5a3d20 50%, #4a3018 58%, #3d2b1a 65%, #5a3d20 72%, #4a3018 80%, #3d2b1a 88%, #5a3d20 95%);
+  transform: translateY(-50%);
+  pointer-events: none;
 }
-.cassette-tape::before, .cassette-tape::after {
-  content: ''; position: absolute; top: -1px; width: 4px; height: 4px;
-  background: rgba(139,90,43,0.4); border-radius: 50%;
-}
-.cassette-tape::before { left: -1px; }
-.cassette-tape::after { right: -1px; }
+.cassette-tape-spool-l { left: 8cqi; }
+.cassette-tape-spool-r { right: 8cqi; }
 
-.cassette-screws {
-  position: absolute; width: 8px; height: 8px; border-radius: 50%;
-  background: radial-gradient(circle, #666, #444);
-  box-shadow: inset 0 1px 1px rgba(255,255,255,0.15);
+/* Tape path between reels (thin line along bottom) */
+.cassette-tape-path {
+  position: absolute; bottom: 18%; left: 14%; right: 14%; height: 2px;
+  background: #3d2b1a;
+  z-index: 2;
 }
-.cassette-screws::after {
-  content: '+'; position: absolute; inset: 0; display: flex; align-items: center;
-  justify-content: center; font-size: 6px; color: rgba(0,0,0,0.4); font-weight: 700;
+
+/* Corner screws */
+.cassette-screw {
+  position: absolute; width: 10px; height: 10px; border-radius: 50%;
+  background: radial-gradient(circle at 40% 40%, #666, #3a3a3a);
+  box-shadow: inset 0 1px 1px rgba(255,255,255,0.2), 0 1px 2px rgba(0,0,0,0.5);
+  z-index: 2;
 }
-.cassette-screw-tl { top: 6px; left: 6px; }
-.cassette-screw-tr { top: 6px; right: 6px; }
-.cassette-screw-bl { bottom: 6px; left: 6px; }
-.cassette-screw-br { bottom: 6px; right: 6px; }
+.cassette-screw::after {
+  content: ''; position: absolute; top: 50%; left: 25%; right: 25%; height: 1px;
+  background: rgba(0,0,0,0.5); margin-top: -0.5px;
+}
+.cs-tl { top: 5px; left: 5px; }
+.cs-tr { top: 5px; right: 5px; }
+.cs-bl { bottom: 5px; left: 5px; }
+.cs-br { bottom: 5px; right: 5px; }
+
+/* Bottom strip (textured) */
+.cassette-bottom {
+  position: absolute; bottom: 0; left: 6%; right: 6%; height: 12%;
+  background: linear-gradient(180deg, #3a3a3a 0%, #2a2a2a 100%);
+  border-radius: 0 0 4px 4px;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.04);
+}
+.cassette-bottom-holes {
+  position: absolute; bottom: 4px; left: 50%; transform: translateX(-50%);
+  display: flex; gap: 6px;
+}
+.cassette-bottom-hole {
+  width: 5px; height: 5px; border-radius: 50%;
+  background: #1a1a1a; box-shadow: inset 0 1px 1px rgba(0,0,0,0.8);
+}
 
 /* ── Vinyl Record ── */
 .vinyl-record {
@@ -2209,20 +2272,26 @@ body { overflow: hidden; touch-action: none; position: fixed; width: 100%; heigh
     </div>
     <div class="cassette-scene">
       <div class="cassette-body">
-        <div class="cassette-screws cassette-screw-tl"></div>
-        <div class="cassette-screws cassette-screw-tr"></div>
-        <div class="cassette-screws cassette-screw-bl"></div>
-        <div class="cassette-screws cassette-screw-br"></div>
+        <div class="cassette-screw cs-tl"></div>
+        <div class="cassette-screw cs-tr"></div>
+        <div class="cassette-screw cs-bl"></div>
+        <div class="cassette-screw cs-br"></div>
+        <div class="cassette-stripes"></div>
         <div class="cassette-label">
-          <div class="cassette-label-lines"></div>
+          <div class="cassette-label-side">A</div>
           <div class="cassette-label-brand">insideside</div>
           <div class="cassette-label-title" id="cassetteTitle"></div>
           <div class="cassette-label-artist" id="cassetteArtist"></div>
         </div>
         <div class="cassette-window">
-          <div class="cassette-reel" id="cassetteReelL"><div class="cassette-reel-spokes"></div></div>
-          <div class="cassette-tape"></div>
-          <div class="cassette-reel" id="cassetteReelR"><div class="cassette-reel-spokes"></div></div>
+          <div class="cassette-tape-spool cassette-tape-spool-l" id="cassetteSpoolL"></div>
+          <div class="cassette-tape-spool cassette-tape-spool-r" id="cassetteSpoolR"></div>
+          <div class="cassette-reel cassette-reel-l" id="cassetteReelL"><div class="cassette-reel-spokes"></div></div>
+          <div class="cassette-reel cassette-reel-r" id="cassetteReelR"><div class="cassette-reel-spokes"></div></div>
+          <div class="cassette-tape-path"></div>
+        </div>
+        <div class="cassette-bottom">
+          <div class="cassette-bottom-holes"><div class="cassette-bottom-hole"></div><div class="cassette-bottom-hole"></div><div class="cassette-bottom-hole"></div><div class="cassette-bottom-hole"></div><div class="cassette-bottom-hole"></div></div>
         </div>
       </div>
     </div>
@@ -2998,21 +3067,34 @@ function animationLoop(ts) {
     tonearmEl.style.transform = 'rotate(' + currentArmAngle + 'deg)';
   }
 
-  // Cassette reel animation
+  // Cassette reel + tape spool animation
   if (_playerMode === 'cassette') {
     var reelL = document.getElementById('cassetteReelL');
     var reelR = document.getElementById('cassetteReelR');
+    var spoolL = document.getElementById('cassetteSpoolL');
+    var spoolR = document.getElementById('cassetteSpoolR');
     if (reelL && reelR) {
-      // Left reel (supply) spins slower as tape unwinds, right (takeup) spins faster
       var tPct = (audio.duration && !isNaN(audio.duration)) ? audio.currentTime / audio.duration : 0;
-      var reelSpeedL = isPlaying ? TARGET_SPEED * (1.0 - tPct * 0.5) : 0;
-      var reelSpeedR = isPlaying ? TARGET_SPEED * (0.5 + tPct * 0.5) : 0;
+      // Reel speed: supply reel slows as tape depletes, takeup speeds up
+      var reelSpeedL = isPlaying ? TARGET_SPEED * (1.2 - tPct * 0.6) : 0;
+      var reelSpeedR = isPlaying ? TARGET_SPEED * (0.6 + tPct * 0.6) : 0;
       if (!reelL._angle) reelL._angle = 0;
       if (!reelR._angle) reelR._angle = 0;
       reelL._angle += reelSpeedL;
       reelR._angle += reelSpeedR;
-      reelL.style.transform = 'rotate(' + (reelL._angle % 360) + 'deg)';
-      reelR.style.transform = 'rotate(' + (reelR._angle % 360) + 'deg)';
+      reelL.style.transform = 'translateY(-50%) rotate(' + (reelL._angle % 360) + 'deg)';
+      reelR.style.transform = 'translateY(-50%) rotate(' + (reelR._angle % 360) + 'deg)';
+      // Tape spool size: left starts full, right starts empty
+      if (spoolL && spoolR) {
+        var minS = 38; // same as reel (cqi)
+        var maxS = 70; // max spool (cqi)
+        var sizeL = minS + (maxS - minS) * (1 - tPct);
+        var sizeR = minS + (maxS - minS) * tPct;
+        spoolL.style.width = sizeL + 'cqi';
+        spoolL.style.height = sizeL + 'cqi';
+        spoolR.style.width = sizeR + 'cqi';
+        spoolR.style.height = sizeR + 'cqi';
+      }
     }
   }
 
