@@ -1625,27 +1625,28 @@ body {
   border-right-color: rgba(255,255,255,0.15);
 }
 /* Light: white screen with dark text */
-.ipod-light .ipod-screen { background: #eaeaea !important; box-shadow: inset 0 2px 8px rgba(0,0,0,0.25), 0 1px 0 rgba(255,255,255,0.5) !important; }
-.ipod-light .ipod-screen::after { background: linear-gradient(180deg, rgba(255,255,255,0.4) 0%, transparent 100%) !important; }
-.ipod-light .ipod-np, .ipod-light .ipod-list { color: #222 !important; }
-.ipod-light .ipod-np-header, .ipod-light .ipod-list-header { color: #666 !important; border-bottom-color: rgba(0,0,0,0.1) !important; }
-.ipod-light .ipod-np-title { color: #111 !important; }
-.ipod-light .ipod-np-artist { color: rgba(0,0,0,0.5) !important; }
+.ipod-light .ipod-screen { background: #c8ccc5 !important; box-shadow: inset 0 2px 8px rgba(0,0,0,0.2), 0 1px 0 rgba(255,255,255,0.5) !important; }
+.ipod-light .ipod-screen::after { background: linear-gradient(180deg, rgba(255,255,255,0.2) 0%, transparent 100%) !important; }
+.ipod-light .ipod-np, .ipod-light .ipod-list { color: #2a2e28 !important; }
+.ipod-light .ipod-np-header, .ipod-light .ipod-list-header { color: #4a4e48 !important; border-bottom-color: rgba(0,0,0,0.1) !important; }
+.ipod-light .ipod-np-title { color: #1a1e18 !important; }
+.ipod-light .ipod-np-artist { color: #4a5045 !important; }
 .ipod-light .ipod-np-artist:hover { background: rgba(0,0,0,0.06) !important; }
-.ipod-light .ipod-np-album { color: rgba(0,0,0,0.3) !important; }
-.ipod-light .ipod-np-cover { background: #d0d0d0 !important; }
-.ipod-light .ipod-np-cover-ph { color: rgba(0,0,0,0.1) !important; }
-.ipod-light .ipod-np-bar { background: rgba(0,0,0,0.1) !important; }
-.ipod-light .ipod-np-time { color: rgba(0,0,0,0.3) !important; }
-.ipod-light .ipod-list-item { border-bottom-color: rgba(0,0,0,0.06) !important; }
-.ipod-light .ipod-list-item.selected { background: #4a9eff !important; color: #fff !important; }
+.ipod-light .ipod-np-album { color: #5a6055 !important; }
+.ipod-light .ipod-np-cover { background: #b0b4ad !important; }
+.ipod-light .ipod-np-cover-ph { color: rgba(0,0,0,0.12) !important; }
+.ipod-light .ipod-np-bar { background: rgba(0,0,0,0.12) !important; }
+.ipod-light .ipod-np-bar-fill { background: #3a6e3a !important; }
+.ipod-light .ipod-np-time { color: #5a6055 !important; }
+.ipod-light .ipod-list-item { border-bottom-color: rgba(0,0,0,0.08) !important; }
+.ipod-light .ipod-list-item.selected { background: #3a6e3a !important; color: #e8ece5 !important; }
 .ipod-light .ipod-wheel {
   background: radial-gradient(circle at 48% 45%, #f2f2f6, #e6e6ec 30%, #dcdce3 60%, #d0d0d8 100%) !important;
   box-shadow: 0 2px 8px rgba(0,0,0,0.1), inset 0 1px 2px rgba(255,255,255,0.7) !important;
 }
 .ipod-light .ipod-wheel-center {
-  background: radial-gradient(circle at 48% 45%, #fcfcfe, #f2f2f6 50%, #eaeaef 100%) !important;
-  box-shadow: 0 1px 4px rgba(0,0,0,0.08), inset 0 1px 1px rgba(255,255,255,0.8) !important;
+  background: radial-gradient(circle at 48% 45%, #c8c8ce, #bcbcc4 50%, #b4b4bc 100%) !important;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.12), inset 0 1px 1px rgba(255,255,255,0.3) !important;
 }
 .ipod-light .ipod-wheel-label { color: rgba(50,50,60,0.45) !important; }
 
@@ -2005,25 +2006,30 @@ body {
 .cassette-bottom {
   position: absolute; bottom: -1px; left: 8%; right: 8%; height: 15%;
   background:
-    linear-gradient(90deg, #5a554e 0%, #4e493f 5%, #464138 20%, #403b32 50%, #464138 80%, #4e493f 95%, #5a554e 100%);
+    linear-gradient(90deg, #6a655c 0%, #5e594f 5%, #555045 20%, #4e493e 50%, #555045 80%, #5e594f 95%, #6a655c 100%);
   border-radius: 2px 2px 4px 4px;
   box-shadow:
     0 2px 4px rgba(0,0,0,0.3),
-    inset 0 1px 0 rgba(255,255,255,0.06),
-    inset 2px 0 3px -1px rgba(255,255,255,0.04),
-    inset -2px 0 3px -1px rgba(255,255,255,0.04);
+    inset 0 1px 0 rgba(255,255,255,0.08),
+    inset 2px 0 3px -1px rgba(255,255,255,0.05),
+    inset -2px 0 3px -1px rgba(255,255,255,0.05);
 }
 .cassette-bottom-holes {
   position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
-  display: flex; align-items: center; gap: 5px;
+  display: flex; align-items: center; gap: 6px;
 }
-.cassette-bottom-hole {
+.cassette-bh-lg {
+  width: 9px; height: 9px; border-radius: 50%;
+  background: radial-gradient(circle, #0a0a0a, #1a1a1a);
+  box-shadow: inset 0 1px 3px rgba(0,0,0,0.9), 0 0 0 1px rgba(0,0,0,0.3);
+}
+.cassette-bh-md {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: #111; box-shadow: inset 0 1px 2px rgba(0,0,0,0.9);
+}
+.cassette-bh-sm {
   width: 5px; height: 5px; border-radius: 50%;
-  background: #111; box-shadow: inset 0 1px 2px rgba(0,0,0,0.9);
-}
-.cassette-bottom-hole-oval {
-  width: 10px; height: 5px; border-radius: 3px;
-  background: #111; box-shadow: inset 0 1px 2px rgba(0,0,0,0.9);
+  background: #111; box-shadow: inset 0 1px 2px rgba(0,0,0,0.8);
 }
 
 /* ── Vinyl Record ── */
@@ -2607,7 +2613,7 @@ body { overflow: hidden; touch-action: none; position: fixed; width: 100%; heigh
           <div class="cassette-tape-path"></div>
         </div>
         <div class="cassette-bottom">
-          <div class="cassette-bottom-holes"><div class="cassette-bottom-hole"></div><div class="cassette-bottom-hole-oval"></div><div class="cassette-bottom-hole"></div><div class="cassette-bottom-hole-oval"></div><div class="cassette-bottom-hole"></div><div class="cassette-bottom-hole-oval"></div><div class="cassette-bottom-hole"></div></div>
+          <div class="cassette-bottom-holes"><div class="cassette-bh-sm"></div><div class="cassette-bh-md"></div><div class="cassette-bh-lg"></div><div class="cassette-bh-md"></div><div class="cassette-bh-sm"></div></div>
         </div>
       </div>
     </div>
@@ -3762,16 +3768,23 @@ function ipodClick() {
   try {
     if (!_ipodClickCtx) _ipodClickCtx = new (window.AudioContext || window.webkitAudioContext)();
     var ctx = _ipodClickCtx;
-    var osc = ctx.createOscillator();
+    var buf = ctx.createBuffer(1, ctx.sampleRate * 0.012, ctx.sampleRate);
+    var d = buf.getChannelData(0);
+    for (var i = 0; i < d.length; i++) {
+      d[i] = (Math.random() * 2 - 1) * Math.exp(-i / (d.length * 0.15));
+    }
+    var src = ctx.createBufferSource();
+    src.buffer = buf;
+    var flt = ctx.createBiquadFilter();
+    flt.type = 'bandpass';
+    flt.frequency.value = 400;
+    flt.Q.value = 2;
     var gain = ctx.createGain();
-    osc.type = 'square';
-    osc.frequency.value = 1200;
-    gain.gain.setValueAtTime(0.06, ctx.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.03);
-    osc.connect(gain);
+    gain.gain.value = 0.08;
+    src.connect(flt);
+    flt.connect(gain);
     gain.connect(ctx.destination);
-    osc.start(ctx.currentTime);
-    osc.stop(ctx.currentTime + 0.03);
+    src.start();
   } catch(e) {}
 }
 
