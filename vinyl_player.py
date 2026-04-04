@@ -1559,58 +1559,76 @@ body {
 .player-mode-ipod .progress-wrap { display: none; }
 .player-mode-ipod .volume-wrap { display: none; }
 
-/* iPod Dark (default) */
+/* iPod Dark (default) — graphite aluminum */
 .ipod-body {
   width: min(28vw, 34vh); min-width: 200px;
   aspect-ratio: 0.6;
-  background: linear-gradient(135deg, #5a5a5e 0%, #48484c 15%, #3a3a3e 50%, #48484c 85%, #5a5a5e 100%);
-  border-radius: 14px;
+  background:
+    linear-gradient(170deg, #6a6a6e 0%, #555558 4%, #4a4a4e 12%, #434347 30%, #3e3e42 50%, #434347 70%, #4a4a4e 88%, #555558 96%, #6a6a6e 100%);
+  border-radius: 18px;
   position: relative;
   box-shadow:
     0 20px 60px rgba(0,0,0,0.6),
-    inset 0 1px 0 rgba(255,255,255,0.15),
-    inset 0 -1px 0 rgba(0,0,0,0.3);
+    0 4px 12px rgba(0,0,0,0.4),
+    inset 0 2px 0 rgba(255,255,255,0.12),
+    inset 0 -2px 0 rgba(0,0,0,0.2),
+    inset 2px 0 0 rgba(255,255,255,0.06),
+    inset -2px 0 0 rgba(255,255,255,0.06);
 }
 /* Brushed aluminum texture */
 .ipod-body::before {
-  content: ''; position: absolute; inset: 0; border-radius: 14px;
-  background: repeating-linear-gradient(90deg, transparent, transparent 1px, rgba(255,255,255,0.02) 1px, rgba(255,255,255,0.02) 2px);
+  content: ''; position: absolute; inset: 0; border-radius: 18px;
+  background:
+    repeating-linear-gradient(90deg, transparent, transparent 1px, rgba(255,255,255,0.015) 1px, rgba(255,255,255,0.015) 2px),
+    radial-gradient(ellipse at 30% 20%, rgba(255,255,255,0.08) 0%, transparent 50%);
   pointer-events: none;
 }
+/* Inner edge highlight */
 .ipod-body::after {
-  content: ''; position: absolute; inset: 1px; border-radius: 13px;
-  border: 1px solid rgba(255,255,255,0.08);
+  content: ''; position: absolute; inset: 2px; border-radius: 16px;
+  border: 1px solid rgba(255,255,255,0.06);
   pointer-events: none;
 }
 
-/* iPod Light variant */
-.ipod-light .ipod-body {
-  background: linear-gradient(135deg, #e0dfe3 0%, #d0cfd5 15%, #c8c7cd 50%, #d0cfd5 85%, #e0dfe3 100%);
+/* iPod Light (silver) — full override */
+.ipod-light.ipod-body {
+  background:
+    linear-gradient(170deg, #eaeaee 0%, #dddde2 4%, #d4d4da 12%, #ccccd2 30%, #c8c8ce 50%, #ccccd2 70%, #d4d4da 88%, #dddde2 96%, #eaeaee 100%);
 }
-.ipod-light .ipod-body::after { border-color: rgba(255,255,255,0.5); }
+.ipod-light.ipod-body::before {
+  background:
+    repeating-linear-gradient(90deg, transparent, transparent 1px, rgba(255,255,255,0.04) 1px, rgba(255,255,255,0.04) 2px),
+    radial-gradient(ellipse at 30% 20%, rgba(255,255,255,0.2) 0%, transparent 50%);
+}
+.ipod-light.ipod-body::after { border-color: rgba(255,255,255,0.5); }
+.ipod-light .ipod-screen {
+  box-shadow: inset 0 2px 8px rgba(0,0,0,0.5), 0 1px 0 rgba(255,255,255,0.5);
+}
 .ipod-light .ipod-wheel {
-  background: radial-gradient(circle at 48% 45%, #f4f4f6, #e8e8ec 40%, #dddde2 80%, #d0d0d6 100%) !important;
+  background: radial-gradient(circle at 48% 45%, #f0f0f4, #e4e4ea 30%, #d8d8de 60%, #ccccd3 100%) !important;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.12), inset 0 1px 2px rgba(255,255,255,0.7) !important;
 }
 .ipod-light .ipod-wheel-center {
-  background: radial-gradient(circle at 48% 45%, #fafafa, #eee 60%, #e0e0e5 100%) !important;
+  background: radial-gradient(circle at 48% 45%, #fcfcfe, #f0f0f5 50%, #e6e6ec 100%) !important;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.1), inset 0 1px 1px rgba(255,255,255,0.8) !important;
 }
-.ipod-light .ipod-wheel-label { color: rgba(60,60,70,0.6) !important; }
+.ipod-light .ipod-wheel-label { color: rgba(50,50,60,0.5) !important; }
 
 /* Color toggle button */
 .ipod-color-toggle {
-  position: absolute; top: 3px; right: 3px; z-index: 10;
-  width: 16px; height: 16px; border-radius: 50%; border: 1.5px solid rgba(255,255,255,0.2);
+  position: absolute; top: 4px; right: 4px; z-index: 10;
+  width: 14px; height: 14px; border-radius: 50%; border: 1.5px solid rgba(255,255,255,0.15);
   cursor: pointer; transition: all 0.2s;
-  background: linear-gradient(135deg, #ddd 50%, #333 50%);
+  background: linear-gradient(135deg, #ccc 50%, #444 50%);
 }
-.ipod-color-toggle:hover { border-color: rgba(255,255,255,0.4); }
+.ipod-color-toggle:hover { border-color: rgba(255,255,255,0.35); }
 
 /* Screen */
 .ipod-screen {
   position: absolute; top: 5%; left: 9%; right: 9%; height: 40%;
-  background: #222;
-  border-radius: 4px;
-  box-shadow: inset 0 2px 8px rgba(0,0,0,0.7), 0 1px 0 rgba(255,255,255,0.1);
+  background: #1a1a1a;
+  border-radius: 3px;
+  box-shadow: inset 0 2px 8px rgba(0,0,0,0.8), 0 1px 0 rgba(255,255,255,0.08);
   overflow: hidden;
   display: flex; flex-direction: column;
 }
@@ -3678,6 +3696,7 @@ function toggleIpodColor() {
     if (b) b.classList.add('ipod-light');
   }
 })();
+var _ipodWheelMoved = false; // track if wheel was rotated during drag
 
 // ── iPod Click Wheel ──
 (function() {
@@ -3695,6 +3714,7 @@ function toggleIpodColor() {
     if (e.target.id === 'ipodCenter' || e.target.closest('.ipod-wheel-center')) return;
     e.preventDefault();
     wheelDragging = true;
+    _ipodWheelMoved = false;
     wheelAccum = 0;
     var cx = e.clientX || (e.touches && e.touches[0].clientX);
     var cy = e.clientY || (e.touches && e.touches[0].clientY);
@@ -3713,6 +3733,7 @@ function toggleIpodColor() {
     if (delta < -180) delta += 360;
     wheelLastAngle = angle;
     wheelAccum += delta;
+    if (Math.abs(delta) > 2) _ipodWheelMoved = true;
 
     if (_ipodListMode) {
       // Scroll track list
@@ -3745,9 +3766,10 @@ function toggleIpodColor() {
     document.addEventListener('mouseup', wheelUp);
     document.addEventListener('touchend', wheelUp);
 
-    // Center button — play/pause or select track
+    // Center button — play/pause or select track (suppressed after drag)
     document.getElementById('ipodCenter').addEventListener('click', function() {
       if (_playerMode !== 'ipod') return;
+      if (_ipodWheelMoved) { _ipodWheelMoved = false; return; }
       if (_ipodListMode) {
         // Select track from list
         if (_ipodSelectedIdx >= 0 && _ipodSelectedIdx < tracks.length) {
@@ -3759,9 +3781,10 @@ function toggleIpodColor() {
       }
     });
 
-    // Wheel quadrant buttons via click position
+    // Wheel quadrant buttons via click position (suppressed after drag)
     wheel.addEventListener('click', function(e) {
       if (_playerMode !== 'ipod') return;
+      if (_ipodWheelMoved) { _ipodWheelMoved = false; return; }
       if (e.target.closest('.ipod-wheel-center')) return;
       var r = wheel.getBoundingClientRect();
       var x = (e.clientX - r.left) / r.width - 0.5;
