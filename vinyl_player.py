@@ -3204,7 +3204,7 @@ function selectTrack(i, autoplay) {
           }
         }, 2000);
       }
-    }).catch(function() {});
+    }).catch(function(err) { console.error('play() failed:', err); showToast('Ошибка воспроизведения: ' + err.message); });
     setPlayState(true);
   }
   if (isTrackCached(t.file)) prepareBlobUrl(t.file);
@@ -3686,7 +3686,11 @@ function loadConfig() {
   } catch(e){}
   if (!hadCache) showLoadingIndicator();
   fetch('/api/config').then(function(r){return r.json()}).then(function(cfg) {
-    if (cfg.error === 'unauthorized') { window.location.reload(); return; }
+    if (cfg.error === 'unauthorized') {
+      if ('caches' in window) caches.keys().then(function(n){n.forEach(function(k){caches.delete(k)})});
+      window.location.reload();
+      return;
+    }
     if (cfg.error === 'offline') { if (!hadCache) enterOfflineMode(); return; }
     _isOffline = false;
     showOfflineBanner(false);
@@ -4847,7 +4851,16 @@ function changeMyPassword() {
 }
 
 function doLogout() {
-  fetch('/api/auth/logout', {method:'POST'}).then(function() { window.location.reload(); });
+  fetch('/api/auth/logout', {method:'POST'}).then(function() {
+    // Clear SW cache so login page is fetched fresh (not cached app)
+    if ('caches' in window) {
+      caches.keys().then(function(names) {
+        return Promise.all(names.map(function(n) { return caches.delete(n); }));
+      }).then(function() { window.location.reload(); });
+    } else {
+      window.location.reload();
+    }
+  });
 }
 
 function openAdmin() {
@@ -6484,11 +6497,15 @@ class Handler(BaseHTTPRequestHandler):
             filename = unquote(path[len("/api/cover/"):])
             # Verify user access to current MUSIC_DIR
             user_folders = get_user_folders(user)
-            udir = _user_music_dirs.get(user, "")
-            if udir and udir not in user_folders:
+            udir = _user_music_dirs.get(user, "") or get_user_last_folder(user)
+            if not udir:
+                self._respond(404, "text/plain", b"Not found")
+                return
+            if udir not in user_folders:
                 self._respond(403, "text/plain", b"Forbidden")
                 return
-            filepath = _safe_path(_user_music_dirs.get(user, ""), filename)
+            _user_music_dirs[user] = udir
+            filepath = _safe_path(udir, filename)
             if not filepath or not filepath.is_file():
                 self._respond(404, "text/plain", b"Not found")
                 return
@@ -6600,11 +6617,15 @@ class Handler(BaseHTTPRequestHandler):
         elif path.startswith("/api/stream/"):
             filename = unquote(path[len("/api/stream/"):])
             user_folders = get_user_folders(user)
-            udir = _user_music_dirs.get(user, "")
-            if udir and udir not in user_folders:
+            udir = _user_music_dirs.get(user, "") or get_user_last_folder(user)
+            if not udir:
+                self._respond(404, "text/plain", b"Not found")
+                return
+            if udir not in user_folders:
                 self._respond(403, "text/plain", b"Forbidden")
                 return
-            filepath = _safe_path(_user_music_dirs.get(user, ""), filename)
+            _user_music_dirs[user] = udir
+            filepath = _safe_path(udir, filename)
             if not filepath or not filepath.is_file():
                 self._respond(404, "text/plain", b"Not found")
                 return
