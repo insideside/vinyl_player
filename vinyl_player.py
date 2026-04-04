@@ -3694,23 +3694,24 @@ function ipodClick() {
   try {
     if (!_ipodClickCtx) _ipodClickCtx = new (window.AudioContext || window.webkitAudioContext)();
     var ctx = _ipodClickCtx;
-    var buf = ctx.createBuffer(1, ctx.sampleRate * 0.012, ctx.sampleRate);
-    var d = buf.getChannelData(0);
-    for (var i = 0; i < d.length; i++) {
-      d[i] = (Math.random() * 2 - 1) * Math.exp(-i / (d.length * 0.15));
-    }
-    var src = ctx.createBufferSource();
-    src.buffer = buf;
-    var flt = ctx.createBiquadFilter();
-    flt.type = 'bandpass';
-    flt.frequency.value = 400;
-    flt.Q.value = 2;
+    var t = ctx.currentTime;
+    // Short percussive "tick" — like plastic tap
+    var osc = ctx.createOscillator();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(800, t);
+    osc.frequency.exponentialRampToValueAtTime(200, t + 0.008);
     var gain = ctx.createGain();
-    gain.gain.value = 0.08;
-    src.connect(flt);
-    flt.connect(gain);
+    gain.gain.setValueAtTime(0.03, t);
+    gain.gain.exponentialRampToValueAtTime(0.001, t + 0.015);
+    // Low-pass to soften
+    var lp = ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.value = 600;
+    osc.connect(lp);
+    lp.connect(gain);
     gain.connect(ctx.destination);
-    src.start();
+    osc.start(t);
+    osc.stop(t + 0.02);
   } catch(e) {}
 }
 
