@@ -3707,6 +3707,7 @@ var _ipodWheelMoved = false; // track if wheel was rotated during drag
 // iPod click sound via Web Audio API
 var _ipodClickCtx = null;
 function ipodClick() {
+  if (navigator.vibrate) navigator.vibrate(5);
   try {
     if (!_ipodClickCtx) _ipodClickCtx = new (window.AudioContext || window.webkitAudioContext)();
     var ctx = _ipodClickCtx;
