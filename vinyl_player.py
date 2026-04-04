@@ -2498,7 +2498,7 @@ body { overflow: hidden; touch-action: none; position: fixed; width: 100%; heigh
   .track-title { max-width: 80vw; }
   .ipod-body { width: min(72vw, 50vh); min-width: 200px; }
   .cassette-body { --cw: min(90vw, 50vh); min-width: 260px; }
-  .player-mode-toggle { position: fixed; top: auto; bottom: 0; left: 12px; right: auto; z-index: 51; padding-bottom: max(10px, env(safe-area-inset-bottom)); }
+  .player-mode-toggle { position: fixed; top: auto; bottom: 0; left: 16px; right: auto; z-index: 51; margin-bottom: 10px; margin-bottom: max(10px, env(safe-area-inset-bottom)); }
   .player-mode-btn { width: 28px; height: 28px; }
 }
 /* Force portrait on narrow screens */
