@@ -27,12 +27,19 @@ insideside music — персональный музыкальный веб-пл
 python -m pip install mutagen httpx vkpymusic musicbrainzngs
 ```
 
+На **Windows** дополнительно установите пакет для HTTPS (на macOS/Linux обычно не требуется — используется системный `openssl`):
+
+```bash
+python -m pip install cryptography
+```
+
 | Пакет | Назначение |
 |-------|------------|
 | `mutagen` | Чтение и запись метаданных аудиофайлов (ID3, FLAC, M4A) |
 | `httpx` | HTTP-клиент для запросов к внешним API |
 | `vkpymusic` | Интеграция с VK Music (поиск и скачивание треков) |
 | `musicbrainzngs` | Поиск метаданных в базе MusicBrainz |
+| `cryptography` | Генерация HTTPS-сертификата (Windows, опционально на Linux) |
 
 ### Поддерживаемые форматы
 

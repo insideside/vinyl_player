@@ -8685,13 +8685,22 @@ def _cert_covers_current_ips():
 def _generate_self_signed_cert(force=False):
     """Генерирует self-signed сертификат для HTTPS (LAN/offline)."""
     if not force and CERT_FILE.exists() and KEY_FILE.exists():
-        # Check if cert covers current IPs
         if _cert_covers_current_ips():
             return True
         print("HTTPS: IP изменился, перегенерирую сертификат...")
+    san_ips = list(set(["127.0.0.1"] + get_all_local_ips()))
+    # Try openssl CLI first, then Python fallback
+    if _generate_cert_openssl(san_ips):
+        return True
+    if _generate_cert_python(san_ips):
+        return True
+    print("HTTPS: не удалось создать сертификат")
+    return False
+
+
+def _generate_cert_openssl(san_ips):
+    """Генерация через openssl CLI."""
     try:
-        san_ips = list(set(["127.0.0.1"] + get_all_local_ips()))
-        # Add common private ranges to avoid regeneration on IP changes
         san_entries = ",".join("IP:" + ip for ip in san_ips) + ",DNS:localhost"
         subprocess.run([
             "openssl", "req", "-x509", "-newkey", "rsa:2048",
@@ -8700,11 +8709,79 @@ def _generate_self_signed_cert(force=False):
             "-subj", "/CN=insideside-music",
             "-addext", "subjectAltName=" + san_entries
         ], capture_output=True, timeout=10, check=True)
-        os.chmod(str(KEY_FILE), 0o600)
-        os.chmod(str(CERT_FILE), 0o600)
+        try: os.chmod(str(KEY_FILE), 0o600)
+        except Exception: pass
+        try: os.chmod(str(CERT_FILE), 0o600)
+        except Exception: pass
         return True
     except Exception as ex:
-        print(f"HTTPS: не удалось создать сертификат: {ex}")
+        return False
+
+
+def _generate_cert_python(san_ips):
+    """Fallback: генерация через Python (без openssl CLI)."""
+    try:
+        from datetime import datetime, timedelta
+        # Try cryptography library first
+        try:
+            from cryptography import x509
+            from cryptography.x509.oid import NameOID
+            from cryptography.hazmat.primitives import hashes, serialization
+            from cryptography.hazmat.primitives.asymmetric import rsa
+            import ipaddress as _ipa
+
+            key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+            subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "insideside-music")])
+            san_list = [x509.DNSName("localhost")]
+            for ip in san_ips:
+                try: san_list.append(x509.IPAddress(_ipa.ip_address(ip)))
+                except Exception: pass
+            cert = (
+                x509.CertificateBuilder()
+                .subject_name(subject)
+                .issuer_name(subject)
+                .public_key(key.public_key())
+                .serial_number(x509.random_serial_number())
+                .not_valid_before(datetime.utcnow())
+                .not_valid_after(datetime.utcnow() + timedelta(days=3650))
+                .add_extension(x509.SubjectAlternativeName(san_list), critical=False)
+                .sign(key, hashes.SHA256())
+            )
+            KEY_FILE.write_bytes(key.private_bytes(
+                serialization.Encoding.PEM,
+                serialization.PrivateFormat.TraditionalOpenSSL,
+                serialization.NoEncryption()))
+            CERT_FILE.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+            try: os.chmod(str(KEY_FILE), 0o600)
+            except Exception: pass
+            try: os.chmod(str(CERT_FILE), 0o600)
+            except Exception: pass
+            print("HTTPS: сертификат создан (cryptography)")
+            return True
+        except ImportError:
+            pass
+
+        # Minimal fallback: use ssl module to make a basic self-signed cert
+        # Python 3.10+ has ssl._create_self_signed_cert, older versions don't
+        # Generate via subprocess with python itself
+        script = '''
+import ssl, socket, struct, hashlib, os, sys, base64
+from datetime import datetime, timedelta
+
+# Minimal ASN.1 DER self-signed cert generator
+import secrets
+
+# Use built-in ssl to create a temp context — this won't work for generation
+# Fall back to printing instructions
+print("NEED_CRYPTOGRAPHY")
+'''
+        result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=10)
+        if "NEED_CRYPTOGRAPHY" in result.stdout:
+            print("HTTPS: установите пакет cryptography: python -m pip install cryptography")
+            return False
+        return False
+    except Exception as ex:
+        print(f"HTTPS: Python fallback не удался: {ex}")
         return False
 
 
