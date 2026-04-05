@@ -7253,6 +7253,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
 <form onsubmit="return doLogin()" id="loginForm">
 <label>Логин</label><input type="text" id="lu" autocomplete="username" required>
 <label>Пароль</label><input type="password" id="lp" autocomplete="current-password" required>
+<div id="confirmPwField" style="display:none"><label>Подтвердите пароль</label><input type="password" id="lp2" autocomplete="new-password" required></div>
 <div id="musicRootField" style="display:none">
 <label>Корневая папка музыки</label><input type="text" id="mr" placeholder="~/VinylMusic">
 <div style="font-size:10px;color:rgba(255,255,255,0.3);margin-top:2px">Папка для хранения музыки всех пользователей. Для каждого пользователя будет создана подпапка.</div>
@@ -7271,6 +7272,7 @@ fetch('/api/auth/check').then(function(r){return r.json()}).then(function(d){
   if(d.needs_setup){
     document.getElementById('subtitle').textContent='Создайте аккаунт администратора';
     document.getElementById('lbtn').textContent='Создать';
+    document.getElementById('confirmPwField').style.display='';
     document.getElementById('musicRootField').style.display='';
     document.getElementById('mr').value=d.default_music_root||'';
     document.getElementById('loginForm').onsubmit=function(){return doSetup()};
@@ -7284,7 +7286,8 @@ function doLogin(){
   });return false;
 }
 function doSetup(){
-  var u=document.getElementById('lu').value,p=document.getElementById('lp').value,mr=document.getElementById('mr').value;
+  var u=document.getElementById('lu').value,p=document.getElementById('lp').value,p2=document.getElementById('lp2').value,mr=document.getElementById('mr').value;
+  if(p!==p2){document.getElementById('lerr').textContent='Пароли не совпадают';return false;}
   fetch('/api/auth/setup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u,password:p,music_root:mr})})
   .then(function(r){return r.json()}).then(function(d){
     if(d.ok) window.location.reload(); else document.getElementById('lerr').textContent=d.error||'Ошибка';
