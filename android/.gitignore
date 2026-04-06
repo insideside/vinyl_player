@@ -1,0 +1,11 @@
+*.iml
+.gradle/
+build/
+local.properties
+.idea/
+*.apk
+*.aab
+*.jks
+*.keystore
+app/src/main/python/vinyl_player.py
+gradle/wrapper/gradle-wrapper.jar

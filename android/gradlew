@@ -1,0 +1,15 @@
+#!/bin/sh
+# Gradle wrapper bootstrap — downloads gradle-wrapper.jar if missing
+set -e
+APP_BASE_NAME=$(basename "$0")
+APP_HOME=$(cd "$(dirname "$0")" && pwd -P)
+CLASSPATH="$APP_HOME/gradle/wrapper/gradle-wrapper.jar"
+
+if [ ! -f "$CLASSPATH" ]; then
+    echo "Downloading Gradle wrapper..."
+    mkdir -p "$APP_HOME/gradle/wrapper"
+    curl -fsSL -o "$CLASSPATH" \
+        "https://raw.githubusercontent.com/gradle/gradle/v8.5.0/gradle/wrapper/gradle-wrapper.jar"
+fi
+
+exec java -classpath "$CLASSPATH" org.gradle.wrapper.GradleWrapperMain "$@"
