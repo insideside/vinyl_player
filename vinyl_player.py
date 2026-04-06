@@ -1538,7 +1538,7 @@ body {
 .player-mode-btn {
   width: 40px; height: 40px; border: none; border-radius: 8px; background: none;
   color: rgba(255,255,255,0.3); cursor: pointer; display: flex; align-items: center; justify-content: center;
-  transition: all 0.2s;
+  transition: all 0.25s ease;
 }
 .player-mode-btn.active { background: rgba(255,255,255,0.1); color: #e94560; }
 .player-mode-btn:hover { color: rgba(255,255,255,0.6); }
@@ -2499,7 +2499,10 @@ body { overflow: hidden; touch-action: none; position: fixed; width: 100%; heigh
   .track-title { max-width: 80vw; }
   .ipod-body { width: min(72vw, 50vh); min-width: 200px; }
   .cassette-body { --cw: min(90vw, 50vh); min-width: 260px; }
-  .player-mode-toggle { position: fixed; top: auto; bottom: 0; left: 16px; right: auto; z-index: 51; margin-bottom: 10px; margin-bottom: max(10px, env(safe-area-inset-bottom)); }
+  .player-mode-toggle { position: fixed; top: auto; bottom: 0; left: 16px; right: auto; z-index: 51; margin-bottom: 10px; margin-bottom: max(10px, env(safe-area-inset-bottom)); transition: all 0.25s ease; }
+  .player-mode-toggle.collapsed .player-mode-btn:not(.active) { width: 0; padding: 0; opacity: 0; overflow: hidden; pointer-events: none; }
+  .player-mode-toggle.collapsed .player-mode-btn.active { color: #e94560; }
+  .player-mode-toggle.collapsed { gap: 0; padding: 3px; }
 }
 /* Force portrait on narrow screens */
 @media (max-width: 768px) and (orientation: landscape) {
@@ -3215,6 +3218,23 @@ var _ipodListMode = false;
 var _ipodListOffset = 0;
 var _ipodSelectedIdx = 0;
 
+function _isMobile() { return window.innerWidth <= 768; }
+
+function _modeToggleCollapse() {
+  var tog = document.querySelector('.player-mode-toggle');
+  if (tog && _isMobile()) tog.classList.add('collapsed');
+}
+
+function _modeToggleExpand(e) {
+  var tog = document.querySelector('.player-mode-toggle');
+  if (!tog || !_isMobile()) return;
+  if (tog.classList.contains('collapsed')) {
+    e.stopPropagation();
+    e.preventDefault();
+    tog.classList.remove('collapsed');
+  }
+}
+
 function setPlayerMode(mode) {
   _playerMode = mode;
   localStorage.setItem('_vc_player_mode', mode);
@@ -3233,6 +3253,8 @@ function setPlayerMode(mode) {
   };
   var mb = document.getElementById('btnVinyl');
   if (mb) mb.innerHTML = modeIcons[mode] || modeIcons.vinyl;
+  // Collapse on mobile after selection
+  _modeToggleCollapse();
   // Sync alt player with current track
   if (currentIdx >= 0 && currentIdx < tracks.length) {
     var t = tracks[currentIdx];
@@ -3308,6 +3330,17 @@ function _ipodRenderList() {
     document.querySelector('.vinyl-side').classList.add('player-mode-' + _playerMode);
     // Update mobile toggle icon
     setPlayerMode(_playerMode);
+  }
+  // Mobile: collapse to single icon, expand on tap
+  var tog = document.querySelector('.player-mode-toggle');
+  if (tog) {
+    _modeToggleCollapse();
+    tog.addEventListener('click', _modeToggleExpand);
+    document.addEventListener('click', function(e) {
+      if (_isMobile() && tog && !tog.contains(e.target) && !tog.classList.contains('collapsed')) {
+        tog.classList.add('collapsed');
+      }
+    });
   }
 })();
 
@@ -3508,6 +3541,8 @@ audio.addEventListener('loadedmetadata', function() {
 var _trackSrcGen = 0; // incremented on each src change to detect stale ended events
 
 audio.addEventListener('ended', function() {
+  // Ignore ended during scratch/inertia (seek near end of track)
+  if (isDragging || inertiaActive) return;
   var gen = _trackSrcGen;
   // Ignore stale 'ended' from previous src (race when switching near end of track)
   setTimeout(function() {
@@ -3556,7 +3591,7 @@ document.addEventListener('mousemove', function(e) {
 
   var secPerRevolution = 60 / 33;
   var timeDelta = (delta / 360) * secPerRevolution;
-  var newTime = Math.max(0, Math.min(audio.currentTime + timeDelta, audio.duration - 0.1));
+  var newTime = Math.max(0, Math.min(audio.currentTime + timeDelta, audio.duration - 0.5));
   audio.currentTime = newTime;
 
   var pct = newTime / audio.duration;
@@ -3611,7 +3646,7 @@ document.addEventListener('touchmove', function(e) {
   lastDragTime = now;
   var secPerRevolution = 60 / 33;
   var timeDelta = (delta / 360) * secPerRevolution;
-  var newTime = Math.max(0, Math.min(audio.currentTime + timeDelta, audio.duration - 0.1));
+  var newTime = Math.max(0, Math.min(audio.currentTime + timeDelta, audio.duration - 0.5));
   audio.currentTime = newTime;
   var pct = newTime / audio.duration;
   currentArmAngle = ARM_START + (ARM_END - ARM_START) * pct;
@@ -3642,7 +3677,7 @@ function applyInertia() {
   var secPerRevolution = 60 / 33;
   var timeDelta = (dragVelocity / 360) * secPerRevolution;
   var newTime = audio.currentTime + timeDelta;
-  newTime = Math.max(0, Math.min(newTime, audio.duration - 0.1));
+  newTime = Math.max(0, Math.min(newTime, audio.duration - 0.5));
   audio.currentTime = newTime;
 
   var pct = newTime / audio.duration;
@@ -7902,7 +7937,11 @@ class Handler(BaseHTTPRequestHandler):
                 self._respond_json({"ok": True, "public": True, "redirect_url": redirect_url, "lan_url": lan_url, "ip": local_ip, "all_urls": all_urls})
                 try: self.wfile.flush()
                 except Exception: pass
-                threading.Timer(1.0, _restart_server, args=["0.0.0.0"]).start()
+                def _restart_and_watchdog():
+                    _restart_server("0.0.0.0")
+                    if _use_https:
+                        _start_cert_watchdog()
+                threading.Timer(1.0, _restart_and_watchdog).start()
             else:
                 _use_https = False
                 s["lan"] = False
@@ -7913,6 +7952,15 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception: pass
                 threading.Timer(1.0, _restart_server, args=["127.0.0.1"]).start()
 
+
+        elif path == "/api/cert/renew":
+            if not udata or not udata.get("is_admin"):
+                self._respond_json({"ok": False, "error": "Нет доступа."})
+                return
+            if _renew_cert_and_restart():
+                self._respond_json({"ok": True, "renewed": True})
+            else:
+                self._respond_json({"ok": False, "error": "Не удалось обновить сертификат"})
 
         elif path == "/api/remove_folder":
             if self._deny_demo(udata): return
@@ -8543,8 +8591,11 @@ class Handler(BaseHTTPRequestHandler):
     def handle(self):
         try:
             super().handle()
-        except (ConnectionResetError, BrokenPipeError, ssl.SSLError, OSError):
-            pass  # Client disconnected during SSL handshake or request
+        except ssl.SSLError:
+            global _ssl_error_count
+            _ssl_error_count += 1
+        except (ConnectionResetError, BrokenPipeError, OSError):
+            pass
 
 
 import signal
@@ -8686,6 +8737,85 @@ def _cert_covers_current_ips():
         return True
     except Exception:
         return False
+
+
+def _cert_expires_soon(days_threshold=30):
+    """Check if cert expires within given number of days."""
+    if not CERT_FILE.exists():
+        return True
+    try:
+        result = subprocess.run(
+            ["openssl", "x509", "-in", str(CERT_FILE), "-noout", "-checkend", str(days_threshold * 86400)],
+            capture_output=True, timeout=5
+        )
+        # openssl returns 1 if cert expires within the period
+        return result.returncode != 0
+    except Exception:
+        return True
+
+
+_ssl_error_count = 0
+_SSL_ERROR_THRESHOLD = 5
+
+
+def _cert_needs_renewal():
+    """Check if certificate needs renewal (expired, bad IPs, or too many SSL errors)."""
+    global _ssl_error_count
+    if not CERT_FILE.exists() or not KEY_FILE.exists():
+        return True
+    if _cert_expires_soon():
+        return True
+    if not _cert_covers_current_ips():
+        return True
+    if _ssl_error_count >= _SSL_ERROR_THRESHOLD:
+        return True
+    return False
+
+
+def _renew_cert_and_restart():
+    """Regenerate certificate and restart HTTPS server if needed."""
+    global _use_https, _ssl_error_count
+    if not IS_PUBLIC or not _use_https:
+        return False
+    print("HTTPS: автоматическая перегенерация сертификата...")
+    if _generate_self_signed_cert(force=True):
+        _ssl_error_count = 0
+        s = load_settings()
+        s["https"] = True
+        save_settings(s)
+        _restart_server("0.0.0.0")
+        print("HTTPS: сертификат обновлён, сервер перезапущен")
+        return True
+    else:
+        print("HTTPS: не удалось обновить сертификат")
+        return False
+
+
+_cert_watchdog_running = False
+
+
+def _start_cert_watchdog():
+    """Start certificate watchdog if not already running."""
+    global _cert_watchdog_running
+    if _cert_watchdog_running:
+        return
+    _cert_watchdog_running = True
+    threading.Thread(target=_cert_watchdog, daemon=True).start()
+
+
+def _cert_watchdog():
+    """Background thread: periodically checks cert validity and auto-renews."""
+    global _cert_watchdog_running
+    while True:
+        time.sleep(300)  # check every 5 minutes
+        try:
+            if not IS_PUBLIC or not _use_https:
+                _cert_watchdog_running = False
+                return  # stop watchdog if HTTPS/LAN disabled
+            if _cert_needs_renewal():
+                _renew_cert_and_restart()
+        except Exception as ex:
+            print(f"HTTPS watchdog error: {ex}")
 
 
 def _generate_self_signed_cert(force=False):
@@ -8915,6 +9045,10 @@ def main():
         _use_https = False
 
     _start_server(bind_addr)
+
+    # Start certificate watchdog for auto-renewal
+    if IS_PUBLIC and _use_https:
+        _start_cert_watchdog()
 
     # Apply saved WAN after server starts
     if s.get("wan_mode") == "static" and s.get("wan_ip"):
