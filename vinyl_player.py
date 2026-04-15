@@ -2410,7 +2410,7 @@ body {
 
 /* ── Toast ── */
 .toast {
-  position: fixed; top: 20px; left: 50%; transform: translateX(-50%) translateY(-80px);
+  position: fixed; top: max(20px, calc(env(safe-area-inset-top) + 10px)); left: 50%; transform: translateX(-50%) translateY(-120px);
   background: rgba(30,30,50,0.95); color: #eee; padding: 12px 24px; border-radius: 12px;
   font-size: 14px; z-index: 200; transition: transform 0.3s ease; pointer-events: none;
   backdrop-filter: blur(10px); border: 1px solid rgba(255,255,255,0.1);
@@ -3276,10 +3276,7 @@ function _ipodSyncTrack(t) {
   document.getElementById('ipodAlbum').textContent = t.album || '';
   var ic = document.getElementById('ipodCover');
   var icp = document.getElementById('ipodCoverPh');
-  if (t.has_cover) {
-    ic.src = '/api/cover/' + encodeURIComponent(t.file);
-    ic.style.display = ''; icp.style.display = 'none';
-  } else { ic.style.display = 'none'; icp.style.display = ''; }
+  setCoverSrc(ic, t.file, t.has_cover, icp);
 }
 
 function _ipodPlayOrToggle() {
@@ -3414,11 +3411,29 @@ function initScratchSound() {
 
 function startScratch(speed) {
   if (!audioCtx) initScratchSound();
+  // iOS PWA: context may be suspended/interrupted after backgrounding
+  if (audioCtx && audioCtx.state !== 'running') {
+    try { audioCtx.resume(); } catch(e) {}
+  }
+  if (!scratchGain || !scratchFilter) return;
   var vol = Math.min(Math.abs(speed) * 0.15, 0.35);
   scratchFilter.frequency.value = 600 + Math.abs(speed) * 200;
   scratchGain.gain.setTargetAtTime(vol, audioCtx.currentTime, 0.02);
   isScratchPlaying = true;
 }
+
+// Pre-init AudioContext on first user gesture so scratch sound works offline
+// (iOS PWA requires a gesture to unlock audio; touchmove alone is not enough)
+(function() {
+  function unlock() {
+    if (!audioCtx) initScratchSound();
+    else if (audioCtx.state !== 'running') { try { audioCtx.resume(); } catch(e) {} }
+    document.removeEventListener('touchstart', unlock, true);
+    document.removeEventListener('mousedown', unlock, true);
+  }
+  document.addEventListener('touchstart', unlock, true);
+  document.addEventListener('mousedown', unlock, true);
+})();
 
 function stopScratch() {
   if (!audioCtx || !isScratchPlaying) return;
@@ -3543,6 +3558,11 @@ var _trackSrcGen = 0; // incremented on each src change to detect stale ended ev
 audio.addEventListener('ended', function() {
   // Ignore ended during scratch/inertia (seek near end of track)
   if (isDragging || inertiaActive) return;
+  // Spurious 'ended' when metadata is broken (NaN duration) or track barely started
+  var dur = audio.duration;
+  var cur = audio.currentTime;
+  if (!isFinite(dur) || dur <= 0) return;
+  if (cur < dur - 1.5 && cur < 2) return;
   var gen = _trackSrcGen;
   // Ignore stale 'ended' from previous src (race when switching near end of track)
   setTimeout(function() {
@@ -3909,6 +3929,7 @@ function ipodClick() {
 })();
 
 function formatTime(s) {
+  if (!isFinite(s) || s < 0) return '0:00';
   var m = Math.floor(s / 60);
   var sec = Math.floor(s % 60);
   return m + ':' + (sec < 10 ? '0' : '') + sec;
@@ -3921,7 +3942,9 @@ function renderTracks() {
     var i = indices[ii];
     var t = tracks[i];
     var coverHtml = t.has_cover
-      ? '<img src="/api/cover/' + encodeURIComponent(t.file) + '" loading="lazy" onerror="loadCachedImg(this,\'' + encodeURIComponent(t.file).replace(/'/g,"\\'") + '\')">'
+      ? (isTrackCached(t.file)
+          ? '<img data-cfile="' + encodeURIComponent(t.file) + '" loading="lazy">'
+          : '<img src="/api/cover/' + encodeURIComponent(t.file) + '" loading="lazy" onerror="loadCachedImg(this,\'' + encodeURIComponent(t.file).replace(/'/g,"\\'") + '\')">')
       : '';
     if (isEditMode) {
       html += '<div class="playlist-item' + (i === currentIdx ? ' active' : '') + '" data-idx="' + i + '"'
@@ -3950,6 +3973,26 @@ function renderTracks() {
     }
   }
   document.getElementById('trackList').innerHTML = html;
+  hydrateCoverThumbs(document.getElementById('trackList'));
+}
+
+function hydrateCoverThumbs(root) {
+  if (!root) return;
+  var imgs = root.querySelectorAll('img[data-cfile]');
+  for (var k = 0; k < imgs.length; k++) (function(img) {
+    var file = decodeURIComponent(img.getAttribute('data-cfile'));
+    img.removeAttribute('data-cfile');
+    getCachedCover(file, function(buf) {
+      if (buf) {
+        img.src = URL.createObjectURL(new Blob([buf]));
+      } else if (!_isOffline) {
+        img.src = '/api/cover/' + encodeURIComponent(file);
+        cacheCover(file);
+      } else {
+        img.style.visibility = 'hidden';
+      }
+    });
+  })(imgs[k]);
 }
 
 function renderAlbums() {
@@ -3963,7 +4006,9 @@ function renderAlbums() {
     var a = indices[ai];
     var alb = albums[a];
     var coverHtml = alb.cover_file
-      ? '<img src="/api/cover/' + encodeURIComponent(alb.cover_file) + '" loading="lazy" onerror="loadCachedImg(this,\'' + encodeURIComponent(alb.cover_file).replace(/'/g,"\\'") + '\')">'
+      ? (isTrackCached(alb.cover_file)
+          ? '<img data-cfile="' + encodeURIComponent(alb.cover_file) + '" loading="lazy">'
+          : '<img src="/api/cover/' + encodeURIComponent(alb.cover_file) + '" loading="lazy" onerror="loadCachedImg(this,\'' + encodeURIComponent(alb.cover_file).replace(/'/g,"\\'") + '\')">')
       : '';
     var isExp = expandedAlbum === a;
     // Check if all album tracks are cached
@@ -3996,6 +4041,7 @@ function renderAlbums() {
     html += '</div>';
   }
   document.getElementById('albumList').innerHTML = html;
+  hydrateCoverThumbs(document.getElementById('albumList'));
 }
 
 function cacheAlbum(albumIdx) {
@@ -4104,12 +4150,10 @@ function selectTrack(i, autoplay) {
 
   audio.pause();
   var streamUrl = '/api/stream/' + encodeURIComponent(t.file);
-  if (_blobUrlCache[t.file]) {
-    audio.src = _blobUrlCache[t.file];
-  } else {
-    audio.src = streamUrl;
-  }
-  if (autoplay) {
+  var genAtLoad = _trackSrcGen;
+
+  function doPlay() {
+    if (!autoplay) return;
     var p = audio.play();
     if (p && p.then) p.then(function() {
       // iOS PWA: detect stuck audio (plays but no sound, time=0)
@@ -4123,10 +4167,59 @@ function selectTrack(i, autoplay) {
           }
         }, 2000);
       }
-    }).catch(function(err) { console.error('play() failed:', err); showToast('Ошибка воспроизведения: ' + err.message); });
+    }).catch(function(err) {
+      // AbortError is expected when src changes or play is interrupted — not a real failure
+      if (err && (err.name === 'AbortError' || /aborted/i.test(err.message || ''))) return;
+      console.error('play() failed:', err);
+      showToast('Ошибка воспроизведения: ' + err.message);
+    });
     setPlayState(true);
   }
-  if (isTrackCached(t.file)) prepareBlobUrl(t.file);
+
+  function setSrcAndPlay(src, isBlob) {
+    audio.src = src;
+    doPlay();
+    // Fallback: blob fails to expose duration (Safari quirk for m4a/opus)
+    if (isBlob) {
+      setTimeout(function() {
+        if (genAtLoad !== _trackSrcGen) return;
+        if (!isFinite(audio.duration) || audio.duration <= 0) {
+          if (!_isOffline) {
+            var curTime = audio.currentTime || 0;
+            var wasPlaying = !audio.paused;
+            try { URL.revokeObjectURL(_blobUrlCache[t.file]); } catch(e) {}
+            delete _blobUrlCache[t.file];
+            audio.addEventListener('loadedmetadata', function onceLm() {
+              audio.removeEventListener('loadedmetadata', onceLm);
+              try { audio.currentTime = curTime; } catch(e) {}
+              if (wasPlaying) audio.play().catch(function(){});
+            });
+            audio.src = streamUrl;
+          }
+        }
+      }, 4000);
+    }
+  }
+
+  if (_blobUrlCache[t.file]) {
+    setSrcAndPlay(_blobUrlCache[t.file], true);
+  } else if (isTrackCached(t.file)) {
+    // Load blob from IDB before playing — avoids stream fallback that fails offline
+    getCachedAudio(t.file, function(buf) {
+      if (genAtLoad !== _trackSrcGen) return; // user switched tracks
+      if (buf) {
+        _blobUrlCache[t.file] = makeBlobUrl(buf, t.file);
+        setSrcAndPlay(_blobUrlCache[t.file], true);
+      } else {
+        delete cachedFiles[t.file];
+        setSrcAndPlay(streamUrl, false);
+      }
+    });
+    // Show play state immediately for responsive UI
+    if (autoplay) setPlayState(true);
+  } else {
+    setSrcAndPlay(streamUrl, false);
+  }
   setTimeout(prepareNearbyBlobs, 200);
   var titleEl = document.getElementById('trackTitle');
   var artistEl = document.getElementById('trackArtist');
@@ -4143,12 +4236,7 @@ function selectTrack(i, autoplay) {
     document.getElementById('cassetteArtist').textContent = t.artist;
     var ccov = document.getElementById('cassetteCover');
     var ccph = document.getElementById('cassetteCoverPh');
-    if (t.has_cover) {
-      ccov.src = '/api/cover/' + encodeURIComponent(t.file);
-      ccov.style.display = ''; ccph.style.display = 'none';
-    } else {
-      ccov.style.display = 'none'; ccph.style.display = '';
-    }
+    setCoverSrc(ccov, t.file, t.has_cover, ccph);
     // iPod sync
     _ipodSyncTrack(t);
     if (_playerMode === 'ipod' && _ipodListMode) {
@@ -4518,22 +4606,33 @@ function esc(s) {
 }
 
 // ── Media Session API (lock screen controls) ──
+var _mediaSessionArtUrl = null;
 function updateMediaSession(t) {
   if (!('mediaSession' in navigator)) return;
-  var artwork = [];
-  if (t.has_cover) {
-    artwork.push({
-      src: '/api/cover/' + encodeURIComponent(t.file),
-      sizes: '512x512',
-      type: 'image/jpeg'
+  function apply(artwork) {
+    navigator.mediaSession.metadata = new MediaMetadata({
+      title: t.title || '',
+      artist: t.artist || '',
+      album: t.album || '',
+      artwork: artwork
     });
   }
-  navigator.mediaSession.metadata = new MediaMetadata({
-    title: t.title || '',
-    artist: t.artist || '',
-    album: t.album || '',
-    artwork: artwork
-  });
+  if (_mediaSessionArtUrl) { URL.revokeObjectURL(_mediaSessionArtUrl); _mediaSessionArtUrl = null; }
+  if (!t.has_cover) { apply([]); return; }
+  var netUrl = '/api/cover/' + encodeURIComponent(t.file);
+  if (isTrackCached(t.file)) {
+    getCachedCover(t.file, function(buf) {
+      if (buf) {
+        _mediaSessionArtUrl = URL.createObjectURL(new Blob([buf], {type:'image/jpeg'}));
+        apply([{src:_mediaSessionArtUrl, sizes:'512x512', type:'image/jpeg'}]);
+      } else {
+        apply([{src:netUrl, sizes:'512x512', type:'image/jpeg'}]);
+        if (!_isOffline) cacheCover(t.file);
+      }
+    });
+  } else {
+    apply([{src:netUrl, sizes:'512x512', type:'image/jpeg'}]);
+  }
 }
 
 function initMediaSession() {
@@ -4874,14 +4973,17 @@ function setToggle(id, dotId, on) {
   dot.style.background = on ? '#e94560' : '#888';
 }
 
-function syncNetworkState() {
+function syncNetworkState(retriesLeft) {
   if (!isAdmin) return;
+  if (retriesLeft === undefined) retriesLeft = 5;
   Promise.all([
     fetch('/api/config').then(function(r){return r.json()}),
     fetch('/api/wan/status').then(function(r){return r.json()})
   ]).then(function(results) {
     var cfg = results[0];
     var wan = results[1];
+    // If server just restarted, endpoints may briefly return {error:'offline'} via SW
+    if (cfg && cfg.error) throw new Error('not-ready');
     var info = document.getElementById('lanInfo');
     var parts = [];
 
@@ -4907,6 +5009,8 @@ function syncNetworkState() {
     } else {
       info.style.display = 'none';
     }
+  }).catch(function() {
+    if (retriesLeft > 0) setTimeout(function(){ syncNetworkState(retriesLeft - 1); }, 1500);
   });
 }
 
@@ -6994,6 +7098,7 @@ function refreshCachedList() {
       for (var i = 0; i < req.result.length; i++) if (req.result[i].indexOf('cover:') !== 0) cachedFiles[req.result[i]] = true;
       if (typeof renderTracks === 'function') renderTracks();
       prepareNearbyBlobs();
+      backfillMissingCovers();
     };
   });
 }
@@ -7043,7 +7148,7 @@ function getCachedCover(file, cb) {
   });
 }
 
-// Fallback for broken cover images: try IndexedDB cache, else remove img
+// Fallback for broken cover images: try IndexedDB cache, else hide
 function loadCachedImg(img, encodedFile) {
   var file = decodeURIComponent(encodedFile);
   img.onerror = null; // prevent loop
@@ -7052,9 +7157,60 @@ function loadCachedImg(img, encodedFile) {
       var blob = new Blob([buf]);
       img.src = URL.createObjectURL(blob);
     } else {
-      img.remove();
+      img.style.visibility = 'hidden';
+      if (!_isOffline) cacheCover(file); // backfill for next time
     }
   });
+}
+
+// Universal cover setter — prefers cached blob URL when track is cached
+function setCoverSrc(img, file, hasCover, placeholderEl) {
+  function showPh() {
+    img.style.display = 'none';
+    if (placeholderEl) placeholderEl.style.display = '';
+  }
+  function showImg() {
+    img.style.display = '';
+    if (placeholderEl) placeholderEl.style.display = 'none';
+  }
+  if (!hasCover) { showPh(); return; }
+  if (isTrackCached(file)) {
+    getCachedCover(file, function(buf) {
+      if (buf) {
+        if (img._coverUrl) URL.revokeObjectURL(img._coverUrl);
+        img._coverUrl = URL.createObjectURL(new Blob([buf]));
+        img.src = img._coverUrl;
+        showImg();
+      } else if (!_isOffline) {
+        img.src = '/api/cover/' + encodeURIComponent(file);
+        showImg();
+        cacheCover(file); // backfill
+      } else {
+        showPh();
+      }
+    });
+  } else if (!_isOffline) {
+    img.src = '/api/cover/' + encodeURIComponent(file);
+    showImg();
+  } else {
+    showPh();
+  }
+}
+
+// Backfill cover IDB entries for tracks cached before cacheCover was added
+function backfillMissingCovers() {
+  if (_isOffline) return;
+  var files = Object.keys(cachedFiles);
+  var i = 0;
+  function step() {
+    if (i >= files.length) return;
+    var f = files[i++];
+    getCachedCover(f, function(buf) {
+      if (!buf) cacheCover(f);
+      setTimeout(step, 150); // avoid hammering network
+    });
+  }
+  step();
 }
 
 function uncacheTrack(file) {
@@ -7251,6 +7407,7 @@ window.addEventListener('online', function() {
     var btn = document.getElementById('cachedOnlyBtn');
     if (btn) btn.classList.remove('active');
     loadConfig();
+    backfillMissingCovers();
     showToast('Подключение восстановлено');
   }
 });
