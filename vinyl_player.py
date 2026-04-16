@@ -3178,6 +3178,8 @@ function _pwaRecoverAudio() {
     newAudio.id = 'audioEl';
     parent.replaceChild(newAudio, audio);
     audio = newAudio;
+    audio.volume = 0.8;
+    bindAudioEvents();
     // Silent AudioContext unlock to activate system audio session
     try {
       var ctx = new (window.AudioContext || window.webkitAudioContext)();
@@ -3550,26 +3552,40 @@ function animationLoop(ts) {
 }
 requestAnimationFrame(animationLoop);
 
-audio.addEventListener('loadedmetadata', function() {
-  document.getElementById('timeDuration').textContent = formatTime(audio.duration);
-});
 var _trackSrcGen = 0; // incremented on each src change to detect stale ended events
 
-audio.addEventListener('ended', function() {
-  // Ignore ended during scratch/inertia (seek near end of track)
-  if (isDragging || inertiaActive) return;
-  // Spurious 'ended' when metadata is broken (NaN duration) or track barely started
-  var dur = audio.duration;
-  var cur = audio.currentTime;
-  if (!isFinite(dur) || dur <= 0) return;
-  if (cur < dur - 1.5 && cur < 2) return;
-  var gen = _trackSrcGen;
-  // Ignore stale 'ended' from previous src (race when switching near end of track)
-  setTimeout(function() {
-    if (_trackSrcGen !== gen) return; // src changed since ended fired — stale event
-    nextTrack();
-  }, 0);
-});
+function bindAudioEvents() {
+  audio.addEventListener('loadedmetadata', function() {
+    document.getElementById('timeDuration').textContent = formatTime(audio.duration);
+  });
+  audio.addEventListener('ended', function() {
+    if (isDragging || inertiaActive) return;
+    var dur = audio.duration;
+    if (!isFinite(dur) || dur <= 0) return;
+    var gen = _trackSrcGen;
+    setTimeout(function() {
+      if (_trackSrcGen !== gen) return;
+      nextTrack();
+    }, 0);
+  });
+  audio.addEventListener('timeupdate', onTimeUpdate);
+  // Fallback: iOS PWA may not fire 'ended' in background — detect near-end via timeupdate
+  audio.addEventListener('timeupdate', function() {
+    if (!isPlaying || isDragging || inertiaActive) return;
+    var dur = audio.duration;
+    var cur = audio.currentTime;
+    if (!isFinite(dur) || dur <= 0) return;
+    // If within last 0.3s AND audio is actually paused (iOS stopped it), advance
+    if (cur >= dur - 0.3 && audio.paused && _trackSrcGen > 0) {
+      var gen = _trackSrcGen;
+      setTimeout(function() {
+        if (_trackSrcGen !== gen) return;
+        nextTrack();
+      }, 350);
+    }
+  });
+}
+bindAudioEvents();
 
 // ── Vinyl drag to seek ──
 function getAngleFromCenter(el, clientX, clientY) {
@@ -4129,9 +4145,24 @@ function prepareBlobUrl(file) {
 function prepareNearbyBlobs() {
   if (playQueue.length === 0) return;
   var startPos = playQueuePos >= 0 ? playQueuePos : 0;
-  // Prepare current + 5 next + 2 prev
-  for (var d = 0; d <= 7; d++) {
-    var pos = startPos + (d <= 5 ? d : -(d - 5));
+  // Evict distant blob URLs to reduce iOS memory pressure
+  var nearSet = {};
+  for (var n = 0; n <= 3; n++) {
+    var np = startPos + (n <= 2 ? n : -1);
+    if (np < 0) np += playQueue.length;
+    if (np >= playQueue.length) np -= playQueue.length;
+    var nf = tracks[playQueue[np]] ? tracks[playQueue[np]].file : null;
+    if (nf) nearSet[nf] = true;
+  }
+  Object.keys(_blobUrlCache).forEach(function(f) {
+    if (!nearSet[f]) {
+      try { URL.revokeObjectURL(_blobUrlCache[f]); } catch(e) {}
+      delete _blobUrlCache[f];
+    }
+  });
+  // Prepare current + 2 next + 1 prev
+  for (var d = 0; d <= 3; d++) {
+    var pos = startPos + (d <= 2 ? d : -1);
     if (pos < 0) pos += playQueue.length;
     if (pos >= playQueue.length) pos -= playQueue.length;
     var idx = playQueue[pos];
@@ -4666,7 +4697,6 @@ function onTimeUpdate() {
     } catch(e) {}
   }
 }
-audio.addEventListener('timeupdate', onTimeUpdate);
 
 // ── Config / Folders ──
 var currentUser = '';
