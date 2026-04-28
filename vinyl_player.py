@@ -4126,6 +4126,16 @@ function showTab(tab) {
 }
 
 // ── Blob URL pre-cache (keeps ready-to-use blob URLs in memory for instant playback) ──
+// Tiny silent WAV used as bridge src to keep iOS audio session alive during async IDB load
+var _silentBlobUrl = (function() {
+  var h = new Uint8Array([
+    0x52,0x49,0x46,0x46, 0x25,0x00,0x00,0x00, 0x57,0x41,0x56,0x45,
+    0x66,0x6d,0x74,0x20, 0x10,0x00,0x00,0x00, 0x01,0x00,0x01,0x00,
+    0x44,0xac,0x00,0x00, 0x44,0xac,0x00,0x00, 0x01,0x00,0x08,0x00,
+    0x64,0x61,0x74,0x61, 0x01,0x00,0x00,0x00, 0x80
+  ]);
+  return URL.createObjectURL(new Blob([h], {type:'audio/wav'}));
+})();
 var _blobUrlCache = {}; // file -> blob URL
 
 function makeBlobUrl(buf, file) {
@@ -4180,6 +4190,10 @@ function selectTrack(i, autoplay) {
   vinylSpeed = 0;
 
   audio.pause();
+  // Reset lock screen position immediately so iOS doesn't show stale time
+  if ('mediaSession' in navigator) {
+    try { navigator.mediaSession.setPositionState(); } catch(e) {}
+  }
   var streamUrl = '/api/stream/' + encodeURIComponent(t.file);
   var genAtLoad = _trackSrcGen;
 
@@ -4187,7 +4201,6 @@ function selectTrack(i, autoplay) {
     if (!autoplay) return;
     var p = audio.play();
     if (p && p.then) p.then(function() {
-      // iOS PWA: detect stuck audio (plays but no sound, time=0)
       if (!_pwaAudioChecked && window.navigator.standalone) {
         _pwaAudioChecked = true;
         setTimeout(function() {
@@ -4199,7 +4212,6 @@ function selectTrack(i, autoplay) {
         }, 2000);
       }
     }).catch(function(err) {
-      // AbortError is expected when src changes or play is interrupted — not a real failure
       if (err && (err.name === 'AbortError' || /aborted/i.test(err.message || ''))) return;
       console.error('play() failed:', err);
       showToast('Ошибка воспроизведения: ' + err.message);
@@ -4207,49 +4219,55 @@ function selectTrack(i, autoplay) {
     setPlayState(true);
   }
 
-  function setSrcAndPlay(src, isBlob) {
-    audio.src = src;
-    doPlay();
-    // Fallback: blob fails to expose duration (Safari quirk for m4a/opus)
-    if (isBlob) {
-      setTimeout(function() {
-        if (genAtLoad !== _trackSrcGen) return;
-        if (!isFinite(audio.duration) || audio.duration <= 0) {
-          if (!_isOffline) {
-            var curTime = audio.currentTime || 0;
-            var wasPlaying = !audio.paused;
-            try { URL.revokeObjectURL(_blobUrlCache[t.file]); } catch(e) {}
-            delete _blobUrlCache[t.file];
-            audio.addEventListener('loadedmetadata', function onceLm() {
-              audio.removeEventListener('loadedmetadata', onceLm);
-              try { audio.currentTime = curTime; } catch(e) {}
-              if (wasPlaying) audio.play().catch(function(){});
-            });
-            audio.src = streamUrl;
-          }
+  function watchDuration(isBlob) {
+    if (!isBlob) return;
+    setTimeout(function() {
+      if (genAtLoad !== _trackSrcGen) return;
+      if (!isFinite(audio.duration) || audio.duration <= 0) {
+        if (!_isOffline) {
+          var curTime = audio.currentTime || 0;
+          var wasPlaying = !audio.paused;
+          try { URL.revokeObjectURL(_blobUrlCache[t.file]); } catch(e) {}
+          delete _blobUrlCache[t.file];
+          audio.addEventListener('loadedmetadata', function onceLm() {
+            audio.removeEventListener('loadedmetadata', onceLm);
+            try { audio.currentTime = curTime; } catch(e) {}
+            if (wasPlaying) audio.play().catch(function(){});
+          });
+          audio.src = streamUrl;
         }
-      }, 4000);
-    }
+      }
+    }, 4000);
   }
 
   if (_blobUrlCache[t.file]) {
-    setSrcAndPlay(_blobUrlCache[t.file], true);
+    audio.src = _blobUrlCache[t.file];
+    doPlay();
+    watchDuration(true);
   } else if (isTrackCached(t.file)) {
-    // Load blob from IDB before playing — avoids stream fallback that fails offline
+    // iOS requires play() synchronously within MediaSession/gesture callback.
+    // Start with stream URL (or silent placeholder offline) to keep audio session,
+    // then swap to blob when IDB read completes.
+    audio.src = _isOffline ? _silentBlobUrl : streamUrl;
+    doPlay();
     getCachedAudio(t.file, function(buf) {
-      if (genAtLoad !== _trackSrcGen) return; // user switched tracks
+      if (genAtLoad !== _trackSrcGen) return;
       if (buf) {
         _blobUrlCache[t.file] = makeBlobUrl(buf, t.file);
-        setSrcAndPlay(_blobUrlCache[t.file], true);
+        audio.src = _blobUrlCache[t.file];
+        if (autoplay) audio.play().catch(function(){});
+        watchDuration(true);
       } else {
         delete cachedFiles[t.file];
-        setSrcAndPlay(streamUrl, false);
+        if (!_isOffline) {
+          audio.src = streamUrl;
+          if (autoplay) audio.play().catch(function(){});
+        }
       }
     });
-    // Show play state immediately for responsive UI
-    if (autoplay) setPlayState(true);
   } else {
-    setSrcAndPlay(streamUrl, false);
+    audio.src = streamUrl;
+    doPlay();
   }
   setTimeout(prepareNearbyBlobs, 200);
   var titleEl = document.getElementById('trackTitle');
