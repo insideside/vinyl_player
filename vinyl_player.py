@@ -22,6 +22,21 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse, unquote, quote
 
+# Supported Python range — outside this, some deps have no prebuilt wheels
+# (notably cryptography on Windows, vkpymusic transitive deps on 3.14+).
+# We don't refuse to run, just warn — the app degrades gracefully via HAS_* flags.
+_PY_MIN = (3, 9)
+_PY_MAX_TESTED = (3, 13)
+if sys.version_info < _PY_MIN or sys.version_info[:2] > _PY_MAX_TESTED:
+    print(
+        "[!] Python {}.{} обнаружен. Поддерживается {}.{}–{}.{}. "
+        "Часть зависимостей может не установиться (cryptography, vkpymusic).".format(
+            sys.version_info.major, sys.version_info.minor,
+            _PY_MIN[0], _PY_MIN[1], _PY_MAX_TESTED[0], _PY_MAX_TESTED[1]
+        ),
+        file=sys.stderr,
+    )
+
 try:
     from mutagen.mp3 import MP3
     from mutagen.id3 import ID3, TIT2, TPE1, TALB, TDRC, APIC, ID3NoHeaderError
@@ -39,7 +54,14 @@ try:
 except ImportError:
     HAS_MB = False
 
-from httpx import Client as HttpClient
+try:
+    from httpx import Client as HttpClient
+except ImportError:
+    sys.stderr.write(
+        "[!] Не установлен httpx — без него приложение работать не может.\n"
+        "    Установите: python -m pip install httpx\n"
+    )
+    sys.exit(1)
 
 try:
     from vkpymusic import Service as VkService

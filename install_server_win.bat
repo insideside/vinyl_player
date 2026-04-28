@@ -1,5 +1,8 @@
 @echo off
 chcp 65001 >nul
+:: Delayed expansion is needed for !VAR! inside for/if blocks below
+:: (version detection and per-package install loop).
+setlocal enabledelayedexpansion
 title insideside music — Server Setup
 
 echo.
@@ -20,35 +23,95 @@ if %errorlevel% neq 0 (
 :: Config
 set APP_PORT=7656
 set APP_DIR=C:\insideside-music
-set PYTHON_URL=https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe
+:: Pinned Python — known-good wheels for all our deps (cryptography, vkpymusic etc.)
+set PINNED_PY_VERSION=3.12.7
+set PINNED_PY_DIR=C:\Program Files\Python312
+set PYTHON_URL=https://www.python.org/ftp/python/%PINNED_PY_VERSION%/python-%PINNED_PY_VERSION%-amd64.exe
 set PYTHON_INSTALLER=%TEMP%\python_installer.exe
 set SERVICE_NAME=InsideMusic
+:: PY_EXE — explicit interpreter we'll use for pip and runtime (avoids picking up
+:: a too-new system Python that has no wheels for cryptography/vkpymusic deps).
+set PY_EXE=
 
 echo [1/7] Проверка Python...
-python --version >nul 2>&1
-if %errorlevel% neq 0 (
-    echo       Python не найден. Скачиваю...
-    curl -fsSL -o "%PYTHON_INSTALLER%" "%PYTHON_URL%"
-    if %errorlevel% neq 0 (
-        echo [!] Не удалось скачать Python. Установите вручную: https://python.org
-        pause
-        exit /b 1
-    )
-    echo       Устанавливаю Python 3.11...
-    "%PYTHON_INSTALLER%" /quiet InstallAllUsers=1 PrependPath=1 Include_pip=1
-    del "%PYTHON_INSTALLER%"
-    :: Refresh PATH
-    set "PATH=C:\Program Files\Python311;C:\Program Files\Python311\Scripts;%PATH%"
-    echo       Python установлен.
-) else (
-    echo       Python найден.
+
+:: 1. Prefer existing pinned 3.12 install
+if exist "%PINNED_PY_DIR%\python.exe" (
+    set "PY_EXE=%PINNED_PY_DIR%\python.exe"
+    echo       Найден совместимый Python 3.12 в %PINNED_PY_DIR%.
+    goto :py_ready
 )
+
+:: 2. Check system python — only use if version is in supported range (3.10..3.13)
+set SYS_PY_VER=
+set SYS_PY_MINOR=
+python --version >nul 2>&1
+if %errorlevel% equ 0 (
+    for /f "tokens=2" %%v in ('python --version 2^>^&1') do set SYS_PY_VER=%%v
+    for /f "tokens=1,2 delims=." %%a in ("!SYS_PY_VER!") do (
+        set SYS_PY_MAJOR=%%a
+        set SYS_PY_MINOR=%%b
+    )
+    if "!SYS_PY_MAJOR!"=="3" if !SYS_PY_MINOR! GEQ 10 if !SYS_PY_MINOR! LEQ 13 (
+        set "PY_EXE=python"
+        goto :py_ready
+    )
+    echo       Найден Python !SYS_PY_VER!, но он несовместим (нужен 3.10–3.13^).
+    echo       Установлю Python %PINNED_PY_VERSION% рядом, ваш Python не будет затронут.
+) else (
+    echo       Python не найден. Скачиваю Python %PINNED_PY_VERSION%...
+)
+
+:: 3. Download and install pinned Python 3.12 alongside any existing version
+curl -fsSL -o "%PYTHON_INSTALLER%" "%PYTHON_URL%"
+if %errorlevel% neq 0 (
+    echo [!] Не удалось скачать Python. Установите вручную: https://python.org
+    pause
+    exit /b 1
+)
+echo       Устанавливаю Python %PINNED_PY_VERSION%...
+:: InstallAllUsers=1 → C:\Program Files\Python312. PrependPath=0 to NOT clobber
+:: user's existing python on PATH — we use the explicit path instead.
+"%PYTHON_INSTALLER%" /quiet InstallAllUsers=1 PrependPath=0 Include_pip=1 TargetDir="%PINNED_PY_DIR%"
+del "%PYTHON_INSTALLER%"
+if not exist "%PINNED_PY_DIR%\python.exe" (
+    echo [!] Установка Python не удалась. Проверьте C:\Program Files\Python312.
+    pause
+    exit /b 1
+)
+set "PY_EXE=%PINNED_PY_DIR%\python.exe"
+echo       Python %PINNED_PY_VERSION% установлен в %PINNED_PY_DIR%.
+
+:py_ready
+echo       Используется: %PY_EXE%
 
 echo.
 echo [2/7] Установка зависимостей...
-python -m pip install --upgrade pip >nul 2>&1
-pip install httpx mutagen vkpymusic musicbrainzngs 2>nul
-echo       Зависимости установлены.
+"%PY_EXE%" -m pip install --upgrade pip >nul 2>&1
+:: Install per-package with --only-binary so failed wheels are reported, not silently
+:: source-built (which would fail without compiler/Rust). Each package is independent —
+:: the app degrades gracefully if vkpymusic / cryptography / mutagen / musicbrainzngs
+:: are missing (HAS_VK, HAS_MUTAGEN, HAS_MB flags + try/except in vinyl_player.py).
+set INSTALL_FAILED=
+for %%P in (httpx mutagen vkpymusic musicbrainzngs cryptography) do (
+    "%PY_EXE%" -m pip install --only-binary=:all: %%P >nul 2>&1
+    if errorlevel 1 (
+        echo       [!] %%P не удалось установить — пропускаю.
+        set INSTALL_FAILED=!INSTALL_FAILED! %%P
+    ) else (
+        echo       [+] %%P установлен.
+    )
+)
+if defined INSTALL_FAILED (
+    echo.
+    echo       Не установлены:!INSTALL_FAILED!
+    echo       Что отключится без них (приложение всё равно запустится, кроме httpx^):
+    echo         vkpymusic       → импорт треков из VK
+    echo         mutagen         → метаданные и обложки из тегов
+    echo         musicbrainzngs  → автопоиск метаданных
+    echo         cryptography    → автогенерация HTTPS-сертификата (можно вручную через openssl)
+    echo         httpx           → КРИТИЧНО, без него приложение не запустится
+)
 
 echo.
 echo [3/7] Создание директории приложения...
@@ -92,7 +155,9 @@ if %errorlevel% neq 0 (
 echo.
 echo [7/7] Создание скриптов запуска...
 
-:: Run script
+:: Run script — uses the explicit Python we picked above (PY_EXE), not whatever
+:: happens to be on PATH at runtime. This survives the user installing a newer
+:: Python later that breaks our deps.
 (
 echo @echo off
 echo chcp 65001 ^>nul
@@ -100,7 +165,7 @@ echo title insideside music Server
 echo cd /d "%APP_DIR%"
 echo echo Starting insideside music on port %APP_PORT%...
 echo echo.
-echo python vinyl_player.py --public
+echo "%PY_EXE%" vinyl_player.py --public
 echo pause
 ) > "%APP_DIR%\start_server.bat"
 
