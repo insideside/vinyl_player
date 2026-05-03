@@ -220,7 +220,14 @@ def create_session(username):
 
 
 def get_session_user(token):
-    return _sessions.get(token)
+    user = _sessions.get(token)
+    if user is None and token:
+        # Cookie miss: another process may have written a new session to disk
+        # since we loaded. Re-read once and retry — protects against multi-process
+        # drift (e.g. tunnel restart, stale dev process) without forcing relogin.
+        _load_sessions()
+        user = _sessions.get(token)
+    return user
 
 
 def get_user_data(username):
@@ -5102,11 +5109,19 @@ function togglePublic(enabled) {
     body: JSON.stringify({enabled: enabled})})
   .then(function(r){return r.json()})
   .then(function(d) {
-    if (d.public) {
-      info.textContent = 'LAN включён. Перезапуск...';
-    } else {
-      info.textContent = 'LAN выключен. Перезапуск...';
+    // Surface real server errors instead of misreporting them as state changes
+    if (d.error === 'unauthorized') {
+      info.textContent = 'Сессия истекла, нужно войти заново';
+      setToggle('publicToggle', 'publicDot', !enabled);
+      setTimeout(function() { window.location.href = '/'; }, 1500);
+      return;
     }
+    if (d.ok === false || (d.error && d.public === undefined)) {
+      info.textContent = 'Ошибка: ' + (d.error || 'не удалось переключить LAN');
+      setToggle('publicToggle', 'publicDot', !enabled);
+      return;
+    }
+    info.textContent = d.public ? 'LAN включён. Перезапуск...' : 'LAN выключен. Перезапуск...';
     // Server restarts on new bind address + possibly HTTPS; redirect accordingly
     var url = d.redirect_url || ('http://127.0.0.1:' + location.port);
     setTimeout(function() { window.location.href = url; }, 2500);
