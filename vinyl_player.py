@@ -1462,7 +1462,10 @@ function getFromIDB(key) {
   }).catch(function() { return null; });
 }
 
-var OFFLINE_FALLBACK = '<html><body style="background:#111;color:#eee;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0"><div style="text-align:center"><h2>Offline</h2><p>Server unavailable, no cached page.</p></div></body></html>';
+// Auto-retries every 2s; when /api/version succeeds, reloads. Avoids stranding
+// users on a dead-end page when the server briefly went away (restart, LAN/HTTPS
+// toggle, network blip).
+var OFFLINE_FALLBACK = '<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"></head><body style="background:#111;color:#eee;font-family:-apple-system,BlinkMacSystemFont,sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0"><div style="text-align:center;padding:20px"><h2 style="color:#e94560;margin:0 0 12px">Сервер недоступен</h2><p id="s" style="color:rgba(255,255,255,0.5);font-size:14px;margin:0 0 16px">Жду подключения...</p><button onclick="location.reload()" style="padding:10px 20px;border:none;border-radius:8px;background:#e94560;color:#fff;font-size:14px;cursor:pointer">Попробовать сейчас</button></div><script>(function(){var t=0;function ping(){t++;document.getElementById("s").textContent="Жду подключения... ("+t+")";fetch("/api/version",{cache:"no-store"}).then(function(r){if(r.ok)location.reload()}).catch(function(){});}setInterval(ping,2000);ping();})();</script></body></html>';
 
 self.addEventListener('fetch', function(e) {
   var url = new URL(e.request.url);
