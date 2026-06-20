@@ -28,3 +28,6 @@ build/
 *.spec
 build_assets/VinylPlayer.iconset/
 build_assets/icon_*.png
+
+# runtime logs (incl. widget-launched player)
+logs/

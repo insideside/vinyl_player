@@ -84,6 +84,18 @@ IS_PUBLIC = False
 
 SUPPORTED_FORMATS = {'.mp3', '.flac', '.m4a', '.ogg', '.wav', '.aac', '.opus'}
 
+# ──────────────────── Desktop widget bridge ────────────────────
+# In-memory bridge between the browser player and an external desktop widget
+# (Übersicht). The browser POSTs its now-playing state; the widget polls it.
+# The widget POSTs control commands; the browser polls and executes them.
+# Localhost-only — never exposed over LAN/WAN.
+_widget_state = {
+    "playing": False, "title": "", "artist": "", "album": "",
+    "file": "", "position": 0, "duration": 0, "ts": 0,
+}
+_widget_command = None  # pending command for the browser to execute
+_widget_lock = threading.Lock()
+
 # ──────────────────── User system ────────────────────
 
 SESSIONS_FILE = Path.home() / ".vinyl_sessions.json"
@@ -4391,6 +4403,7 @@ function setPlayState(playing) {
   if (mb) mb.innerHTML = playing
     ? '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>'
     : '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>';
+  widgetPublish();
 }
 
 function showMobileControls() {
@@ -4689,6 +4702,8 @@ function esc(s) {
 // ── Media Session API (lock screen controls) ──
 var _mediaSessionArtUrl = null;
 function updateMediaSession(t) {
+  _widgetTrack = {title: t.title || '', artist: t.artist || '', album: t.album || '', file: t.file || ''};
+  widgetPublish();
   if (!('mediaSession' in navigator)) return;
   function apply(artwork) {
     navigator.mediaSession.metadata = new MediaMetadata({
@@ -4746,6 +4761,46 @@ function onTimeUpdate() {
       });
     } catch(e) {}
   }
+}
+
+// ── Desktop widget bridge (Übersicht) ──
+// Publishes now-playing state to the server and polls for control commands
+// issued by the desktop widget. Localhost-only on the server side.
+var _widgetTrack = {title:'', artist:'', album:'', file:''};
+function widgetPublish() {
+  try {
+    var dur = (audio && audio.duration && !isNaN(audio.duration)) ? audio.duration : 0;
+    var pos = (audio && audio.currentTime) ? audio.currentTime : 0;
+    fetch('/api/widget/state', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({
+        playing: !!isPlaying,
+        title: _widgetTrack.title || '',
+        artist: _widgetTrack.artist || '',
+        album: _widgetTrack.album || '',
+        file: _widgetTrack.file || '',
+        position: Math.round(pos),
+        duration: Math.round(dur)
+      })}).catch(function(){});
+  } catch(e) {}
+}
+function widgetPoll() {
+  fetch('/api/widget/command', {cache:'no-store'}).then(function(r){return r.json();}).then(function(d){
+    if (!d || !d.cmd) return;
+    switch (d.cmd) {
+      case 'play':   if (!isPlaying) togglePlay(); break;
+      case 'pause':  if (isPlaying) togglePlay(); break;
+      case 'toggle': togglePlay(); break;
+      case 'next':   nextTrack(); break;
+      case 'prev':   prevTrack(); break;
+    }
+  }).catch(function(){});
+}
+var _widgetPollTimer = null, _widgetPubTimer = null;
+function initWidgetBridge() {
+  if (_widgetPollTimer) return;
+  _widgetPollTimer = setInterval(widgetPoll, 1000);
+  _widgetPubTimer = setInterval(widgetPublish, 2000);
+  widgetPublish();
 }
 
 // ── Config / Folders ──
@@ -7485,6 +7540,7 @@ initBgCanvas();
 // Hide volume slider on iOS (audio.volume is read-only)
 if(_isIOS){var vw=document.querySelector('.volume-wrap input[type=range]');if(vw)vw.style.display='none';var vs=document.querySelector('.volume-wrap span');if(vs)vs.style.display='none';}
 initMediaSession();
+initWidgetBridge();
 
 // Detect online/offline transitions
 window.addEventListener('online', function() {
@@ -7605,6 +7661,11 @@ class Handler(BaseHTTPRequestHandler):
     def _set_cookie(self, token):
         self.send_header("Set-Cookie", "session={}; Path=/; HttpOnly; SameSite=Strict; Max-Age={}".format(token, 86400*30))
 
+    def _is_localhost(self):
+        """True only for connections coming from the local machine."""
+        ip = self.client_address[0] if self.client_address else ""
+        return ip in ("127.0.0.1", "::1", "::ffff:127.0.0.1")
+
     def _needs_auth(self, path):
         return not path.startswith("/api/auth/")
 
@@ -7705,6 +7766,32 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/version":
             build_hash = hashlib.md5(HTML_PAGE.encode()).hexdigest()[:8]
             self._respond_json({"version": build_hash})
+            return
+
+        # Desktop widget — current now-playing state (localhost only, no auth)
+        if path == "/api/widget/state":
+            if not self._is_localhost():
+                self._respond_json({"error": "forbidden"})
+                return
+            with _widget_lock:
+                st = dict(_widget_state)
+            ts = st.pop("ts", 0)
+            # age = seconds since the browser last reported state; large/None
+            # means no live player tab is open, so controls won't be received.
+            st["age"] = round(time.time() - ts, 1) if ts else None
+            self._respond_json(st)
+            return
+
+        # Desktop widget — browser polls for a pending control command
+        if path == "/api/widget/command":
+            global _widget_command
+            if not self._is_localhost():
+                self._respond_json({"error": "forbidden"})
+                return
+            with _widget_lock:
+                cmd = _widget_command
+                _widget_command = None
+            self._respond_json({"cmd": cmd})
             return
 
         if not user:
@@ -7976,6 +8063,41 @@ class Handler(BaseHTTPRequestHandler):
             data = json.loads(body) if body else {}
         except Exception:
             data = {}
+
+        # Desktop widget bridge (localhost only, no auth) — must run before the
+        # auth gate so the browser tab and the widget can talk to each other.
+        if path == "/api/widget/state":
+            global _widget_state
+            if not self._is_localhost():
+                self._respond_json({"ok": False, "error": "forbidden"})
+                return
+            with _widget_lock:
+                _widget_state = {
+                    "playing": bool(data.get("playing")),
+                    "title": str(data.get("title", ""))[:300],
+                    "artist": str(data.get("artist", ""))[:300],
+                    "album": str(data.get("album", ""))[:300],
+                    "file": str(data.get("file", ""))[:600],
+                    "position": data.get("position", 0),
+                    "duration": data.get("duration", 0),
+                    "ts": time.time(),
+                }
+            self._respond_json({"ok": True})
+            return
+
+        if path == "/api/widget/command":
+            global _widget_command
+            if not self._is_localhost():
+                self._respond_json({"ok": False, "error": "forbidden"})
+                return
+            cmd = data.get("cmd")
+            if cmd in ("play", "pause", "toggle", "next", "prev"):
+                with _widget_lock:
+                    _widget_command = cmd
+                self._respond_json({"ok": True})
+            else:
+                self._respond_json({"ok": False, "error": "bad command"})
+            return
 
         # Auth endpoints — no login required
         if path == "/api/auth/setup":
@@ -9260,21 +9382,31 @@ def main():
     global IS_PUBLIC, _use_https
     _load_sessions()
     public = "--public" in sys.argv
+    # --local forces a clean localhost-only HTTP instance (no LAN/WAN, no
+    # self-signed cert). Used by the desktop widget so the player just works
+    # on the same machine without certificate friction. Saved settings are
+    # left untouched — LAN/WAN can still be toggled from the running app.
+    local = "--local" in sys.argv
     IS_PUBLIC = public
     bind_addr = "0.0.0.0" if public else "127.0.0.1"
 
-    # Auto-restore saved LAN mode
     s = load_settings()
-    if s.get("lan"):
-        IS_PUBLIC = True
-        bind_addr = "0.0.0.0"
-        print("Restoring LAN mode")
+    if not local:
+        # Auto-restore saved LAN mode
+        if s.get("lan"):
+            IS_PUBLIC = True
+            bind_addr = "0.0.0.0"
+            print("Restoring LAN mode")
 
-    # Auto-restore saved WAN static IP config
-    if s.get("wan_mode") == "static" and s.get("wan_ip"):
-        IS_PUBLIC = True
-        bind_addr = "0.0.0.0"
-        print("Restoring WAN static: http://{}:{}".format(s["wan_ip"], s.get("wan_port", SERVER_PORT)))
+        # Auto-restore saved WAN static IP config
+        if s.get("wan_mode") == "static" and s.get("wan_ip"):
+            IS_PUBLIC = True
+            bind_addr = "0.0.0.0"
+            print("Restoring WAN static: http://{}:{}".format(s["wan_ip"], s.get("wan_port", SERVER_PORT)))
+    else:
+        IS_PUBLIC = False
+        bind_addr = "127.0.0.1"
+        print("Local mode: 127.0.0.1 HTTP only (LAN/WAN auto-restore skipped)")
 
     # Auto-enable HTTPS when public (LAN/WAN) — needed for SW on non-localhost
     if IS_PUBLIC:
@@ -9295,8 +9427,8 @@ def main():
     if IS_PUBLIC and _use_https:
         _start_cert_watchdog()
 
-    # Apply saved WAN after server starts
-    if s.get("wan_mode") == "static" and s.get("wan_ip"):
+    # Apply saved WAN after server starts (skipped in --local mode)
+    if not local and s.get("wan_mode") == "static" and s.get("wan_ip"):
         set_wan_static(s["wan_ip"], s.get("wan_port", str(SERVER_PORT)))
 
     proto = "https" if _use_https else "http"
