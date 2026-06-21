@@ -31,3 +31,6 @@ build_assets/icon_*.png
 
 # runtime logs (incl. widget-launched player)
 logs/
+
+# python virtualenv (created by macos-widget/setup.command)
+.venv/

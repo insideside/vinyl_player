@@ -1,0 +1,6 @@
+httpx
+mutagen
+vkpymusic
+musicbrainzngs
+Pillow
+cryptography

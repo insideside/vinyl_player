@@ -31,29 +31,35 @@
 (`pgrep -f vinyl_player.py`). Поддерживаются и HTTPS (LAN-режим, самоподписанный
 сертификат), и обычный HTTP — виджет пробует https, затем http.
 
-## Установка
+## Установка (в т.ч. на новом Mac)
 
-```sh
-macos-widget/install.sh
+Скопируйте папку проекта на новый Mac и запустите **один файл** — двойным
+кликом в Finder:
+
+```
+macos-widget/setup.command
 ```
 
-Скрипт поставит Übersicht (если есть Homebrew), создаст симлинк виджета в
-`~/Library/Application Support/Übersicht/widgets/` и запустит Übersicht.
+(или из терминала: `bash macos-widget/setup.command`)
 
-Вручную: установите Übersicht, затем скопируйте папку `vinyl-player.widget` в
-`~/Library/Application Support/Übersicht/widgets/`.
+Установщик сам, под пути именно этой машины:
+
+1. поставит **Homebrew** (если его нет; может запросить пароль);
+2. поставит **Übersicht** (хост для виджетов);
+3. создаст **venv** `.venv/` в проекте и поставит зависимости из
+   `requirements.txt` (`httpx`, `mutagen`, `vkpymusic`, `musicbrainzngs`,
+   `Pillow`, `cryptography`);
+4. установит виджет в `~/Library/Application Support/Übersicht/widgets/`,
+   **подставив актуальные пути** (Python из venv, путь к `vinyl_player.py`).
+
+Скрипт можно запускать повторно — он обновит зависимости и починит установку.
 
 ## Настройка
 
-Пути заданы вверху `vinyl-player.widget/index.jsx`:
-
-```js
-const PY  = "/usr/bin/python3";
-const APP = "/Users/insideside/vk-music/vinyl_player.py";
-```
-
-Если используете другой Python (venv) или путь к проекту — поправьте здесь.
-Позицию на экране задают `top` / `left` в блоке `className` того же файла.
+Обычно ничего править не нужно — `setup.command` подставляет пути сам.
+Если запускали виджет вручную, пути задаются вверху
+`vinyl-player.widget/index.jsx` (`PY`, `APP`, `LOG`). Позицию на экране задают
+`top` / `left` в блоке `className` того же файла.
 
 ## Замечания
 

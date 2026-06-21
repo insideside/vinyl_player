@@ -39,7 +39,7 @@ if [ -z "$S" ]; then PROTO=http; S=$(/usr/bin/curl -s --max-time 1 ${HTTP}/api/w
 
 // ─────────── actions (run = Übersicht shell helper) ───────────
 const startApp = () =>
-  run(`nohup ${PY} ${APP} --local >> ${LOG} 2>&1 &`);
+  run(`nohup "${PY}" "${APP}" --local >> "${LOG}" 2>&1 &`);
 
 const stopApp = () =>
   run(`/usr/bin/pkill -f '[Pp]ython.*vinyl_player.py'`);
