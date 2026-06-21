@@ -38,8 +38,12 @@ if [ -z "$S" ]; then PROTO=http; S=$(/usr/bin/curl -s --max-time 1 ${HTTP}/api/w
 `;
 
 // ─────────── actions (run = Übersicht shell helper) ───────────
+// Launch in the app's normal mode: it auto-restores the saved LAN/WAN setting,
+// so the player is reachable from other devices (e.g. iPhone) over the network.
+// Enable LAN once from the app UI; on a fresh machine without it, this stays
+// localhost-only. (vinyl_player.py still accepts --local to force localhost.)
 const startApp = () =>
-  run(`nohup "${PY}" "${APP}" --local >> "${LOG}" 2>&1 &`);
+  run(`nohup "${PY}" "${APP}" >> "${LOG}" 2>&1 &`);
 
 const stopApp = () =>
   run(`/usr/bin/pkill -f '[Pp]ython.*vinyl_player.py'`);
