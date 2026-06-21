@@ -4294,21 +4294,30 @@ function selectTrack(i, autoplay) {
     // then swap to blob when IDB read completes.
     audio.src = _isOffline ? _silentBlobUrl : streamUrl;
     doPlay();
-    getCachedAudio(t.file, function(buf) {
-      if (genAtLoad !== _trackSrcGen) return;
-      if (buf) {
-        _blobUrlCache[t.file] = makeBlobUrl(buf, t.file);
-        audio.src = _blobUrlCache[t.file];
-        if (autoplay) audio.play().catch(function(){});
-        watchDuration(true);
-      } else {
-        delete cachedFiles[t.file];
-        if (!_isOffline) {
-          audio.src = streamUrl;
+    // Skip the async blob swap when locked/backgrounded and streaming is
+    // available: swapping src pauses playback and the re-play() runs outside the
+    // MediaSession gesture, which iOS blocks on the lock screen / CarPlay — the
+    // track would switch visually but stay silent until you reopen the app.
+    // The blob is still warmed by prepareNearbyBlobs for the next switch.
+    if (document.hidden && !_isOffline) {
+      prepareBlobUrl(t.file);
+    } else {
+      getCachedAudio(t.file, function(buf) {
+        if (genAtLoad !== _trackSrcGen) return;
+        if (buf) {
+          _blobUrlCache[t.file] = makeBlobUrl(buf, t.file);
+          audio.src = _blobUrlCache[t.file];
           if (autoplay) audio.play().catch(function(){});
+          watchDuration(true);
+        } else {
+          delete cachedFiles[t.file];
+          if (!_isOffline) {
+            audio.src = streamUrl;
+            if (autoplay) audio.play().catch(function(){});
+          }
         }
-      }
-    });
+      });
+    }
   } else {
     audio.src = streamUrl;
     doPlay();
@@ -4503,9 +4512,20 @@ function playFromAlbum(albumIdx, trackIdx) {
   selectTrack(trackIdx, true);
 }
 
+// Re-sync playQueuePos to the track that is actually playing. The queue can be
+// rebuilt in the background (buildDefaultQueue resets the position to -1), which
+// would otherwise make auto-advance jump to the first track instead of the next.
+function _syncQueuePos() {
+  if (playQueuePos < 0 || playQueue[playQueuePos] !== currentIdx) {
+    var p = playQueue.indexOf(currentIdx);
+    if (p >= 0) playQueuePos = p;
+  }
+}
+
 function prevTrack() {
   if (audio.currentTime > 3) { audio.currentTime = 0; return; }
   if (playQueue.length > 0) {
+    _syncQueuePos();
     playQueuePos--;
     if (playQueuePos < 0) playQueuePos = playQueue.length - 1;
     selectTrack(playQueue[playQueuePos], isPlaying);
@@ -4523,6 +4543,7 @@ function nextTrack() {
     return;
   }
   if (playQueue.length > 0) {
+    _syncQueuePos();
     playQueuePos++;
     if (playQueuePos >= playQueue.length) playQueuePos = 0;
     selectTrack(playQueue[playQueuePos], isPlaying);
@@ -6901,16 +6922,25 @@ function showCtxMenu(e, idx) {
   menu.style.left = Math.min(x, window.innerWidth - 200) + 'px';
   menu.style.top = Math.min(y, window.innerHeight - 300) + 'px';
   menu.classList.add('show');
-  // Close on any outside click
+  // Close on outside click/tap. Must IGNORE events inside the menu: otherwise a
+  // touchstart on a menu button pre-closes the menu, and the following click
+  // falls through to the track row beneath the button (switching tracks).
   setTimeout(function() {
-    document.addEventListener('click', hideCtxMenu, {once: true});
-    document.addEventListener('touchstart', hideCtxMenu, {once: true});
+    document.addEventListener('click', _ctxOutside, true);
+    document.addEventListener('touchstart', _ctxOutside, true);
   }, 50);
+}
+
+function _ctxOutside(e) {
+  if (e.target && e.target.closest && e.target.closest('#ctxMenu')) return;
+  hideCtxMenu();
 }
 
 function hideCtxMenu() {
   document.getElementById('ctxMenu').classList.remove('show');
   _ctxIdx = -1;
+  document.removeEventListener('click', _ctxOutside, true);
+  document.removeEventListener('touchstart', _ctxOutside, true);
 }
 
 var _forceNextIdx = -1;
@@ -7014,12 +7044,18 @@ function showPlCtxMenu(e, plId) {
   menu.style.top = Math.min(y, window.innerHeight - 200) + 'px';
   menu.classList.add('show');
   setTimeout(function() {
-    document.addEventListener('click', hidePlCtxMenu, {once: true});
-    document.addEventListener('touchstart', hidePlCtxMenu, {once: true});
+    document.addEventListener('click', _plCtxOutside, true);
+    document.addEventListener('touchstart', _plCtxOutside, true);
   }, 50);
+}
+function _plCtxOutside(e) {
+  if (e.target && e.target.closest && e.target.closest('#plCtxMenu')) return;
+  hidePlCtxMenu();
 }
 function hidePlCtxMenu() {
   document.getElementById('plCtxMenu').classList.remove('show');
+  document.removeEventListener('click', _plCtxOutside, true);
+  document.removeEventListener('touchstart', _plCtxOutside, true);
 }
 function plCtxDelete() {
   var id = _plCtxId;
