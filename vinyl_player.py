@@ -9,7 +9,9 @@ import base64
 import json
 import mimetypes
 import os
+import platform
 import re
+import shutil
 import socket
 import ssl
 import subprocess
@@ -95,6 +97,13 @@ _widget_state = {
 }
 _widget_command = None  # pending command for the browser to execute
 _widget_lock = threading.Lock()
+
+# Native file-picker results, keyed by username. The picker blocks until the
+# user chooses files, so it runs in a background thread and the browser polls
+# for the result — the single-threaded HTTP server must not block (audio
+# streaming and status polling would stall otherwise).
+_local_pick = {}
+_local_pick_lock = threading.Lock()
 
 # ──────────────────── User system ────────────────────
 
@@ -747,6 +756,7 @@ def vk_download_worker(urls, folder, order, mode, run_meta_after, username=""):
             time.sleep(0.3)
 
         vk_repad_tracks(save_dir)
+        repair_playlist_refs(str(save_dir))
 
         vk_state["log"].append("\n========================================")
         vk_state["log"].append("Скачано: {}/{}".format(downloaded, total))
@@ -762,6 +772,173 @@ def vk_download_worker(urls, folder, order, mode, run_meta_after, username=""):
     except Exception as e:
         vk_state["log"].append("ОШИБКА: внутренняя ошибка сервера")
     finally:
+        vk_state["running"] = False
+        vk_state["done"] = True
+
+
+# ──────────────────── Local file import ────────────────────
+
+def _native_pick_files():
+    """Open a native OS file picker on the server machine. Returns a list of
+    selected file paths, or [] if cancelled. Runs in a subprocess so it never
+    blocks/crashes the HTTP server thread (GUI must not run inline on macOS)."""
+    system = platform.system()
+    try:
+        if system == "Darwin":
+            script = (
+                'set theFiles to choose file with prompt "Выберите аудиофайлы" '
+                'with multiple selections allowed\n'
+                'set out to ""\n'
+                'repeat with f in theFiles\n'
+                '  set out to out & (POSIX path of f) & "\\n"\n'
+                'end repeat\n'
+                'return out'
+            )
+            res = subprocess.run(["osascript", "-e", script],
+                                 capture_output=True, text=True, timeout=600)
+            if res.returncode != 0:
+                return []  # user cancelled or error
+            return [l for l in res.stdout.splitlines() if l.strip()]
+        elif system == "Windows":
+            ps = (
+                'Add-Type -AssemblyName System.Windows.Forms | Out-Null; '
+                '$d = New-Object System.Windows.Forms.OpenFileDialog; '
+                '$d.Multiselect = $true; '
+                '$d.Title = "Выберите аудиофайлы"; '
+                '$d.Filter = "Audio|*.mp3;*.flac;*.m4a;*.ogg;*.wav;*.aac;*.opus|All files|*.*"; '
+                'if($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK){ '
+                '[Console]::Out.Write(($d.FileNames -join "`n")) }'
+            )
+            res = subprocess.run(["powershell", "-NoProfile", "-STA", "-Command", ps],
+                                 capture_output=True, text=True, timeout=600)
+            if res.returncode != 0:
+                return []
+            return [l for l in res.stdout.splitlines() if l.strip()]
+        else:  # Linux / other — try zenity, then kdialog
+            for cmd in (
+                ["zenity", "--file-selection", "--multiple", "--separator", "\n",
+                 "--title", "Выберите аудиофайлы"],
+                ["kdialog", "--getopenfilename", str(Path.home()),
+                 "--multiple", "--separate-output", "--title", "Выберите аудиофайлы"],
+            ):
+                try:
+                    res = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+                except FileNotFoundError:
+                    continue
+                if res.returncode != 0:
+                    return []
+                return [l for l in res.stdout.splitlines() if l.strip()]
+            return []
+    except Exception:
+        return []
+    return []
+
+
+def _parse_local_name(stem):
+    """Best-effort split of a filename stem into (artist, title)."""
+    s = re.sub(r'^\s*\d+[\.\)\-]\s+', '', stem).strip()  # strip leading "NN. " / "NN - "
+    if ' - ' in s:
+        artist, title = s.split(' - ', 1)
+        return artist.strip(), title.strip()
+    return '', s
+
+
+def local_import_worker(files, folder, mode, position, run_meta_after, username=""):
+    """Copy local audio files into the catalog at the requested position,
+    renumbering the existing numbered tracks. Reuses vk_state for progress."""
+    vk_state = get_vk_state(username)
+    vk_state["running"] = True
+    vk_state["done"] = False
+    vk_state["cancel"] = False
+    vk_state["log"] = []
+    vk_state["progress"] = 0
+    vk_state["total"] = 0
+
+    temps = []  # temp paths to clean up on failure
+    try:
+        save_dir = Path(folder)
+        save_dir.mkdir(parents=True, exist_ok=True)
+
+        srcs = []
+        for fp in files:
+            p = Path(fp)
+            if p.is_file() and p.suffix.lower() in SUPPORTED_FORMATS:
+                srcs.append(p)
+            else:
+                vk_state["log"].append("Пропущен (не аудио): " + str(fp))
+
+        new_count = len(srcs)
+        vk_state["total"] = new_count
+        if new_count == 0:
+            vk_state["log"].append("Нет подходящих аудиофайлов.")
+            return
+
+        # Step 1 (slow, failure-prone): copy new files to temp BEFORE touching
+        # the existing catalog, so an error here leaves it intact.
+        new_entries = []  # (name_part, tmp_path, suffix)
+        for i, src in enumerate(srcs):
+            if vk_state["cancel"]:
+                vk_state["log"].append("\nОтменено.")
+                return
+            vk_state["progress"] = i + 1
+            artist, title = _parse_local_name(src.stem)
+            name_part = (vk_safe_filename(artist) + " - " + vk_safe_filename(title)) if artist else vk_safe_filename(title)
+            tmp = save_dir / ("__tmp_li_new_{}_{}".format(i, src.name))
+            shutil.copy2(src, tmp)
+            temps.append(tmp)
+            new_entries.append((name_part, tmp, src.suffix))
+            vk_state["log"].append("Скопирован: " + name_part)
+
+        # Determine 0-based insert index among existing numbered tracks
+        existing = vk_get_existing_tracks(save_dir)
+        n_exist = len(existing)
+        if mode == "prepend":
+            insert_idx = 0
+        elif mode == "append":
+            insert_idx = n_exist
+        else:  # "position"
+            try:
+                insert_idx = max(0, min(int(position) - 1, n_exist))
+            except (TypeError, ValueError):
+                insert_idx = n_exist
+
+        # Step 2 (fast): temp-rename existing numbered tracks to avoid collisions
+        temp_others = []  # (name, tmp_path, suffix)
+        for num, tname, tpath in existing:
+            tmp = tpath.parent / ("__tmp_li_old_{}_{}".format(num, tpath.name))
+            tpath.rename(tmp)
+            temps.append(tmp)
+            temp_others.append((tname, tmp, tpath.suffix))
+
+        # Step 3: assemble final order and renumber sequentially
+        combined = temp_others[:insert_idx] + new_entries + temp_others[insert_idx:]
+        pad = len(str(len(combined)))
+        for i, (tname, tmp, suffix) in enumerate(combined):
+            final = "{}. {}{}".format(str(i + 1).zfill(pad), tname, suffix)
+            tmp.rename(save_dir / final)
+        temps = []  # all renamed successfully
+
+        vk_state["log"].append("\n========================================")
+        vk_state["log"].append("Добавлено: {} (на позицию {})".format(
+            new_count, insert_idx + 1))
+
+        # Renumbering renamed existing files — heal playlist references so they
+        # don't go blank.
+        repair_playlist_refs(folder)
+
+        if run_meta_after and not vk_state["cancel"]:
+            vk_state["log"].append("\nЗапускаю поиск мета-данных...")
+            metadata_worker(folder, username)
+    except Exception:
+        vk_state["log"].append("ОШИБКА: не удалось импортировать файлы")
+    finally:
+        # Clean up any leftover temp copies on failure
+        for tmp in temps:
+            try:
+                if tmp.exists():
+                    tmp.unlink()
+            except Exception:
+                pass
         vk_state["running"] = False
         vk_state["done"] = True
 
@@ -898,6 +1075,55 @@ def load_playlists(music_dir):
 
 def save_playlists(music_dir, playlists):
     _playlists_file(music_dir).write_text(json.dumps(playlists, ensure_ascii=False, indent=2))
+
+
+def _denumber_name(filename):
+    """Strip a leading 'NN. ' track-number prefix from a filename, so two
+    filenames that differ only by their catalog number compare equal."""
+    return re.sub(r'^\d+\.\s+', '', filename)
+
+
+def repair_playlist_refs(folder, playlists=None):
+    """Heal playlist track references whose filenames have drifted because the
+    catalog was renumbered (import to start/position, reorder, track edit).
+    A dangling reference is re-matched to the current file with the same
+    de-numbered name. Persists changes and returns the playlists.
+
+    Playlists store tracks by filename ("NN. Artist - Title.ext"); renumbering
+    changes the "NN" prefix, so without this the whole playlist goes blank."""
+    if playlists is None:
+        playlists = load_playlists(folder)
+    if not playlists:
+        return playlists
+    try:
+        current = [f.name for f in Path(folder).iterdir()
+                   if f.is_file() and f.suffix.lower() in SUPPORTED_FORMATS]
+    except (OSError, FileNotFoundError):
+        return playlists
+    current_set = set(current)
+    by_denum = {}
+    for name in current:
+        by_denum.setdefault(_denumber_name(name), name)
+    changed = False
+    for pl in playlists:
+        new_refs = []
+        for ref in pl.get("tracks", []):
+            if ref in current_set:
+                new_refs.append(ref)
+            else:
+                alt = by_denum.get(_denumber_name(ref))
+                if alt and alt not in new_refs:
+                    new_refs.append(alt)
+                    changed = True
+                else:
+                    new_refs.append(ref)  # keep dangling — harmless, skipped on render
+        pl["tracks"] = new_refs
+    if changed:
+        try:
+            save_playlists(folder, playlists)
+        except Exception:
+            pass
+    return playlists
 
 
 # ──────────────────── Metadata lookup ────────────────────
@@ -2886,6 +3112,16 @@ body { overflow: hidden; touch-action: none; position: fixed; width: 100%; heigh
       </div>
       <label style="display:flex;align-items:center;gap:5px;color:rgba(255,255,255,0.4);cursor:pointer;font-size:11px;margin-bottom:6px"><input type="checkbox" id="vkRunMeta" style="accent-color:#e94560"> Meta-данные после загрузки</label>
       <button class="folder-btn folder-btn-primary" style="width:100%;font-size:12px" onclick="startVkDownload()">Загрузить VK плейлисты</button>
+      <!-- Local file import (localhost only) -->
+      <div id="localImportBlock" style="display:none;margin-top:10px;padding-top:10px;border-top:1px solid rgba(255,255,255,0.08)">
+        <div style="font-size:11px;color:rgba(255,255,255,0.4);margin-bottom:6px">Добавить треки с этого компьютера:</div>
+        <div style="display:flex;gap:6px;margin-bottom:6px;font-size:11px">
+          <select id="localMode" class="folder-select" style="flex:1;padding:6px 24px 6px 8px;font-size:11px" onchange="updateLocalPosVis()"><option value="prepend">В начало</option><option value="append">В конец</option><option value="position">На позицию №</option></select>
+          <input type="number" id="localPos" min="1" value="1" style="display:none;width:70px;padding:6px 8px;border-radius:8px;border:1px solid rgba(255,255,255,0.12);background:rgba(255,255,255,0.06);color:#eee;font-size:11px;outline:none" placeholder="№">
+        </div>
+        <label style="display:flex;align-items:center;gap:5px;color:rgba(255,255,255,0.4);cursor:pointer;font-size:11px;margin-bottom:6px"><input type="checkbox" id="localRunMeta" style="accent-color:#e94560"> Meta-данные после импорта</label>
+        <button class="folder-btn folder-btn-secondary" style="width:100%;font-size:12px" onclick="pickLocalFiles()">Загрузить из локального хранилища</button>
+      </div>
     </div>
     <!-- External: Yandex/Spotify/Apple/SoundCloud -->
     <div id="impExternal" style="display:none">
@@ -4828,6 +5064,7 @@ function initWidgetBridge() {
 var currentUser = '';
 var isAdmin = false;
 var userRole = 'user';
+var isLocal = true;
 
 var _isOffline = false;
 
@@ -4839,7 +5076,7 @@ function applyConfig(cfg) {
   renderFolderSelect();
   if (!_isOffline) syncNetworkState();
   var isDemo = userRole === 'demo';
-  var isLocal = cfg.is_local !== false; // true if server says client is local, default true for cached
+  isLocal = cfg.is_local !== false; // true if server says client is local, default true for cached
   document.getElementById('adminBtn').style.display = isAdmin ? '' : 'none';
   document.getElementById('networkToggles').style.display = (isAdmin && !_isOffline && isLocal) ? 'flex' : 'none';
   document.getElementById('downloadCatalogBtn').style.display = (isAdmin && !_isOffline) ? '' : 'none';
@@ -5544,7 +5781,56 @@ function openVkModal() {
   } else {
     hint.textContent = 'Сначала выберите каталог';
   }
+  // Local import is only meaningful when the browser runs on the server machine
+  document.getElementById('localImportBlock').style.display = (isLocal && userRole !== 'demo') ? '' : 'none';
+  updateLocalPosVis();
   if (vkPolling) pollVk();
+}
+
+function updateLocalPosVis() {
+  var mode = document.getElementById('localMode').value;
+  var posEl = document.getElementById('localPos');
+  posEl.style.display = mode === 'position' ? '' : 'none';
+  var maxPos = (tracks.length || 0) + 1;
+  posEl.max = maxPos;
+  if (parseInt(posEl.value, 10) > maxPos) posEl.value = maxPos;
+  if (parseInt(posEl.value, 10) < 1 || isNaN(parseInt(posEl.value, 10))) posEl.value = 1;
+}
+
+function pickLocalFiles() {
+  var folder = document.getElementById('folderSelect').value;
+  if (!folder) { showToast('Выберите каталог'); return; }
+  showToast('Открываю проводник...');
+  fetch('/api/local/pick', {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'})
+  .then(function(r){return r.json()}).then(function(d) {
+    if (!d.ok) { showToast(d.error || 'Ошибка'); return; }
+    pollLocalPick();
+  }).catch(function(){ showToast('Ошибка связи с сервером'); });
+}
+
+function pollLocalPick() {
+  fetch('/api/local/pick/status').then(function(r){return r.json()}).then(function(d) {
+    if (!d.ok) { showToast(d.error || 'Ошибка'); return; }
+    if (d.picking) { setTimeout(pollLocalPick, 600); return; }
+    if (!d.files || !d.files.length) { showToast('Файлы не выбраны'); return; }
+    startLocalImport(d.files);
+  }).catch(function(){ showToast('Ошибка связи с сервером'); });
+}
+
+function startLocalImport(files) {
+  var folder = document.getElementById('folderSelect').value;
+  var mode = document.getElementById('localMode').value;
+  var position = parseInt(document.getElementById('localPos').value, 10) || 1;
+  var runMeta = document.getElementById('localRunMeta').checked;
+  fetch('/api/local/import', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({files:files, folder:folder, mode:mode, position:position, run_meta:runMeta})})
+  .then(function(r){return r.json()}).then(function(d) {
+    if (d.already_running) { showToast('Загрузка уже идёт'); pollVk(); return; }
+    if (!d.ok) { showToast(d.error || 'Ошибка'); return; }
+    document.getElementById('vkProgressSection').style.display = '';
+    vkPolling = true;
+    pollVk();
+  }).catch(function(){ showToast('Ошибка связи с сервером'); });
 }
 
 function closeVkModal() {
@@ -7912,6 +8198,19 @@ class Handler(BaseHTTPRequestHandler):
                 "total": vs["total"], "log": vs["log"][-300:], "has_vk": HAS_VK,
             })
 
+        elif path == "/api/local/pick/status":
+            if not self._is_localhost():
+                self._respond_json({"ok": False, "error": "forbidden"})
+                return
+            with _local_pick_lock:
+                st = _local_pick.get(user, {"picking": False, "done": False, "files": []})
+            self._respond_json({
+                "ok": True,
+                "picking": st.get("picking", False),
+                "done": st.get("done", False),
+                "files": st.get("files", []),
+            })
+
         elif path.startswith("/api/cover/"):
             filename = unquote(path[len("/api/cover/"):])
             # Verify user access to current MUSIC_DIR
@@ -8420,6 +8719,59 @@ class Handler(BaseHTTPRequestHandler):
             get_vk_state(user)["cancel"] = True
             self._respond_json({"ok": True})
 
+        elif path == "/api/local/pick":
+            # Open a native file picker on the server machine. Only the local
+            # machine may do this — over LAN/WAN the dialog would pop up on the
+            # server, not the remote device, so it's meaningless and forbidden.
+            if not self._is_localhost():
+                self._respond_json({"ok": False, "error": "Доступно только на локальном компьютере."})
+                return
+            if self._deny_demo(udata):
+                return
+            with _local_pick_lock:
+                st = _local_pick.get(user)
+                if st and st.get("picking"):
+                    self._respond_json({"ok": True, "picking": True})
+                    return
+                _local_pick[user] = {"picking": True, "done": False, "files": []}
+
+            def _run_pick(uname=user):
+                files = _native_pick_files()
+                with _local_pick_lock:
+                    _local_pick[uname] = {"picking": False, "done": True, "files": files}
+
+            threading.Thread(target=_run_pick, daemon=True).start()
+            self._respond_json({"ok": True, "picking": True})
+
+        elif path == "/api/local/import":
+            if not self._is_localhost():
+                self._respond_json({"ok": False, "error": "Доступно только на локальном компьютере."})
+                return
+            if self._deny_demo(udata):
+                return
+            vs = get_vk_state(user)
+            if vs["running"]:
+                self._respond_json({"ok": False, "already_running": True})
+                return
+            files = data.get("files", [])
+            folder = data.get("folder", _user_music_dirs.get(user, ""))
+            user_folders = get_user_folders(user)
+            if folder not in user_folders:
+                is_admin_user = udata.get("is_admin", False) if udata else False
+                if not is_admin_user:
+                    self._respond_json({"ok": False, "error": "Нет доступа к каталогу."})
+                    return
+            mode = data.get("mode", "append")
+            position = data.get("position", 1)
+            run_meta = data.get("run_meta", False)
+            if not files:
+                self._respond_json({"ok": False, "error": "Файлы не выбраны."})
+                return
+            t = threading.Thread(target=local_import_worker,
+                                 args=(files, folder, mode, position, run_meta, user), daemon=True)
+            t.start()
+            self._respond_json({"ok": True})
+
         elif path == "/api/import/parse":
             # Parse external playlist and match tracks with VK
             if self._deny_demo(udata): return
@@ -8761,6 +9113,8 @@ class Handler(BaseHTTPRequestHandler):
                             cover = fetch_cover_art(found)
                             write_metadata_to_file(fp, found, cover)
                     threading.Thread(target=do_meta, daemon=True).start()
+                # Reordering renumbered other files — heal playlist references.
+                repair_playlist_refs(folder)
                 self._respond_json({"ok": True, "new_file": new_name})
             except Exception:
                 self._respond_json({"ok": False, "error": "Ошибка переименования."})
@@ -8775,6 +9129,7 @@ class Handler(BaseHTTPRequestHandler):
             playlists = load_playlists(folder)
 
             if action == "list":
+                playlists = repair_playlist_refs(folder, playlists)
                 self._respond_json({"ok": True, "playlists": playlists})
 
             elif action in ("create", "update", "delete"):
@@ -8859,6 +9214,7 @@ class Handler(BaseHTTPRequestHandler):
                     ext = Path(fname).suffix
                     new_name = "{}. {}{}".format(str(i+1).zfill(pad), name_part, ext)
                     tmp.rename(p / new_name)
+                repair_playlist_refs(folder)
                 self._respond_json({"ok": True})
             except Exception as e:
                 self._respond_json({"ok": False, "error": "Ошибка переименования."})
