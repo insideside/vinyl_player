@@ -9779,6 +9779,10 @@ def main():
     # on the same machine without certificate friction. Saved settings are
     # left untouched — LAN/WAN can still be toggled from the running app.
     local = "--local" in sys.argv
+    # --no-browser starts the server without auto-opening a browser tab. Used by
+    # the desktop widget toggle: the player is opened separately (e.g. from the
+    # Safari "Add to Dock" web app), so the widget shouldn't pop a tab.
+    no_browser = "--no-browser" in sys.argv
     IS_PUBLIC = public
     bind_addr = "0.0.0.0" if public else "127.0.0.1"
 
@@ -9832,7 +9836,8 @@ def main():
         local_ip = get_local_ip()
         print("LAN: {}://{}:{}".format(proto, local_ip, SERVER_PORT))
     print("Ctrl+C для остановки")
-    webbrowser.open(url)
+    if not no_browser:
+        webbrowser.open(url)
 
     try:
         while True:
