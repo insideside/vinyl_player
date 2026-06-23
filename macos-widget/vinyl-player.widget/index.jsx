@@ -127,7 +127,7 @@ export const render = ({ output }) => {
     <div id="vinyl-widget-root" className={"vw-root theme-" + theme}>
       <div className="vw-header">
         <span className={"vw-dot " + (running ? "on" : "off")} />
-        <span className="vw-name">Vinyl Player</span>
+        <span className="vw-name">insideside music</span>
         <span
           className="vw-theme"
           title={"Тема: " + theme}
