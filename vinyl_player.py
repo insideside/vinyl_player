@@ -890,6 +890,7 @@ def local_import_worker(files, folder, mode, position, run_meta_after, username=
         # Step 1 (slow, failure-prone): copy new files to temp BEFORE touching
         # the existing catalog, so an error here leaves it intact.
         new_entries = []  # (name_part, tmp_path, suffix)
+        new_meta = {}     # tmp_path -> (artist, title) for imported files
         for i, src in enumerate(srcs):
             if vk_state["cancel"]:
                 vk_state["log"].append("\nОтменено.")
@@ -901,6 +902,7 @@ def local_import_worker(files, folder, mode, position, run_meta_after, username=
             shutil.copy2(src, tmp)
             temps.append(tmp)
             new_entries.append((name_part, tmp, src.suffix))
+            new_meta[tmp] = (artist, title)  # for optional metadata lookup below
             vk_state["log"].append("Скопирован: " + name_part)
 
         # Determine 0-based insert index among existing numbered tracks
@@ -927,9 +929,13 @@ def local_import_worker(files, folder, mode, position, run_meta_after, username=
         # Step 3: assemble final order and renumber sequentially
         combined = temp_others[:insert_idx] + new_entries + temp_others[insert_idx:]
         pad = len(str(len(combined)))
+        imported_finals = []  # (final_name, artist, title) for the just-imported files
         for i, (tname, tmp, suffix) in enumerate(combined):
             final = "{}. {}{}".format(str(i + 1).zfill(pad), tname, suffix)
             tmp.rename(save_dir / final)
+            if tmp in new_meta:
+                a, t = new_meta[tmp]
+                imported_finals.append((final, a, t))
         temps = []  # all renamed successfully
 
         vk_state["log"].append("\n========================================")
@@ -941,8 +947,27 @@ def local_import_worker(files, folder, mode, position, run_meta_after, username=
         repair_playlist_refs(folder)
 
         if run_meta_after and not vk_state["cancel"]:
-            vk_state["log"].append("\nЗапускаю поиск мета-данных...")
-            metadata_worker(folder, username)
+            # Fetch & WRITE metadata for the imported files (fill missing fields:
+            # album/year/cover — never clobber existing tags). Unlike the bulk
+            # scanner, this writes directly and is scoped to the new files.
+            vk_state["log"].append("\nИщу мета-данные для импортированных треков...")
+            for final, a, t in imported_finals:
+                if vk_state["cancel"]:
+                    break
+                fp = save_dir / final
+                existing = get_metadata(str(fp))
+                if existing.get("artist") and existing.get("album") and existing.get("cover"):
+                    continue  # already complete — nothing to fill
+                found = search_metadata(a or existing.get("artist", ""),
+                                        t or existing.get("title", ""))
+                if found:
+                    cover = fetch_cover_art(found)
+                    write_metadata_to_file(str(fp), found, cover, overwrite=False)
+                    vk_state["log"].append("  Мета: " + final)
+                else:
+                    vk_state["log"].append("  Не найдено: " + final)
+                time.sleep(0.2)
+            vk_state["log"].append("Мета-данные готовы.")
     except Exception:
         vk_state["log"].append("ОШИБКА: не удалось импортировать файлы")
     finally:
@@ -1644,6 +1669,55 @@ def metadata_worker(music_dir, username=""):
     meta_state["log"].append("\nСканирование завершено. Найдено предложений: {}".format(found_count))
     meta_state["running"] = False
     meta_state["done"] = True
+
+
+def metadata_bulk_worker(music_dir, files, username=""):
+    """Fetch & WRITE metadata for a specific set of files (multi-select bulk
+    action). Fill-only: never clobbers existing tags, only fills what's missing
+    (album/year/cover). Runs in the background; progress via meta_state."""
+    meta_state = get_meta_state(username)
+    meta_state["running"] = True
+    meta_state["done"] = False
+    meta_state["cancel"] = False
+    meta_state["log"] = []
+    meta_state["progress"] = 0
+    meta_state["total"] = len(files)
+    meta_state["proposals"] = []
+
+    done_set = _load_meta_done(music_dir)
+    written = 0
+    try:
+        for i, fname in enumerate(files):
+            if meta_state["cancel"]:
+                break
+            meta_state["progress"] = i + 1
+            fp = Path(music_dir) / fname
+            if not fp.is_file():
+                continue
+            existing = get_metadata(str(fp))
+            if existing.get("artist") and existing.get("album") and existing.get("cover"):
+                done_set.add(fname)
+                continue
+            artist, title = parse_track_name(fname)
+            found = search_metadata(artist, title)
+            if found:
+                cover = fetch_cover_art(found)
+                if write_metadata_to_file(str(fp), found, cover, overwrite=False):
+                    written += 1
+                    done_set.add(fname)
+                    meta_state["log"].append("  OK: " + fname)
+                else:
+                    meta_state["log"].append("  Без изменений: " + fname)
+            else:
+                meta_state["log"].append("  Не найдено: " + fname)
+            time.sleep(0.2)
+        _save_meta_done(music_dir, done_set)
+        meta_state["log"].append("\nГотово. Обновлено: {}".format(written))
+    except Exception:
+        meta_state["log"].append("ОШИБКА при поиске мета-данных")
+    finally:
+        meta_state["running"] = False
+        meta_state["done"] = True
 
 
 def metadata_apply(music_dir, proposals, username=""):
@@ -2476,6 +2550,17 @@ body {
 .track-title-row { display: flex; align-items: center; justify-content: center; gap: 8px; }
 .track-title-row .track-title { min-width: 0; }
 .fmt-badge-player { font-size: 11px; padding: 2px 6px; flex-shrink: 0; }
+/* Multi-select: a checkable circle to the left of the cover (cover/title shift right). */
+.sel-circle {
+  width: 22px; height: 22px; border-radius: 50%; flex-shrink: 0; margin-right: 10px;
+  border: 2px solid rgba(255,255,255,0.35); position: relative; transition: background 0.15s, border-color 0.15s;
+}
+.sel-circle.on { background: #e94560; border-color: #e94560; }
+.sel-circle.on::after {
+  content: '\2713'; position: absolute; inset: 0; display: flex; align-items: center;
+  justify-content: center; color: #fff; font-size: 13px; font-weight: 700;
+}
+.playlist-item.selected { background: rgba(233,69,96,0.12); }
 .imp-tab.active { background: #e94560 !important; color: #fff !important; border-color: #e94560 !important; }
 .imp-match { display:flex; align-items:flex-start; gap:8px; padding:8px; border-bottom:1px solid rgba(255,255,255,0.04); font-size:11px; }
 .imp-match .orig { color:rgba(255,255,255,0.5); flex:1; min-width:0; }
@@ -3030,6 +3115,10 @@ body { overflow: hidden; touch-action: none; position: fixed; width: 100%; heigh
         <button class="shuffle-btn" onclick="saveEdit()" data-tip="Сохранить" style="color:#52b788"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg></button>
         <button class="shuffle-btn" onclick="cancelEdit()" data-tip="Отмена" style="color:#e94560"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg></button>
       </div>
+      <div id="selectControls" style="display:none;gap:4px;align-items:center">
+        <button class="shuffle-btn" onclick="openBulkMenu(event)" data-tip="Действия с выбранными"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 8c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z"/></svg></button>
+        <button class="shuffle-btn" onclick="exitSelection()" data-tip="Отменить выбор" style="color:#e94560"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg></button>
+      </div>
     </div>
 
     <div class="tab-slider">
@@ -3466,15 +3555,7 @@ body { overflow: hidden; touch-action: none; position: fixed; width: 100%; heigh
 <audio id="audioEl"></audio>
 
 <!-- Track context menu -->
-<div class="ctx-menu" id="ctxMenu">
-  <div class="ctx-item" onclick="ctxPlayNext()"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></svg> Играть следующим</div>
-  <div class="ctx-item" id="ctxCacheItem" onclick="ctxToggleCache()"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg> <span id="ctxCacheLabel">Кэшировать</span></div>
-  <div class="ctx-sep"></div>
-  <div class="ctx-sub-header">Добавить в плейлист</div>
-  <div class="ctx-sub" id="ctxPlaylists"></div>
-  <div class="ctx-sep"></div>
-  <div class="ctx-item danger" onclick="ctxDelete()"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg> Удалить</div>
-</div>
+<div class="ctx-menu" id="ctxMenu"></div>
 
 <!-- Playlist context menu -->
 <div class="ctx-menu" id="plCtxMenu">
@@ -4310,6 +4391,16 @@ function renderTracks() {
         + ' ondragover="onDragOver(event,' + i + ')" ondrop="onDrop(event,' + i + ')"'
         + ' ontouchstart="onTouchDragStart(event,' + i + ')">'
         + '<span class="drag-handle">&#9776;</span>'
+        + '<div class="cover-thumb">' + coverHtml + '</div>'
+        + '<div class="info"><div class="name-row"><span class="name">' + esc(t.title) + '</span>' + fmtBadgeHtml(t) + '</div>'
+        + '<div class="artist">' + esc(t.artist) + '</div></div></div>';
+    } else if (selectionMode) {
+      var selOn = !!selectedFiles[t.file];
+      html += '<div class="playlist-item' + (i === currentIdx ? ' active' : '') + (selOn ? ' selected' : '') + '"'
+        + ' onclick="toggleSelect(' + i + ')"'
+        + ' oncontextmenu="event.preventDefault();showCtxMenu(event,' + i + ')"'
+        + ' data-longpress="' + i + '">'
+        + '<div class="sel-circle' + (selOn ? ' on' : '') + '"></div>'
         + '<div class="cover-thumb">' + coverHtml + '</div>'
         + '<div class="info"><div class="name-row"><span class="name">' + esc(t.title) + '</span>' + fmtBadgeHtml(t) + '</div>'
         + '<div class="artist">' + esc(t.artist) + '</div></div></div>';
@@ -7256,24 +7347,49 @@ var editingTrackIdx = -1;
 var _ctxIdx = -1;
 var _ctxLongTimer = null;
 
+var _ctxSvgs = {
+  next: 'M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z',
+  cache: 'M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z',
+  select: 'M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z',
+  meta: 'M12 3v10.55A4 4 0 1014 17V7h4V3z',
+  del: 'M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z'
+};
+function _ctxSvg(p) { return '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="' + p + '"/></svg>'; }
+function _ctxPlSubmenu(handler) {
+  if (userPlaylists.length === 0) return '<div class="ctx-item" style="color:rgba(255,255,255,0.3);pointer-events:none">Нет плейлистов</div>';
+  var h = '';
+  for (var p = 0; p < userPlaylists.length; p++) {
+    var pl = userPlaylists[p];
+    h += '<div class="ctx-item" onclick="' + handler + '(\'' + pl.id + '\',\'start\')">' + esc(pl.name) + ' <span style="color:rgba(255,255,255,0.25);margin-left:auto;font-size:10px">в начало</span></div>';
+    h += '<div class="ctx-item" onclick="' + handler + '(\'' + pl.id + '\',\'end\')">' + esc(pl.name) + ' <span style="color:rgba(255,255,255,0.25);margin-left:auto;font-size:10px">в конец</span></div>';
+  }
+  return h;
+}
+
 function showCtxMenu(e, idx) {
   _ctxIdx = idx;
   var menu = document.getElementById('ctxMenu');
-  // Update cache/uncache label
-  var isCached = idx >= 0 && idx < tracks.length && isTrackCached(tracks[idx].file);
-  document.getElementById('ctxCacheLabel').textContent = isCached ? 'Удалить из кэша' : 'Кэшировать';
-  // Build playlist submenu
-  var plHtml = '';
-  if (userPlaylists.length === 0) {
-    plHtml = '<div class="ctx-item" style="color:rgba(255,255,255,0.3);pointer-events:none">Нет плейлистов</div>';
+  var html = '';
+  if (selectionMode && selectedCount() > 0) {
+    // Bulk actions on the selected tracks (no "play next" — meaningless for many).
+    html += '<div class="ctx-sub-header">Выбрано: ' + selectedCount() + '</div>';
+    html += '<div class="ctx-item" onclick="bulkMeta()">' + _ctxSvg(_ctxSvgs.meta) + ' Запросить мета-данные</div>';
+    html += '<div class="ctx-item" onclick="bulkCache()">' + _ctxSvg(_ctxSvgs.cache) + ' Кэшировать</div>';
+    html += '<div class="ctx-sep"></div><div class="ctx-sub-header">Добавить в плейлист</div>';
+    html += '<div class="ctx-sub">' + _ctxPlSubmenu('bulkAddToPlaylist') + '</div>';
+    html += '<div class="ctx-sep"></div>';
+    html += '<div class="ctx-item danger" onclick="bulkDelete()">' + _ctxSvg(_ctxSvgs.del) + ' Удалить выбранные</div>';
   } else {
-    for (var p = 0; p < userPlaylists.length; p++) {
-      var pl = userPlaylists[p];
-      plHtml += '<div class="ctx-item" onclick="ctxAddToPlaylist(\'' + pl.id + '\',\'start\')">' + esc(pl.name) + ' <span style="color:rgba(255,255,255,0.25);margin-left:auto;font-size:10px">в начало</span></div>';
-      plHtml += '<div class="ctx-item" onclick="ctxAddToPlaylist(\'' + pl.id + '\',\'end\')">' + esc(pl.name) + ' <span style="color:rgba(255,255,255,0.25);margin-left:auto;font-size:10px">в конец</span></div>';
-    }
+    var isCached = idx >= 0 && idx < tracks.length && isTrackCached(tracks[idx].file);
+    html += '<div class="ctx-item" onclick="ctxPlayNext()">' + _ctxSvg(_ctxSvgs.next) + ' Играть следующим</div>';
+    html += '<div class="ctx-item" onclick="ctxToggleCache()">' + _ctxSvg(_ctxSvgs.cache) + ' ' + (isCached ? 'Удалить из кэша' : 'Кэшировать') + '</div>';
+    html += '<div class="ctx-item" onclick="ctxSelectStart()">' + _ctxSvg(_ctxSvgs.select) + ' Выбрать</div>';
+    html += '<div class="ctx-sep"></div><div class="ctx-sub-header">Добавить в плейлист</div>';
+    html += '<div class="ctx-sub">' + _ctxPlSubmenu('ctxAddToPlaylist') + '</div>';
+    html += '<div class="ctx-sep"></div>';
+    html += '<div class="ctx-item danger" onclick="ctxDelete()">' + _ctxSvg(_ctxSvgs.del) + ' Удалить</div>';
   }
-  document.getElementById('ctxPlaylists').innerHTML = plHtml;
+  menu.innerHTML = html;
   // Position
   var x = e.clientX || (e.touches && e.touches[0] ? e.touches[0].clientX : 100);
   var y = e.clientY || (e.touches && e.touches[0] ? e.touches[0].clientY : 100);
@@ -7366,6 +7482,136 @@ function ctxToggleCache() {
   } else {
     cacheTrack(file, function(ok) { if (ok) { renderTracks(); showToast('Кэшировано'); } });
   }
+}
+
+// ── Multi-select (bulk management) ──
+var selectionMode = false;
+var selectedFiles = {};  // file -> true
+function selectedCount() { return Object.keys(selectedFiles).length; }
+function getSelectedFilesInOrder() {
+  var out = [];
+  for (var i = 0; i < tracks.length; i++) if (selectedFiles[tracks[i].file]) out.push(tracks[i].file);
+  return out;
+}
+function updateSelectHeader() {
+  document.getElementById('playlistHeader').textContent = 'Выбрано: ' + selectedCount();
+}
+function ctxSelectStart() {
+  var idx = _ctxIdx;
+  hideCtxMenu();
+  selectionMode = true;
+  selectedFiles = {};
+  if (idx >= 0 && idx < tracks.length) selectedFiles[tracks[idx].file] = true;
+  // Hide controls that are irrelevant while selecting; show the select bar.
+  ['cacheBtn','cachedOnlyBtn','shuffleListBtn','editBtn','downloadCatalogBtn'].forEach(function(id){
+    var el = document.getElementById(id); if (el) el.style.display = 'none';
+  });
+  document.getElementById('selectControls').style.display = 'flex';
+  updateSelectHeader();
+  renderTracks();
+}
+function toggleSelect(i) {
+  if (i < 0 || i >= tracks.length) return;
+  var f = tracks[i].file;
+  if (selectedFiles[f]) delete selectedFiles[f]; else selectedFiles[f] = true;
+  updateSelectHeader();
+  renderTracks();
+}
+function exitSelection() {
+  selectionMode = false;
+  selectedFiles = {};
+  document.getElementById('selectControls').style.display = 'none';
+  // Restore header controls to their normal visibility.
+  document.getElementById('shuffleListBtn').style.display = '';
+  var onTracks = activeTab === 'tracks';
+  document.getElementById('cacheBtn').style.display = onTracks ? '' : 'none';
+  document.getElementById('cachedOnlyBtn').style.display = onTracks ? '' : 'none';
+  document.getElementById('downloadCatalogBtn').style.display = (isAdmin && !_isOffline) ? '' : 'none';
+  document.getElementById('editBtn').style.display = (isNumberedCatalog && userRole !== 'demo') ? '' : 'none';
+  updateTrackCounter();
+  renderTracks();
+}
+function openBulkMenu(e) {
+  if (selectedCount() === 0) { showToast('Ничего не выбрано'); return; }
+  showCtxMenu(e, -1);
+}
+
+function bulkAddToPlaylist(plId, where) {
+  var files = getSelectedFilesInOrder();
+  hideCtxMenu();
+  if (!files.length) return;
+  var pl = userPlaylists.find(function(p) { return p.id === plId; });
+  if (!pl) { exitSelection(); return; }
+  var existing = pl.tracks.slice();
+  var toAdd = files.filter(function(f) { return existing.indexOf(f) < 0; });
+  if (!toAdd.length) { showToast('Уже в плейлисте'); exitSelection(); return; }
+  var newTracks = where === 'start' ? toAdd.concat(existing) : existing.concat(toAdd);
+  var folder = document.getElementById('folderSelect').value;
+  fetch('/api/playlists', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({folder: folder, action: 'update', id: plId, tracks: newTracks})})
+  .then(function(r){return r.json()}).then(function(d) {
+    if (d.ok) { pl.tracks = newTracks; showToast('Добавлено ' + toAdd.length + ' в «' + pl.name + '»'); }
+    else { showToast(d.error || 'Ошибка'); }
+    exitSelection();
+  });
+}
+
+function bulkCache() {
+  var files = getSelectedFilesInOrder();
+  hideCtxMenu();
+  if (!files.length) return;
+  var todo = files.filter(function(f) { return !isTrackCached(f); });
+  exitSelection();
+  if (!todo.length) { showToast('Уже в кэше'); return; }
+  showToast('Кэширую ' + todo.length + '...');
+  var done = 0;
+  (function next() {
+    if (!todo.length) { renderTracks(); showToast('Кэшировано: ' + done); return; }
+    var f = todo.shift();
+    cacheTrack(f, function(ok) { if (ok) done++; next(); });
+  })();
+}
+
+function bulkDelete() {
+  var files = getSelectedFilesInOrder();
+  hideCtxMenu();
+  if (!files.length) return;
+  showConfirm('Удалить ' + files.length + ' трек(ов)?\nФайлы будут удалены с диска.', function() {
+    var folder = document.getElementById('folderSelect').value;
+    var playingFile = (currentIdx >= 0 && currentIdx < tracks.length) ? tracks[currentIdx].file : null;
+    fetch('/api/track/delete_bulk', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({folder: folder, files: files})})
+    .then(function(r){return r.json()}).then(function(d) {
+      if (d.ok) {
+        if (playingFile && files.indexOf(playingFile) >= 0) { audio.pause(); setPlayState(false); }
+        showToast('Удалено: ' + (d.deleted != null ? d.deleted : files.length));
+        exitSelection();
+        loadFolder(folder);
+      } else { showToast(d.error || 'Ошибка'); }
+    });
+  }, 'Удалить');
+}
+
+function bulkMeta() {
+  var files = getSelectedFilesInOrder();
+  hideCtxMenu();
+  if (!files.length) return;
+  var folder = document.getElementById('folderSelect').value;
+  fetch('/api/meta/bulk', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({folder: folder, files: files})})
+  .then(function(r){return r.json()}).then(function(d) {
+    if (d.already_running) { showToast('Поиск мета-данных уже идёт'); return; }
+    if (!d.ok) { showToast(d.error || 'Ошибка'); return; }
+    showToast('Запрашиваю мета-данные для ' + files.length + ' трек(ов)...');
+    exitSelection();
+    pollBulkMeta(folder);
+  });
+}
+function pollBulkMeta(folder) {
+  fetch('/api/meta/status').then(function(r){return r.json()}).then(function(d) {
+    if (d.running) { setTimeout(function(){ pollBulkMeta(folder); }, 1000); }
+    else { showToast('Мета-данные обновлены'); loadFolder(folder); }
+  }).catch(function(){});
 }
 
 function deleteEditTrack() {
@@ -7525,8 +7771,11 @@ function saveTrackEdit() {
     body: JSON.stringify({folder: folder, file: t.file, title: title, artist: artist, order: order, run_meta: runMeta})})
   .then(function(r){return r.json()}).then(function(d) {
     if (d.ok) {
-      showToast('Трек обновлён');
+      showToast(runMeta ? 'Трек обновлён, ищу мета-данные...' : 'Трек обновлён');
       document.getElementById('trackEditOverlay').classList.remove('show');
+      // Metadata refresh runs in the background on the server — reload again
+      // shortly so the freshly written album/cover show up.
+      if (runMeta) setTimeout(function(){ loadFolder(document.getElementById('folderSelect').value); }, 5000);
       var wasCurrentTrack = currentIdx === editingTrackIdx;
       // Update player UI immediately if this is the current track
       if (wasCurrentTrack) {
@@ -9088,6 +9337,47 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as ex:
                 self._respond_json({"ok": False, "error": str(ex)})
 
+        elif path == "/api/track/delete_bulk":
+            if self._deny_demo(udata): return
+            folder = data.get("folder", _user_music_dirs.get(user, ""))
+            files = data.get("files", [])
+            if not folder or not files:
+                self._respond_json({"ok": False, "error": "Нет данных."})
+                return
+            user_folders = get_user_folders(user)
+            if folder not in user_folders:
+                self._respond_json({"ok": False, "error": "Нет доступа."})
+                return
+            deleted = 0
+            for fn in files:
+                fp = _safe_path(folder, fn)
+                if fp and fp.is_file():
+                    try:
+                        fp.unlink()
+                        deleted += 1
+                    except Exception:
+                        pass
+            self._respond_json({"ok": True, "deleted": deleted})
+
+        elif path == "/api/meta/bulk":
+            if self._deny_demo(udata): return
+            ms = get_meta_state(user)
+            if ms["running"]:
+                self._respond_json({"ok": False, "already_running": True})
+                return
+            folder = data.get("folder", _user_music_dirs.get(user, ""))
+            files = data.get("files", [])
+            if not folder or not files:
+                self._respond_json({"ok": False, "error": "Нет данных."})
+                return
+            user_folders = get_user_folders(user)
+            if folder not in user_folders:
+                self._respond_json({"ok": False, "error": "Нет доступа."})
+                return
+            t = threading.Thread(target=metadata_bulk_worker, args=(folder, files, user), daemon=True)
+            t.start()
+            self._respond_json({"ok": True})
+
         elif path == "/api/track/edit":
             if self._deny_demo(udata): return
             folder = data.get("folder", _user_music_dirs.get(user, ""))
@@ -9183,7 +9473,14 @@ class Handler(BaseHTTPRequestHandler):
                         found = search_metadata(new_artist or '', new_title)
                         if found:
                             cover = fetch_cover_art(found)
-                            write_metadata_to_file(fp, found, cover)
+                            # User explicitly asked to refresh — overwrite even when
+                            # tags already exist (the default fill-only mode would do
+                            # nothing for an already-tagged track). Keep the title/
+                            # artist the user just set; only refresh album/year/cover.
+                            refresh = dict(found)
+                            refresh.pop('title', None)
+                            refresh.pop('artist', None)
+                            write_metadata_to_file(fp, refresh, cover, overwrite=True)
                     threading.Thread(target=do_meta, daemon=True).start()
                 # Reordering renumbered other files — heal playlist references.
                 repair_playlist_refs(folder)
