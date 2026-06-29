@@ -84,7 +84,17 @@ VK_APP_ID = 2685278
 VK_USER_AGENT = "KateMobileAndroid/56 lite-460 (Android 4.4.2; SDK 19; x86; unknown Android SDK built for x86; en)"
 IS_PUBLIC = False
 
-SUPPORTED_FORMATS = {'.mp3', '.flac', '.m4a', '.ogg', '.wav', '.aac', '.opus'}
+SUPPORTED_FORMATS = {'.mp3', '.flac', '.m4a', '.ogg', '.wav', '.aac', '.opus', '.aiff', '.aif', '.alac'}
+
+# Explicit Content-Type per extension. Mobile browsers (iOS Safari especially)
+# are strict about the audio MIME type and refuse to play with a wrong/guessed
+# one, so we don't rely on mimetypes.guess_type for these.
+AUDIO_MIME = {
+    '.mp3': 'audio/mpeg', '.flac': 'audio/flac', '.m4a': 'audio/mp4',
+    '.aac': 'audio/aac', '.ogg': 'audio/ogg', '.opus': 'audio/ogg',
+    '.wav': 'audio/wav', '.aiff': 'audio/aiff', '.aif': 'audio/aiff',
+    '.alac': 'audio/mp4',
+}
 
 # ──────────────────── Desktop widget bridge ────────────────────
 # In-memory bridge between the browser player and an external desktop widget
@@ -443,8 +453,12 @@ def vk_search_fallback(service, artist, title, filepath):
 
 
 def vk_get_existing_tracks(folder):
+    # All supported audio formats, not just mp3 — local imports can be flac/m4a/
+    # etc., and missing them here breaks renumbering (each batch restarted at 1).
     tracks = []
-    for f in Path(folder).glob("*.mp3"):
+    for f in Path(folder).iterdir():
+        if not f.is_file() or f.suffix.lower() not in SUPPORTED_FORMATS:
+            continue
         m = re.match(r'^(\d+)\.\s+(.+)$', f.stem)
         if m:
             tracks.append((int(m.group(1)), m.group(2), f))
@@ -461,7 +475,7 @@ def vk_renumber_tracks(folder, start_from):
     for i in reversed(range(len(tracks))):
         _, name, old_path = tracks[i]
         new_num = str(start_from + i).zfill(pad)
-        new_path = old_path.parent / (new_num + ". " + name + ".mp3")
+        new_path = old_path.parent / (new_num + ". " + name + old_path.suffix)
         if old_path != new_path:
             old_path.rename(new_path)
 
@@ -473,7 +487,7 @@ def vk_repad_tracks(folder):
     mx = max(t[0] for t in tracks)
     pad = len(str(mx))
     for num, name, old_path in tracks:
-        new_path = old_path.parent / (str(num).zfill(pad) + ". " + name + ".mp3")
+        new_path = old_path.parent / (str(num).zfill(pad) + ". " + name + old_path.suffix)
         if old_path != new_path:
             old_path.rename(new_path)
 
@@ -965,7 +979,12 @@ def get_metadata(filepath):
         "album": "",
         "cover": None,
         "cover_mime": None,
+        "fmt": "",  # lossless format label (FLAC/ALAC/WAV/AIFF); "" for lossy
     }
+    # Unambiguous lossless formats are known from the extension alone. m4a is a
+    # container (AAC=lossy OR ALAC=lossless), so it's resolved by codec below.
+    meta["fmt"] = {".flac": "FLAC", ".wav": "WAV", ".aiff": "AIFF",
+                   ".aif": "AIFF", ".alac": "ALAC"}.get(p.suffix.lower(), "")
     if not HAS_MUTAGEN:
         return meta
 
@@ -1003,6 +1022,10 @@ def get_metadata(filepath):
             if covr:
                 meta["cover"] = base64.b64encode(bytes(covr[0])).decode()
                 meta["cover_mime"] = "image/jpeg"
+            # ALAC = lossless, AAC = lossy — both live in .m4a, tell them apart
+            info = getattr(audio, "info", None)
+            codec = ((getattr(info, "codec", "") or getattr(info, "codec_description", "")) or "").lower()
+            meta["fmt"] = "ALAC" if "alac" in codec else ""
         elif ext == '.ogg':
             audio = OggVorbis(filepath)
             meta["title"] = audio.get("title", [p.stem])[0]
@@ -1035,6 +1058,7 @@ def scan_library(music_dir):
                 "artist": meta["artist"],
                 "album": meta["album"],
                 "has_cover": meta["cover"] is not None,
+                "fmt": meta.get("fmt", ""),
             })
     return tracks
 
@@ -2432,8 +2456,26 @@ body {
 .playlist-item .cover-thumb:has(img)::after { display: none; }
 .playlist-item .cover-thumb img { width: 100%; height: 100%; object-fit: cover; }
 .playlist-item .info { flex: 1; overflow: hidden; }
-.playlist-item .info .name { font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.playlist-item .info .name-row { display: flex; align-items: center; gap: 6px; }
+.playlist-item .info .name { font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1 1 auto; min-width: 0; }
 .playlist-item .info .artist { font-size: 12px; color: rgba(255,255,255,0.4); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* Format badge — always visible; the name truncates further to make room.
+   Each lossless format gets a unique colour. */
+.fmt-badge {
+  flex-shrink: 0;
+  font-size: 9px; font-weight: 700; letter-spacing: 0.4px; line-height: 1;
+  padding: 2px 4px; border-radius: 4px;
+  color: #e94560; background: rgba(233,69,96,0.16);
+  border: 1px solid rgba(233,69,96,0.4);
+  text-transform: uppercase; white-space: nowrap;
+}
+.fmt-badge.fmt-flac { color: #e94560; background: rgba(233,69,96,0.16); border-color: rgba(233,69,96,0.40); }
+.fmt-badge.fmt-alac { color: #4aa3ff; background: rgba(74,163,255,0.16); border-color: rgba(74,163,255,0.40); }
+.fmt-badge.fmt-wav  { color: #f0a431; background: rgba(240,164,49,0.16); border-color: rgba(240,164,49,0.40); }
+.fmt-badge.fmt-aiff { color: #b07cff; background: rgba(176,124,255,0.16); border-color: rgba(176,124,255,0.40); }
+.track-title-row { display: flex; align-items: center; justify-content: center; gap: 8px; }
+.track-title-row .track-title { min-width: 0; }
+.fmt-badge-player { font-size: 11px; padding: 2px 6px; flex-shrink: 0; }
 .imp-tab.active { background: #e94560 !important; color: #fff !important; border-color: #e94560 !important; }
 .imp-match { display:flex; align-items:flex-start; gap:8px; padding:8px; border-bottom:1px solid rgba(255,255,255,0.04); font-size:11px; }
 .imp-match .orig { color:rgba(255,255,255,0.5); flex:1; min-width:0; }
@@ -2888,7 +2930,10 @@ body { overflow: hidden; touch-action: none; position: fixed; width: 100%; heigh
     </div>
 
     <div class="track-info">
-      <div class="track-title" id="trackTitle" style="opacity:0.3" data-idle="1"></div>
+      <div class="track-title-row">
+        <div class="track-title" id="trackTitle" style="opacity:0.3" data-idle="1"></div>
+        <span class="fmt-badge fmt-badge-player" id="trackTitleBadge" style="display:none"></span>
+      </div>
       <div class="track-artist"><span class="artist-link" id="trackArtist" onclick="searchArtist(this.textContent)" style="opacity:0.3">Выберите трек</span></div>
     </div>
 
@@ -4231,6 +4276,23 @@ function formatTime(s) {
   return m + ':' + (sec < 10 ? '0' : '') + sec;
 }
 
+// Lossless formats get a unique, per-format badge next to the track name.
+// The server resolves the real codec (so .m4a shows ALAC only when it truly is
+// lossless, not for AAC). Extension fallback is for legacy cached data without
+// t.fmt — m4a is intentionally excluded there since the extension is ambiguous.
+var _LOSSLESS_BADGE = {flac:'FLAC', alac:'ALAC', wav:'WAV', aiff:'AIFF', aif:'AIFF'};
+function fmtBadge(t) {
+  if (t && typeof t.fmt === 'string') return t.fmt;  // '' for lossy
+  var file = (t && t.file) || '';
+  var dot = file.lastIndexOf('.');
+  if (dot < 0) return '';
+  return _LOSSLESS_BADGE[file.slice(dot + 1).toLowerCase()] || '';
+}
+function fmtBadgeHtml(t) {
+  var b = fmtBadge(t);
+  return b ? '<span class="fmt-badge fmt-' + b.toLowerCase() + '">' + b + '</span>' : '';
+}
+
 function renderTracks() {
   var html = '';
   var indices = getVisibleIndices();
@@ -4249,7 +4311,7 @@ function renderTracks() {
         + ' ontouchstart="onTouchDragStart(event,' + i + ')">'
         + '<span class="drag-handle">&#9776;</span>'
         + '<div class="cover-thumb">' + coverHtml + '</div>'
-        + '<div class="info"><div class="name">' + esc(t.title) + '</div>'
+        + '<div class="info"><div class="name-row"><span class="name">' + esc(t.title) + '</span>' + fmtBadgeHtml(t) + '</div>'
         + '<div class="artist">' + esc(t.artist) + '</div></div></div>';
     } else {
       var offDisabled = _isOffline && !isTrackCached(t.file);
@@ -4259,7 +4321,7 @@ function renderTracks() {
         + ' oncontextmenu="event.preventDefault();showCtxMenu(event,' + i + ')"'
         + ' data-longpress="' + i + '">'
         + '<div class="cover-thumb">' + coverHtml + '</div>'
-        + '<div class="info"><div class="name">' + esc(t.title) + '</div>'
+        + '<div class="info"><div class="name-row"><span class="name">' + esc(t.title) + '</span>' + fmtBadgeHtml(t) + '</div>'
         + '<div class="artist">' + esc(t.artist) + '</div></div>'
         + (isTrackCached(t.file)
           ? '<span style="width:6px;height:6px;border-radius:50%;background:#52b788;flex-shrink:0" data-tip="В кэше"></span>'
@@ -4420,7 +4482,7 @@ var _blobUrlCache = {}; // file -> blob URL
 
 function makeBlobUrl(buf, file) {
   var ext = file.split('.').pop().toLowerCase();
-  var mimeMap = {mp3:'audio/mpeg',flac:'audio/flac',m4a:'audio/mp4',ogg:'audio/ogg',wav:'audio/wav',aac:'audio/aac',opus:'audio/ogg'};
+  var mimeMap = {mp3:'audio/mpeg',flac:'audio/flac',m4a:'audio/mp4',ogg:'audio/ogg',wav:'audio/wav',aac:'audio/aac',opus:'audio/ogg',aiff:'audio/aiff',aif:'audio/aiff',alac:'audio/mp4'};
   return URL.createObjectURL(new Blob([buf], {type: mimeMap[ext] || 'audio/mpeg'}));
 }
 
@@ -4569,6 +4631,16 @@ function selectTrack(i, autoplay) {
     artistEl.textContent = t.artist;
     titleEl.style.opacity = '1';
     artistEl.style.opacity = '1';
+    // Format badge next to the now-playing title (not shown on the OS lockscreen)
+    var _pbe = document.getElementById('trackTitleBadge');
+    if (_pbe) {
+      var _pb = fmtBadge(t);
+      if (_pb) {
+        _pbe.textContent = _pb;
+        _pbe.className = 'fmt-badge fmt-badge-player fmt-' + _pb.toLowerCase();
+        _pbe.style.display = '';
+      } else { _pbe.style.display = 'none'; }
+    }
     // Cassette label + cover
     document.getElementById('cassetteTitle').textContent = t.title;
     document.getElementById('cassetteArtist').textContent = t.artist;
@@ -8347,7 +8419,7 @@ class Handler(BaseHTTPRequestHandler):
             if not filepath or not filepath.is_file():
                 self._respond(404, "text/plain", b"Not found")
                 return
-            mime = mimetypes.guess_type(str(filepath))[0] or "audio/mpeg"
+            mime = AUDIO_MIME.get(filepath.suffix.lower()) or mimetypes.guess_type(str(filepath))[0] or "audio/mpeg"
             size = filepath.stat().st_size
             range_header = self.headers.get("Range")
             if range_header:
