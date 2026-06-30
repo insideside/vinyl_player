@@ -5652,11 +5652,14 @@ function togglePublic(enabled) {
       setToggle('publicToggle', 'publicDot', !enabled);
       return;
     }
-    // The local page lives on its own HTTP port, so toggling LAN never disrupts
-    // it — no redirect. Just refresh the network info after the LAN server settles.
     setToggle('publicToggle', 'publicDot', !!d.public);
-    showToast(d.public ? 'LAN включён' : 'LAN выключен');
-    setTimeout(function(){ syncNetworkState(); }, 2000);
+    info.textContent = d.public ? 'LAN включён, переключаюсь на HTTPS…' : 'LAN выключен, возврат на локальный адрес…';
+    // Follow the toggle in this same window: ON → LAN HTTPS port, OFF → local HTTP port.
+    if (d.redirect_url) {
+      setTimeout(function(){ window.location.href = d.redirect_url; }, d.public ? 2500 : 1500);
+    } else {
+      setTimeout(function(){ syncNetworkState(); }, 2000);
+    }
   }).catch(function(){ info.textContent = 'Ошибка соединения'; });
 }
 
@@ -9011,8 +9014,10 @@ class Handler(BaseHTTPRequestHandler):
                 save_settings(s)
                 all_ips = get_all_local_ips()
                 proto = "https" if _use_https else "http"
-                # The local page stays on its own HTTP port — no redirect needed.
-                redirect_url = "http://127.0.0.1:{}".format(LOCAL_PORT)
+                # Follow the toggle in the same window: switch to the LAN HTTPS port.
+                # Safe now that this is a distinct port (7656 is always HTTPS; the
+                # local 7666 stays plain HTTP and is never pinned by the browser).
+                redirect_url = "{}://127.0.0.1:{}".format(proto, SERVER_PORT)
                 lan_url = "{}://{}:{}".format(proto, local_ip, SERVER_PORT)
                 all_urls = ["{}://{}:{}".format(proto, ip, SERVER_PORT) for ip in all_ips]
                 self._respond_json({"ok": True, "public": True, "redirect_url": redirect_url, "lan_url": lan_url, "ip": local_ip, "all_urls": all_urls})
@@ -9028,7 +9033,9 @@ class Handler(BaseHTTPRequestHandler):
                 s["lan"] = False
                 s["https"] = False
                 save_settings(s)
-                self._respond_json({"ok": True, "public": False})
+                # Redirect the window back to the always-on local HTTP port.
+                local_url = "http://127.0.0.1:{}".format(LOCAL_PORT)
+                self._respond_json({"ok": True, "public": False, "redirect_url": local_url})
                 try: self.wfile.flush()
                 except Exception: pass
                 threading.Timer(1.0, _stop_server).start()  # stop LAN server; local stays up
