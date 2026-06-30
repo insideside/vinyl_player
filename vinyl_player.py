@@ -76,7 +76,8 @@ import hmac
 import secrets
 import http.cookies
 
-SERVER_PORT = 7656
+SERVER_PORT = 7656     # LAN/WAN: HTTPS on 0.0.0.0 when public (phones connect here — keep stable)
+LOCAL_PORT = 7666      # localhost: always plain HTTP on 127.0.0.1 (the Mac app/widget use this)
 _user_music_dirs = {}  # username -> current MUSIC_DIR
 USERS_FILE = Path.home() / ".vinyl_users.json"
 SETTINGS_FILE = Path.home() / ".vinyl_settings.json"
@@ -5291,9 +5292,37 @@ function loadConfig() {
       document.getElementById('folderSelect').value = cfg.last_folder;
       loadFolder(cfg.last_folder);
     }
+    // Cache the state of every catalog in the background so you can switch to
+    // (and play cached tracks from) any catalog, even offline or over a flaky LAN.
+    setTimeout(function(){ prefetchAllFolderStates(cfg.folders, cfg.last_folder); }, 3000);
   }).catch(function() {
     if (!hadCache) enterOfflineMode();
   });
+}
+
+var _statesPrefetched = false;
+function prefetchAllFolderStates(folders, skipPath) {
+  if (_statesPrefetched || _isOffline || !folders || !folders.length) return;
+  _statesPrefetched = true;
+  // Scanning is heavy (reads tags for every file); cap background prefetch so a
+  // large number of catalogs doesn't hammer the single-threaded server. Beyond
+  // the cap, catalogs are still cached on first visit.
+  var list = folders.filter(function(f){ return f && f !== skipPath; }).slice(0, 12);
+  var i = 0;
+  (function next() {
+    if (i >= list.length || _isOffline) return;
+    var path = list[i++];
+    // prefetch=1 → no server-side state change (current/last folder untouched)
+    fetch('/api/scan?path=' + encodeURIComponent(path) + '&prefetch=1')
+      .then(function(r){ return r.json(); })
+      .then(function(data) {
+        if (data && !data.error && data.tracks) {
+          try { localStorage.setItem('_vc_folder_' + path, JSON.stringify(data)); } catch(e){}
+        }
+      })
+      .catch(function(){})
+      .then(function(){ setTimeout(next, 400); });  // gentle on the single-threaded server
+  })();
 }
 
 function showLoadingIndicator() {
@@ -5452,20 +5481,27 @@ function applyFolderData(data) {
   renderAlbums();
   checkIfNumbered();
   buildDefaultQueue();
-  // Playlists: prefetch for offline, or load from cache in offline
+  // Playlists must refresh with the catalog too (like tracks/albums). Show this
+  // folder's cached playlists immediately, then refresh from the server.
   var folder = document.getElementById('folderSelect').value;
   if (folder) {
+    expandedPlaylist = null;  // collapse any playlist expanded in the previous catalog
+    try {
+      var cachedPl = localStorage.getItem('_vc_playlists_' + folder);
+      userPlaylists = cachedPl ? JSON.parse(cachedPl) : [];
+    } catch(e){ userPlaylists = []; }
+    renderPlaylists();
+    if (activeTab === 'playlists') document.getElementById('playlistHeader').textContent = userPlaylists.length + ' плейлистов';
     if (!_isOffline) {
       fetch('/api/playlists', {method:'POST', headers:{'Content-Type':'application/json'},
         body: JSON.stringify({folder: folder, action: 'list'})})
       .then(function(r){return r.json()}).then(function(d) {
-        if (d.playlists) try { localStorage.setItem('_vc_playlists_' + folder, JSON.stringify(d.playlists)); } catch(e){}
+        if (!d.playlists) return;
+        userPlaylists = d.playlists;
+        try { localStorage.setItem('_vc_playlists_' + folder, JSON.stringify(userPlaylists)); } catch(e){}
+        renderPlaylists();
+        if (activeTab === 'playlists') document.getElementById('playlistHeader').textContent = userPlaylists.length + ' плейлистов';
       }).catch(function(){});
-    } else {
-      try {
-        var savedPl = localStorage.getItem('_vc_playlists_' + folder);
-        if (savedPl) userPlaylists = JSON.parse(savedPl);
-      } catch(e){}
     }
   }
   if (activeTab === 'albums') {
@@ -5487,26 +5523,42 @@ function loadFolderCacheFirst(path) {
   showLoadingIndicator();
 }
 
+function _applyCachedFolder(path) {
+  // Show a catalog from its cached state (track list saved on a previous scan).
+  try {
+    var saved = localStorage.getItem('_vc_folder_' + path);
+    if (saved) { applyFolderData(JSON.parse(saved)); return true; }
+  } catch(e){}
+  return false;
+}
+
 function loadFolder(path, retries) {
   if (!path) return;
   if (_isOffline) { loadFolderOffline(path); return; }
   if (retries === undefined) retries = 2;
-  // Show loading only if no cached data visible
-  if (!tracks.length) showLoadingIndicator();
+  // Cache-first: switch to the catalog's cached state instantly, then refresh
+  // from the server. This makes switching catalogs always work — and keeps
+  // cached tracks playable — even if the scan hiccups over LAN/WAN (the SW can
+  // return {error:'offline'} on a transient failure).
+  var hadCache = _applyCachedFolder(path);
+  if (!hadCache && !tracks.length) showLoadingIndicator();
   fetch('/api/scan?path=' + encodeURIComponent(path))
     .then(function(r) { return r.json(); })
     .then(function(data) {
       if (data.error) {
-        if (data.error === 'offline') { if (!tracks.length) enterOfflineMode(); return; }
+        // Transient offline/SW failure — retry, then keep the cached catalog.
         if (retries > 0) { setTimeout(function(){ loadFolder(path, retries - 1); }, 1000); return; }
-        showToast(data.error); return;
+        if (data.error === 'offline') { if (!hadCache && !tracks.length) enterOfflineMode(); return; }
+        if (!hadCache) showToast(data.error);
+        return;
       }
       try { localStorage.setItem('_vc_folder_' + path, JSON.stringify(data)); } catch(e){}
       applyFolderData(data);
     })
     .catch(function() {
-      if (retries > 0) { setTimeout(function(){ loadFolder(path, retries - 1); }, 1000); }
-      else if (!tracks.length) { enterOfflineMode(); }
+      if (retries > 0) { setTimeout(function(){ loadFolder(path, retries - 1); }, 1000); return; }
+      // Network failed and no fresh data — keep cached catalog if we have it.
+      if (!hadCache && !tracks.length) enterOfflineMode();
     });
 }
 
@@ -5600,10 +5652,11 @@ function togglePublic(enabled) {
       setToggle('publicToggle', 'publicDot', !enabled);
       return;
     }
-    info.textContent = d.public ? 'LAN включён. Перезапуск...' : 'LAN выключен. Перезапуск...';
-    // Server restarts on new bind address + possibly HTTPS; redirect accordingly
-    var url = d.redirect_url || ('http://127.0.0.1:' + location.port);
-    setTimeout(function() { window.location.href = url; }, 2500);
+    // The local page lives on its own HTTP port, so toggling LAN never disrupts
+    // it — no redirect. Just refresh the network info after the LAN server settles.
+    setToggle('publicToggle', 'publicDot', !!d.public);
+    showToast(d.public ? 'LAN включён' : 'LAN выключен');
+    setTimeout(function(){ syncNetworkState(); }, 2000);
   }).catch(function(){ info.textContent = 'Ошибка соединения'; });
 }
 
@@ -8484,10 +8537,14 @@ class Handler(BaseHTTPRequestHandler):
             elif not is_admin_user and not is_path_within(folder, get_music_root()):
                 self._respond_json({"error": "Доступ запрещён. Каталог вне корневой папки музыки."})
                 return
-            _user_music_dirs[user] = folder
-            if not is_demo:
-                add_user_folder(user, folder)
-            set_user_last_folder(user, folder)
+            # prefetch=1: just return the catalog state for offline caching, without
+            # making it the user's current/last folder.
+            prefetch = params.get("prefetch", [""])[0] == "1"
+            if not prefetch:
+                _user_music_dirs[user] = folder
+                if not is_demo:
+                    add_user_folder(user, folder)
+                set_user_last_folder(user, folder)
             track_list = scan_library(folder)
             album_list = group_by_album(track_list)
             self._respond_json({"tracks": track_list, "albums": album_list})
@@ -8954,14 +9011,15 @@ class Handler(BaseHTTPRequestHandler):
                 save_settings(s)
                 all_ips = get_all_local_ips()
                 proto = "https" if _use_https else "http"
-                redirect_url = "{}://127.0.0.1:{}".format(proto, SERVER_PORT)
+                # The local page stays on its own HTTP port — no redirect needed.
+                redirect_url = "http://127.0.0.1:{}".format(LOCAL_PORT)
                 lan_url = "{}://{}:{}".format(proto, local_ip, SERVER_PORT)
                 all_urls = ["{}://{}:{}".format(proto, ip, SERVER_PORT) for ip in all_ips]
                 self._respond_json({"ok": True, "public": True, "redirect_url": redirect_url, "lan_url": lan_url, "ip": local_ip, "all_urls": all_urls})
                 try: self.wfile.flush()
                 except Exception: pass
                 def _restart_and_watchdog():
-                    _restart_server("0.0.0.0")
+                    _start_server("0.0.0.0")  # LAN HTTPS on 7656 (local server keeps running)
                     if _use_https:
                         _start_cert_watchdog()
                 threading.Timer(1.0, _restart_and_watchdog).start()
@@ -8973,7 +9031,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._respond_json({"ok": True, "public": False})
                 try: self.wfile.flush()
                 except Exception: pass
-                threading.Timer(1.0, _restart_server, args=["127.0.0.1"]).start()
+                threading.Timer(1.0, _stop_server).start()  # stop LAN server; local stays up
 
 
         elif path == "/api/cert/renew":
@@ -9760,7 +9818,7 @@ def start_tunnel():
     cf_bin = _find_cloudflared()
     try:
         proc = subprocess.Popen(
-            [cf_bin, "tunnel", "--url", "http://127.0.0.1:{}".format(SERVER_PORT)],
+            [cf_bin, "tunnel", "--url", "http://127.0.0.1:{}".format(LOCAL_PORT)],
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             text=True
         )
@@ -10061,9 +10119,10 @@ class ReusableHTTPServer(HTTPServer):
         super().server_bind()
 
 
-_server = None
+_server = None          # LAN/WAN server (0.0.0.0:SERVER_PORT, HTTPS) — only when public
 _server_thread = None
 _server_lock = threading.Lock()
+_local_server = None    # localhost server (127.0.0.1:LOCAL_PORT, plain HTTP) — always on
 
 
 def get_all_local_ips():
@@ -10100,8 +10159,20 @@ def get_local_ip():
     return ips[0]
 
 
+def _start_local_server():
+    """Always-on plain-HTTP server on 127.0.0.1:LOCAL_PORT. This is the Mac/widget
+    entry point — its port and scheme never change, so toggling LAN/WAN can't
+    break the local Dock app (and Safari can't pin it to HTTPS)."""
+    global _local_server
+    with _server_lock:
+        if _local_server:
+            return
+        _local_server = ReusableHTTPServer(("127.0.0.1", LOCAL_PORT), Handler)
+    threading.Thread(target=_local_server.serve_forever, daemon=True).start()
+
+
 def _start_server(bind_addr):
-    """Запускает HTTP/HTTPS-сервер в фоновом потоке."""
+    """Запускает LAN/WAN HTTP(S)-сервер на 0.0.0.0:SERVER_PORT в фоновом потоке."""
     global _server, _server_thread, _use_https
     with _server_lock:
         if _server:
@@ -10123,8 +10194,22 @@ def _start_server(bind_addr):
     _server_thread.start()
 
 
+def _stop_server():
+    """Stop the LAN/WAN server (called when LAN is turned off). The always-on
+    local server keeps running, so the Mac app is never interrupted."""
+    global _server
+    with _server_lock:
+        if _server:
+            try:
+                _server.shutdown()
+                _server.server_close()
+            except Exception:
+                pass
+            _server = None
+
+
 def _restart_server(bind_addr):
-    """Перезапускает HTTP-сервер на новом адресе."""
+    """Перезапускает LAN/WAN-сервер на новом адресе."""
     try:
         _start_server(bind_addr)
     except Exception as ex:
@@ -10137,6 +10222,30 @@ def _restart_server(bind_addr):
             print("Сервер запущен без HTTPS (fallback)")
         except Exception as ex2:
             print("КРИТИЧЕСКАЯ ОШИБКА: сервер не запустился: {}".format(ex2))
+
+
+_shutting_down = False
+
+def _shutdown_cleanup():
+    """Tear down the WAN tunnel before the process exits (a stale cloudflared
+    must not linger). LAN is left enabled so it auto-restores next launch and
+    phones reconnect without re-adding the icon / re-downloading their cache —
+    the local Mac app is unaffected since it lives on its own always-HTTP port.
+    Runs on Ctrl+C and on SIGTERM (how the desktop widget stops the app)."""
+    global _shutting_down
+    if _shutting_down:
+        return
+    _shutting_down = True
+    print("\nЗавершение: останавливаю WAN-туннель...")
+    try:
+        stop_tunnel()  # stops cloudflared + clears saved WAN config
+    except Exception:
+        pass
+
+
+def _on_exit_signal(signum, frame):
+    _shutdown_cleanup()
+    os._exit(0)
 
 
 def main():
@@ -10186,7 +10295,11 @@ def main():
     else:
         _use_https = False
 
-    _start_server(bind_addr)
+    # Always-on local entry point (its own port + plain HTTP — never disrupted by LAN).
+    _start_local_server()
+    # LAN/WAN server (0.0.0.0:SERVER_PORT, HTTPS) only when public.
+    if IS_PUBLIC:
+        _start_server("0.0.0.0")
 
     # Start certificate watchdog for auto-renewal
     if IS_PUBLIC and _use_https:
@@ -10196,8 +10309,9 @@ def main():
     if not local and s.get("wan_mode") == "static" and s.get("wan_ip"):
         set_wan_static(s["wan_ip"], s.get("wan_port", str(SERVER_PORT)))
 
+    # The local URL is always plain HTTP on LOCAL_PORT.
+    url = "http://127.0.0.1:{}".format(LOCAL_PORT)
     proto = "https" if _use_https else "http"
-    url = "{}://127.0.0.1:{}".format(proto, SERVER_PORT)
     import base64 as _b64
     _an = _b64.b64decode("aW5zaWRlc2lkZSBtdXNpYw==").decode()
     print(_an + ": " + url)
@@ -10208,16 +10322,19 @@ def main():
     if not no_browser:
         webbrowser.open(url)
 
+    # Clean shutdown: disable LAN/WAN first, then exit (catches the widget's
+    # pkill/SIGTERM, not just Ctrl+C).
+    signal.signal(signal.SIGTERM, _on_exit_signal)
+    try:
+        signal.signal(signal.SIGINT, _on_exit_signal)
+    except Exception:
+        pass
+
     try:
         while True:
             time.sleep(1)
     except KeyboardInterrupt:
-        print("\nОстановлено.")
-        stop_tunnel()
-        with _server_lock:
-            if _server:
-                _server.shutdown()
-                _server.server_close()
+        _shutdown_cleanup()
 
 
 if __name__ == "__main__":

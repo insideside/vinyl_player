@@ -19,22 +19,22 @@ import { run } from "uebersicht";
 const PY   = "/usr/bin/python3";
 const APP  = "/Users/insideside/vk-music/vinyl_player.py";
 const LOG  = "/Users/insideside/vk-music/logs/widget_player.log";
-const HTTPS = "https://127.0.0.1:7656";
-const HTTP  = "http://127.0.0.1:7656";
+// Local entry point: always plain HTTP on the dedicated local port. LAN/WAN
+// lives on 7656 (HTTPS) and is irrelevant to the widget, which talks to the
+// player running on this same machine.
+const LOCAL = "http://127.0.0.1:7666";
 
 // ─────────── refresh & data command ───────────
 export const refreshFrequency = 1500;
 
-// Reports: whether the server process is alive, which protocol answers, and
-// the current now-playing state (or null when the server is down).
+// Reports: whether the server process is alive and the current now-playing
+// state (or null when the server is down).
 export const command = `
 P=$(/usr/bin/pgrep -f '[Pp]ython.*vinyl_player.py' | /usr/bin/head -1)
 if [ -n "$P" ]; then R=true; else R=false; fi
-PROTO=https
-S=$(/usr/bin/curl -sk --max-time 1 ${HTTPS}/api/widget/state)
-if [ -z "$S" ]; then PROTO=http; S=$(/usr/bin/curl -s --max-time 1 ${HTTP}/api/widget/state); fi
+S=$(/usr/bin/curl -s --max-time 1 ${LOCAL}/api/widget/state)
 [ -z "$S" ] && S=null
-/usr/bin/printf '{"running":%s,"proto":"%s","state":%s}' "$R" "$PROTO" "$S"
+/usr/bin/printf '{"running":%s,"proto":"http","state":%s}' "$R" "$S"
 `;
 
 // ─────────── actions (run = Übersicht shell helper) ───────────
@@ -50,17 +50,13 @@ const startApp = () =>
 const stopApp = () =>
   run(`/usr/bin/pkill -f '[Pp]ython.*vinyl_player.py'`);
 
-const baseFor = (proto) => (proto === "http" ? HTTP : HTTPS);
-
-const sendCmd = (proto, c) => {
-  const b = baseFor(proto);
-  return run(
-    `/usr/bin/curl -sk -X POST ${b}/api/widget/command ` +
+const sendCmd = (proto, c) =>
+  run(
+    `/usr/bin/curl -s -X POST ${LOCAL}/api/widget/command ` +
     `-H 'Content-Type: application/json' -d '{"cmd":"${c}"}'`
   );
-};
 
-const openBrowser = (proto) => run(`/usr/bin/open ${baseFor(proto)}`);
+const openBrowser = () => run(`/usr/bin/open ${LOCAL}`);
 
 // ─────────── theme handling ───────────
 const THEMES = ["auto", "dark", "light", "transparent"];
