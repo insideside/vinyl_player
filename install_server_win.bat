@@ -215,7 +215,8 @@ if /i "%STARTNOW%"=="y" (
     echo.
     echo   Сервер запускается...
     timeout /t 3 >nul
-    start http://127.0.0.1:%APP_PORT%
+    rem Локальный доступ всегда по HTTP на порту 7666; 7656 (APP_PORT) — для LAN/HTTPS
+    start http://127.0.0.1:7666
 )
 
 echo.
