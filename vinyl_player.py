@@ -3969,11 +3969,10 @@ function bindAudioEvents() {
     if (isDragging || inertiaActive) return;
     var dur = audio.duration;
     if (!isFinite(dur) || dur <= 0) return;
-    var gen = _trackSrcGen;
-    setTimeout(function() {
-      if (_trackSrcGen !== gen) return;
-      nextTrack();
-    }, 0);
+    // Advance synchronously inside the 'ended' handler — deferring with a timer
+    // breaks iOS's continuous-playback context and the next track stays silent
+    // in the background until the app is reopened.
+    nextTrack();
   });
   audio.addEventListener('timeupdate', onTimeUpdate);
   // Fallback: iOS PWA may not fire 'ended' in background — detect near-end via timeupdate
@@ -4586,6 +4585,24 @@ function prepareBlobUrl(file) {
   });
 }
 
+// Warm a track's audio into an in-memory blob over the network. Critical for
+// iOS lock-screen switching: when a track changes in the background, the new
+// src must already be in memory, otherwise play() stalls (a network load is
+// throttled in the background) and music only resumes when the app is reopened.
+var _blobFetching = {};
+function fetchBlobForFile(file) {
+  if (!file || _blobUrlCache[file] || _blobFetching[file] || _isOffline) return;
+  if (isTrackCached(file)) { prepareBlobUrl(file); return; }
+  _blobFetching[file] = true;
+  fetch('/api/stream/' + encodeURIComponent(file))
+    .then(function(r){ return r.ok ? r.arrayBuffer() : Promise.reject(); })
+    .then(function(buf){
+      delete _blobFetching[file];
+      if (!_blobUrlCache[file]) _blobUrlCache[file] = makeBlobUrl(buf, file);
+    })
+    .catch(function(){ delete _blobFetching[file]; });
+}
+
 function prepareNearbyBlobs() {
   if (playQueue.length === 0) return;
   var startPos = playQueuePos >= 0 ? playQueuePos : 0;
@@ -4610,7 +4627,13 @@ function prepareNearbyBlobs() {
     if (pos < 0) pos += playQueue.length;
     if (pos >= playQueue.length) pos -= playQueue.length;
     var idx = playQueue[pos];
-    if (idx >= 0 && idx < tracks.length) prepareBlobUrl(tracks[idx].file);
+    if (idx < 0 || idx >= tracks.length) continue;
+    var pf = tracks[idx].file;
+    if (isTrackCached(pf)) {
+      prepareBlobUrl(pf);               // from offline cache (IDB)
+    } else if (d === 1 || d === 3) {
+      fetchBlobForFile(pf);             // next & prev: warm over network for instant background switch
+    }
   }
 }
 
@@ -4623,7 +4646,11 @@ function selectTrack(i, autoplay) {
   vinylAngle = 0;
   vinylSpeed = 0;
 
-  audio.pause();
+  // Don't pause before switching when we're going to play the new track: an
+  // explicit pause() in the background can make iOS release the audio session,
+  // and the following play() of the new src is then deferred until the app is
+  // reopened. Assigning a new src already stops the current track on its own.
+  if (!autoplay) audio.pause();
   // Reset lock screen position immediately so iOS doesn't show stale time
   if ('mediaSession' in navigator) {
     try { navigator.mediaSession.setPositionState(); } catch(e) {}
@@ -4923,7 +4950,12 @@ function _syncQueuePos() {
 }
 
 function prevTrack() {
-  if (audio.currentTime > 3) { audio.currentTime = 0; return; }
+  if (audio.currentTime > 3) {
+    audio.currentTime = 0;
+    // If iOS had stopped playback in the background, resume within this gesture.
+    if (isPlaying && audio.paused) audio.play().catch(function(){});
+    return;
+  }
   if (playQueue.length > 0) {
     _syncQueuePos();
     playQueuePos--;
