@@ -5685,11 +5685,18 @@ function togglePublic(enabled) {
       return;
     }
     setToggle('publicToggle', 'publicDot', !!d.public);
-    info.textContent = d.public ? 'LAN включён, переключаюсь на HTTPS…' : 'LAN выключен, возврат на локальный адрес…';
-    // Follow the toggle in this same window: ON → LAN HTTPS port, OFF → local HTTP port.
-    if (d.redirect_url) {
+    // Installed apps (Add to Dock / PWA) can't load the self-signed HTTPS page —
+    // there's no "proceed anyway" prompt — so redirecting there breaks the app
+    // and you can't even toggle LAN back off. Only redirect when we're certain
+    // this is a normal browser tab (display-mode: browser); otherwise stay on
+    // the always-working local page. Fail-safe: anything uncertain → no redirect.
+    var _browserTab = !!(window.matchMedia && window.matchMedia('(display-mode: browser)').matches)
+                      && window.navigator.standalone !== true;
+    if (d.redirect_url && _browserTab) {
+      info.textContent = d.public ? 'LAN включён, переключаюсь на HTTPS…' : 'LAN выключен, возврат на локальный адрес…';
       setTimeout(function(){ window.location.href = d.redirect_url; }, d.public ? 2500 : 1500);
     } else {
+      showToast(d.public ? 'LAN включён' : 'LAN выключен');
       setTimeout(function(){ syncNetworkState(); }, 2000);
     }
   }).catch(function(){ info.textContent = 'Ошибка соединения'; });
@@ -9065,8 +9072,9 @@ class Handler(BaseHTTPRequestHandler):
                 s["lan"] = False
                 s["https"] = False
                 save_settings(s)
-                # Redirect the window back to the always-on local HTTP port.
-                local_url = "http://127.0.0.1:{}".format(LOCAL_PORT)
+                # Redirect the window back to the always-on local HTTP port
+                # (localhost host avoids the 127.0.0.1 HTTPS pin).
+                local_url = "http://localhost:{}".format(LOCAL_PORT)
                 self._respond_json({"ok": True, "public": False, "redirect_url": local_url})
                 try: self.wfile.flush()
                 except Exception: pass
@@ -10348,8 +10356,11 @@ def main():
     if not local and s.get("wan_mode") == "static" and s.get("wan_ip"):
         set_wan_static(s["wan_ip"], s.get("wan_port", str(SERVER_PORT)))
 
-    # The local URL is always plain HTTP on LOCAL_PORT.
-    url = "http://127.0.0.1:{}".format(LOCAL_PORT)
+    # The local URL is always plain HTTP on LOCAL_PORT. Use the "localhost"
+    # hostname (not 127.0.0.1): once LAN serves HTTPS on 127.0.0.1:7656, the
+    # browser can pin HTTPS for the whole 127.0.0.1 host and upgrade even the
+    # local http port. "localhost" is never served over HTTPS, so it stays HTTP.
+    url = "http://localhost:{}".format(LOCAL_PORT)
     proto = "https" if _use_https else "http"
     import base64 as _b64
     _an = _b64.b64decode("aW5zaWRlc2lkZSBtdXNpYw==").decode()

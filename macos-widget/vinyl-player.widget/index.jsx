@@ -22,7 +22,7 @@ const LOG  = "/Users/insideside/vk-music/logs/widget_player.log";
 // Local entry point: always plain HTTP on the dedicated local port. LAN/WAN
 // lives on 7656 (HTTPS) and is irrelevant to the widget, which talks to the
 // player running on this same machine.
-const LOCAL = "http://127.0.0.1:7666";
+const LOCAL = "http://localhost:7666";
 
 // ─────────── refresh & data command ───────────
 export const refreshFrequency = 1500;
