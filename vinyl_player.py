@@ -1122,6 +1122,7 @@ RELEASES_FILE = Path.home() / ".vinyl_releases.json"
 RELEASES_TTL = 24 * 3600        # как часто перепроверять одного артиста
 RELEASES_SCHEMA = 2             # растёт, когда в записи релиза добавляются поля
 RELEASES_WINDOW_DAYS = 400      # что вообще считаем «новинкой»
+RELEASES_LIMIT = 300            # сколько дропов показываем: отбираются лучшие по релевантности
 _releases_lock = threading.Lock()
 _releases_state = {"running": False, "done": 0, "total": 0, "started": 0}
 
@@ -1680,7 +1681,7 @@ def refresh_releases(user):
             _releases_state["running"] = False
 
 
-def build_releases_feed(user):
+def build_releases_feed(user, limit=None):
     """Лента для клиента. «Есть ли уже в библиотеке» считается здесь, а не в
     кэше: библиотека меняется чаще, чем данные о релизах."""
     tracks = _collect_user_tracks_cached(user)
@@ -1739,8 +1740,49 @@ def build_releases_feed(user):
         rev.setdefault("in_library", False)
         items.append(rev)
 
-    # Сначала свежие; при равной дате — артист, который вам ближе
-    items.sort(key=lambda x: (x["date"], x["artist_score"]), reverse=True)
+    # Список режется, поэтому важно, ЧТО попадёт в срез. Просто «самые свежие»
+    # набивают его случайными синглами артистов, которых вы слушали пару раз.
+    # Поэтому вес = близость артиста × свежесть релиза: анонсы и вышедшее на
+    # днях идут с полным весом, дальше вес плавно падает (вдвое примерно за три
+    # месяца), и артист с сотней треков обгоняет артиста с двумя.
+    # Дедупликация обязана идти до среза, иначе он теряет места на дубли.
+    # Совместка приходит от каждого участника, а iTunes порой отдаёт один и тот
+    # же релиз с разными id под разными артистами — ловим и по ключу, и по паре
+    # «название + дата», оставляя вариант ближайшего артиста.
+    items.sort(key=lambda x: -x.get("artist_score", 0))
+    seen_keys, seen_titles, uniq = set(), set(), []
+    for it in items:
+        k = it.get("key")
+        tk = (_norm_title(it.get("title")), it.get("date"))
+        if k in seen_keys or tk in seen_titles:
+            continue
+        seen_keys.add(k)
+        seen_titles.add(tk)
+        uniq.append(it)
+    items = uniq
+
+    today = datetime.now().strftime("%Y-%m-%d")
+    def relevance(x):
+        try:
+            age = (datetime.strptime(today, "%Y-%m-%d") - datetime.strptime(x["date"], "%Y-%m-%d")).days
+        except Exception:
+            age = 400
+        fresh = 1.0 if age <= 0 else math.exp(-age / 120.0)
+        return x.get("artist_score", 0) * (0.4 + fresh)
+    for it in items:
+        it["rank"] = round(relevance(it), 4)
+    found = len(items)
+    # Избранное под срез не попадает никогда. Раньше запись из снимка приходила
+    # без artist_score (артиста уже нет в проверке), получала вес 0, уезжала в
+    # самый хвост ранжирования и обрезалась — отмеченная карточка просто
+    # исчезала из ленты.
+    keep = [x for x in items if x.get("starred")]
+    rest = [x for x in items if not x.get("starred")]
+    rest.sort(key=lambda x: (x["rank"], x["date"]), reverse=True)
+    room = max(0, (limit or RELEASES_LIMIT) - len(keep))
+    items = keep + rest[:room]
+    # Внутри среза показываем по свежести — так привычнее читать ленту
+    items.sort(key=lambda x: (x["date"], x["rank"]), reverse=True)
     # Отмеченные — всегда наверху, порядок между ними прежний
     items.sort(key=lambda x: not x.get("starred"))
     checked = sum(1 for k in stats if k in cache)
@@ -1750,7 +1792,8 @@ def build_releases_feed(user):
     # снова и снова.
     schema_stale = data.get("schema", 0) < RELEASES_SCHEMA
     return {
-        "items": items[:300],
+        "items": items,
+        "found": found,          # сколько всего нашлось до среза
         "starred_count": len(starred),
         "schema_stale": schema_stale,
         "updated_at": data.get("updated_at", 0),
@@ -3254,6 +3297,11 @@ body {
 .rel-note {
   padding: 10px 14px; font-size: 11px; color: rgba(255,255,255,0.3); line-height: 1.5;
 }
+.rel-top {
+  display: flex; align-items: center; gap: 8px; padding: 8px 12px 2px;
+}
+.rel-top-note { flex: 1; min-width: 0; font-size: 11px; color: rgba(255,255,255,0.3); }
+.rel-top-btn { flex-shrink: 0; font-size: 11px; padding: 6px 12px; }
 /* Превью: список треков разворачивается под карточкой */
 /* Раскрытая карточка и список треков должны читаться как одна рамка:
    у карточки снизу убираем отступ, скругление и границу, у списка — сверху. */
@@ -3920,7 +3968,7 @@ body { overflow: hidden; touch-action: none; position: fixed; width: 100%; heigh
       <button class="playlist-tab active" id="tabTracks" onclick="showTab('tracks')">Треки</button>
       <button class="playlist-tab" id="tabAlbums" onclick="showTab('albums')">Альбомы</button>
       <button class="playlist-tab" id="tabPlaylists" onclick="showTab('playlists')">Плейлисты</button>
-      <button class="playlist-tab" id="tabNew" onclick="showTab('new')">NEW</button>
+      <button class="playlist-tab" id="tabNew" onclick="showTab('new')">DROPS</button>
     </div>
 
     <div class="playlist-header" style="display:flex;align-items:center;gap:8px">
@@ -5400,8 +5448,9 @@ function showTab(tab) {
   } else if (tab === 'new') {
     document.getElementById('editBtn').style.display = 'none';
     if (isEditMode) cancelEdit();
-    document.getElementById('playlistHeader').textContent =
-      releasesData ? (releasesData.items.length + ' новинок') : 'Новинки';
+    document.getElementById('playlistHeader').textContent = releasesData
+      ? (releasesData.items.length + ' ' + relPlural(releasesData.items.length, 'дроп', 'дропа', 'дропов'))
+      : 'Дропы';
     if (!releasesData) loadReleases();
     else renderReleases();
   } else if (tab === 'playlists') {
@@ -6330,6 +6379,8 @@ function applyConfig(cfg) {
   document.getElementById('networkToggles').style.display = showNetToggles ? 'flex' : 'none';
   document.getElementById('metaVkRow').classList.toggle('has-toggles', showNetToggles);
   document.getElementById('vkBtnIcon').classList.toggle('force-hidden', isDemo || _isOffline);
+  // Зеркало решает, показывать ли вкладку без сервера.
+  relLoadMirror(function(){ syncNewTabVisibility(); });
   syncNewTabVisibility();
   document.getElementById('downloadCatalogBtn').style.display = (isAdmin && !_isOffline) ? '' : 'none';
   document.getElementById('metaVkRow').style.display = (isDemo || _isOffline) ? 'none' : '';
@@ -7171,6 +7222,10 @@ function clearSearch() {
 // ── Toast ──
 var _toastTimer = null;
 function showToast(msg) {
+  // Service Worker подменяет неудачный /api/* ответом {error:'offline'} со
+  // статусом 200, и этот код утекал в интерфейс как есть — пользователь видел
+  // просто «offline». Переводим здесь, чтобы не править полтора десятка мест.
+  if (msg === 'offline') msg = 'Нет связи с сервером — изменение не сохранено';
   var t = document.getElementById('toast');
   if (_toastTimer) clearTimeout(_toastTimer);
   t.textContent = msg;
@@ -8036,28 +8091,45 @@ function relKey(it) { return (it.source || 'itunes') + ':' + it.rid; }
 function relEsc(s) { return esc(s || ''); }
 
 function loadReleases(silent) {
-  if (_isOffline || _relLoading) return;
+  // Раньше здесь стоял выход по _isOffline — из-за него в офлайне мы даже не
+  // доходили до зеркала, ради которого всё и делалось. Запрос всё равно
+  // мгновенный: Service Worker отвечает {error:'offline'} не ходя в сеть.
+  if (_relLoading) return;
   _relLoading = true;
   if (!silent && !releasesData) {
     document.getElementById('newList').innerHTML =
       '<div style="display:flex;flex-direction:column;align-items:center;padding:40px 20px;color:rgba(255,255,255,0.3)">'
       + '<div class="loading-spinner"></div><div style="margin-top:12px;font-size:13px">Собираю новинки...</div></div>';
   }
-  fetch('/api/releases').then(function(r){ return r.json(); }).then(function(d) {
+  fetch('/api/releases?limit=' + _relLimit).then(function(r){ return r.json(); }).then(function(d) {
     _relLoading = false;
-    if (!d || d.error) return;
+    if (!d || d.error) throw new Error('offline');
+    _relOffline = false;
     releasesData = d;
     renderReleases();
-    updateReleasesBadge();
-    // Пока фоновое обновление идёт — подтягиваем прогресс
+    relSaveMirror();
+    relSaveStarredLocal(d.items || []);
+    relFlushStars();          // отметки, поставленные без сервера
     if (_relPollTimer) { clearTimeout(_relPollTimer); _relPollTimer = null; }
     if (d.refreshing) _relPollTimer = setTimeout(function(){ loadReleases(true); }, 4000);
   }).catch(function() {
     _relLoading = false;
-    if (!releasesData) {
-      document.getElementById('newList').innerHTML =
-        '<div class="rel-note">Не удалось получить новинки. Проверьте соединение с сервером.</div>';
-    }
+    // Сервера нет — показываем последнюю синхронизированную копию, а не пустоту.
+    relLoadMirror(function(f) {
+      _relOffline = true;
+      if (f && f.items && f.items.length) {
+        releasesData = {items: f.items, updated_at: f.updated_at, saved_at: f.saved_at,
+                        found: f.found, artists_total: f.artists_total, artists_checked: f.artists_checked,
+                        refreshing: false, progress: {done: 0, total: 0}};
+        renderReleases();
+      } else if (!releasesData) {
+        document.getElementById('newList').innerHTML =
+          '<div class="rel-note" style="text-align:center;padding:32px 20px">Сервер недоступен, '
+          + 'а сохранённой копии дропов ещё нет.<br><button class="folder-btn folder-btn-primary" '
+          + 'style="margin-top:14px;font-size:12px" onclick="refreshReleases()">Проверить через iTunes</button></div>';
+      }
+      syncNewTabVisibility();
+    });
   });
 }
 
@@ -8066,8 +8138,10 @@ function loadReleases(silent) {
 function syncNewTabVisibility() {
   var tab = document.getElementById('tabNew');
   if (!tab) return;
-  tab.style.display = _isOffline ? 'none' : '';
-  if (_isOffline) {
+  // Вкладку прячем только если и сервера нет, и показать нечего.
+  var keep = !_isOffline || _relHasMirror;
+  tab.style.display = keep ? '' : 'none';
+  if (!keep) {
     if (typeof stopPreview === 'function') stopPreview();
     if (activeTab === 'new') showTab('tracks');
   } else {
@@ -8089,6 +8163,13 @@ function relGroupOf(dateStr) {
   if (days >= -90) return 'За три месяца';
   if (days >= -180) return 'За полгода';
   return 'Раньше';
+}
+
+function relPlural(n, one, few, many) {
+  var d = n % 10, h = n % 100;
+  if (d === 1 && h !== 11) return one;
+  if (d >= 2 && d <= 4 && (h < 12 || h > 14)) return few;
+  return many;
 }
 
 function relWhen(ts) {
@@ -8127,7 +8208,8 @@ function renderReleases() {
   var footEl = document.getElementById('relFooter');
 
   if (activeTab === 'new') {
-    document.getElementById('playlistHeader').textContent = items.length + ' новинок';
+    document.getElementById('playlistHeader').textContent =
+      items.length + ' ' + relPlural(items.length, 'дроп', 'дропа', 'дропов');
   }
 
   if (releasesData.refreshing) {
@@ -8136,14 +8218,22 @@ function renderReleases() {
     statusEl.innerHTML = '<div class="rel-note"><span style="color:#e9a545">&#9679;</span> Проверяю артистов'
       + (p.total ? ' — ' + p.done + ' из ' + p.total + ' (' + pct + '%)' : '...') + '</div>';
   } else {
-    statusEl.innerHTML = '';
+    // Кнопка проверки живёт сверху: за ней не надо прокручивать сотни карточек.
+    statusEl.innerHTML = '<div class="rel-top">'
+      + '<span class="rel-top-note">'
+      + (_relOffline && releasesData.saved_at
+          ? '<span style="color:#e9a545">&#9679;</span> Копия от ' + relWhen(releasesData.saved_at)
+          : (releasesData.updated_at ? 'Проверено ' + relWhen(releasesData.updated_at) : ''))
+      + '</span>'
+      + '<button class="folder-btn folder-btn-secondary rel-top-btn" onclick="refreshReleases()">Проверить</button>'
+      + '</div>';
   }
 
   if (!items.length) {
     cardsEl.innerHTML = '<div class="rel-note" style="text-align:center;padding:32px 20px">'
       + (releasesData.refreshing
           ? 'Проверяю артистов — это занимает пару минут, можно уйти с вкладки.'
-          : 'Новинки ещё не собраны.<br>Проверка ходит в iTunes и Deezer по вашим артистам '
+          : 'Дропы ещё не собраны.<br>Проверка ходит в iTunes и Deezer по вашим артистам '
             + '(' + releasesData.artists_total + ' в библиотеке) и занимает пару минут. '
             + 'Сама она не запускается.'
             + '<br><button class="folder-btn folder-btn-primary" style="margin-top:14px;font-size:12px" '
@@ -8159,15 +8249,18 @@ function renderReleases() {
   syncReleaseCards(items);
   applyExpansion();
 
-  footEl.innerHTML = '<div class="rel-note">Проверено артистов: ' + releasesData.artists_checked
-       + ' из ' + releasesData.artists_total + '. Кого проверять, определяется по числу треков '
-       + 'артиста и тому, насколько недавно вы его пополняли.'
-       + (releasesData.updated_at
-          ? '<br>Последняя проверка: ' + relWhen(releasesData.updated_at) + '.' : '')
-       + ' Автоматически не обновляется.'
-       + '<br><button class="folder-btn folder-btn-secondary" style="margin-top:8px;font-size:11px;padding:6px 12px" '
-       + (releasesData.refreshing ? 'disabled ' : '')
-       + 'onclick="refreshReleases()">' + (releasesData.refreshing ? 'Проверяю...' : 'Проверить новинки') + '</button></div>';
+  var more = (releasesData.found || 0) - items.length;
+  footEl.innerHTML =
+       (more > 0 && !_relOffline
+        ? '<div style="padding:4px 8px 0"><button class="folder-btn folder-btn-secondary" '
+          + 'style="width:100%;font-size:12px;padding:10px" onclick="relShowMore()">'
+          + 'Показать ещё ' + Math.min(REL_PAGE, more) + ' из ' + more + '</button></div>'
+        : '')
+       + '<div class="rel-note">Показано ' + items.length
+       + (releasesData.found ? ' из ' + releasesData.found + ' найденных' : '')
+       + '. Отбор — по близости артиста и свежести релиза.'
+       + '<br>Проверено артистов: ' + releasesData.artists_checked
+       + ' из ' + releasesData.artists_total + '. Обновляется только по кнопке.</div>';
 }
 
 var REL_ICON_PLAY  = '<svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>';
@@ -8187,8 +8280,12 @@ function releaseCardHtml(it) {
   var kindCls = soon ? 'kind-soon' : ('kind-' + it.kind);
   // Через свой сервер: он кладёт картинку на диск, поэтому она переживает и
   // перезапуск сервера, и чистку кэша браузера.
+  // Адрес держим в data-src, а не в src: загрузкой управляем сами (см.
+  // relWarmArt). С loading="lazy" обложки появлялись только под прокрутку, и
+  // список выглядел полупустым.
+  var artSrc = _relOffline ? it.art : ('/api/releases/art?u=' + encodeURIComponent(it.art));
   var art = it.art
-    ? '<img class="rel-art" src="/api/releases/art?u=' + encodeURIComponent(it.art) + '" loading="lazy" decoding="async" onerror="this.outerHTML=\'<div class=&quot;rel-art-ph&quot;>&#9834;</div>\'">'
+    ? '<img class="rel-art" data-src="' + relEsc(artSrc) + '" decoding="async" onerror="this.outerHTML=\'<div class=&quot;rel-art-ph&quot;>&#9834;</div>\'">'
     : '<div class="rel-art-ph">&#9834;</div>';
   var stop = 'event.stopPropagation();';
   return art
@@ -8206,7 +8303,7 @@ function releaseCardHtml(it) {
     +   '<button class="rel-btn rel-btn-star' + (it.starred ? ' on' : '') + '" data-key="' + relEsc(key) + '"'
     +     ' data-tip="Добавить в избранное" onclick="' + stop + 'toggleStar(\'' + relEsc(key) + '\')">' + REL_ICON_STAR + '</button>'
     +   (it.rid ? '<button class="rel-btn rel-btn-prev" data-key="' + relEsc(key) + '"'
-        + ' data-tip="Прослушать отрывок" onclick="' + stop + 'togglePreview(\'' + relEsc(key) + '\')">'
+        + ' data-tip="Прослушать отрывок" onclick="' + stop + 'togglePreview(\'' + relEsc(key) + '\', true)">'
         + REL_ICON_PLAY + '</button>' : '')
     +   (it.in_library || userRole === 'demo' ? ''
         : '<button class="rel-btn rel-btn-get" data-tip="Найти и скачать" onclick="' + stop + 'getRelease(\'' + relEsc(key) + '\')">'
@@ -8220,14 +8317,61 @@ function relState(it) {
   return (it.in_library ? '1' : '0') + (it.starred ? 'S' : '-') + (it.tracks || 0) + it.date;
 }
 
+var _relRenderToken = 0;
+var _artWarmToken = 0;
+
+// Обложки грузим сами, строго по одной за раз и с паузой. Сервер однопоточный:
+// первый показ каждой картинки — это его поход к Apple примерно на секунду, и
+// пока он идёт, всё остальное ждёт. Поэтому держим один запрос в воздухе, даём
+// серверу передышку между ними и полностью замолкаем, пока играет музыка —
+// подгрузка обложек не стоит заикания в воспроизведении.
+function relWarmArt() {
+  var token = ++_artWarmToken;
+  var busy = false;
+
+  function nextImg() {
+    return document.querySelector('#relCards img.rel-art[data-src]');
+  }
+
+  function pump() {
+    if (token !== _artWarmToken || busy) return;
+    if (activeTab !== 'new' || (audio && !audio.paused)) { setTimeout(pump, 2000); return; }
+    var img = nextImg();
+    if (!img) return;                       // всё загружено
+    var url = img.getAttribute('data-src');
+    img.removeAttribute('data-src');
+    busy = true;
+    function done() {
+      img.removeEventListener('load', done);
+      img.removeEventListener('error', done);
+      busy = false;
+      if (token === _artWarmToken) setTimeout(pump, 250);
+    }
+    img.addEventListener('load', done);
+    img.addEventListener('error', done);
+    img.src = url;
+  }
+
+  pump();
+}
+
+
+// Список длинный (у большой библиотеки под две тысячи карточек), поэтому строим
+// порциями: первая появляется сразу, остальные дорисовываются между кадрами.
+// Одним куском это занимало больше секунды на десктопе — на телефоне вкладка
+// заметно подвисала бы при каждом открытии.
 function syncReleaseCards(items) {
   var cardsEl = document.getElementById('relCards');
   if (!cardsEl) return;
-  var frag = document.createDocumentFragment();
-  var lastGroup = null;
-  var used = {};
-  for (var i = 0; i < items.length; i++) {
-    var it = items[i];
+  var token = ++_relRenderToken;
+  // Очистка схлопывает высоту контейнера, и браузер прижимает scrollTop к нулю.
+  // Запоминаем позицию и возвращаем её, когда высота восстановится.
+  var scroller = document.getElementById('newList');
+  var keepScroll = scroller ? scroller.scrollTop : 0;
+  cardsEl.innerHTML = '';        // узлы остаются в _cardNodes и переиспользуются
+  var used = {}, lastGroup = null, i = 0;
+
+  function addOne(it, frag) {
     var key = it.key || relKey(it);
     used[key] = true;
     var g = it.starred ? 'Избранное' : relGroupOf(it.date);
@@ -8243,7 +8387,10 @@ function syncReleaseCards(items) {
     if (!node) {
       node = document.createElement('div');
       node.setAttribute('data-key', key);
-      if (it.rid) { node.setAttribute('onclick', "togglePreview('" + key.replace(/'/g, "\\'") + "')"); node.style.cursor = 'pointer'; }
+      if (it.rid) {
+        node.setAttribute('onclick', "togglePreview('" + key.replace(/'/g, "\\'") + "')");
+        node.style.cursor = 'pointer';
+      }
       node.innerHTML = releaseCardHtml(it);
       _cardNodes[key] = node;
     } else if (node._state !== state) {
@@ -8258,11 +8405,24 @@ function syncReleaseCards(items) {
     node._state = state;
     node.className = 'rel-card ' + (it.in_library ? 'rel-owned' : 'rel-missing')
                    + (it.starred ? ' rel-starred' : '');
-    frag.appendChild(node);        // перенос уже существующего узла
+    frag.appendChild(node);
   }
-  for (var k in _cardNodes) if (!used[k]) delete _cardNodes[k];
-  cardsEl.innerHTML = '';          // карточки уже во фрагменте, удаляются только заголовки
-  cardsEl.appendChild(frag);
+
+  function step() {
+    if (token !== _relRenderToken) return;   // началась новая отрисовка
+    var frag = document.createDocumentFragment();
+    for (var n = 0; i < items.length && n < 150; n++, i++) addOne(items[i], frag);
+    cardsEl.appendChild(frag);
+    if (scroller && keepScroll && scroller.scrollHeight > keepScroll) {
+      scroller.scrollTop = keepScroll;
+    }
+    if (i < items.length) { setTimeout(step, 0); return; }
+    for (var k in _cardNodes) if (!used[k]) delete _cardNodes[k];
+    if (scroller && keepScroll) scroller.scrollTop = keepScroll;
+    applyExpansion();
+    relWarmArt();
+  }
+  step();                                     // первая порция — синхронно
 }
 
 // Отметка: закрепляет релиз наверху и переживает обновление списка — сервер
@@ -8274,11 +8434,17 @@ function toggleStar(key) {
   it.starred = on;
   it.key = key;
   resortReleases();
+  relSaveStarredLocal(releasesData.items);
   fetch('/api/releases/star', {method: 'POST', headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({key: key, on: on, item: on ? it : null})})
     .then(function(r){ return r.json(); })
-    .then(function(d){ if (!d || !d.ok) { it.starred = !on; resortReleases(); showToast('Не удалось сохранить'); } })
-    .catch(function(){ it.starred = !on; resortReleases(); showToast('Не удалось сохранить'); });
+    .then(function(d){ if (!d || !d.ok) throw new Error('no server'); })
+    .catch(function() {
+      // Сервера нет — отметка остаётся локально и уедет при первом же успешном
+      // ответе. Откатывать её было бы хуже: пользователь своё действие сделал.
+      relQueueStar(key, on, it);
+      showToast(on ? 'В избранном (синхронизируется позже)' : 'Убрано (синхронизируется позже)');
+    });
   showToast(on ? 'В избранном' : 'Убрано из избранного');
 }
 
@@ -8310,12 +8476,27 @@ function applyExpansion() {
   paintPreviewState();
 }
 
+function relShowMore() {
+  _relLimit += REL_PAGE;
+  showToast('Загружаю ещё...');
+  loadReleases(true);
+}
+
 function refreshReleases() {
-  if (_isOffline) return;
   showToast('Запускаю проверку новинок...');
-  fetch('/api/releases/refresh', {method: 'POST'}).then(function(){
-    setTimeout(function(){ loadReleases(true); }, 800);
-  }).catch(function(){});
+  fetch('/api/releases/refresh', {method: 'POST'})
+    .then(function(r){ return r.json(); })
+    .then(function(d) {
+      if (!d || !d.ok) throw new Error('no server');
+      setTimeout(function(){ loadReleases(true); }, 800);
+    })
+    .catch(function() {
+      // Сервера нет — обходим артистов сами. Урезанно: без Deezer и без
+      // серверного кэша обложек, зато работает вдали от дома.
+      showToast('Сервер недоступен — проверяю через iTunes');
+      _relOffline = true;
+      relSweepDirect();
+    });
 }
 
 // Передаём релиз в существующее окно импорта: подставляем «артист — название»
@@ -8332,6 +8513,268 @@ function getRelease(key) {
   var input = document.getElementById('vkSearchQuery');
   input.value = it.artist + ' ' + it.title;
   vkSearchTracks();
+}
+
+// ── Автономный режим «Новинок» ──
+// Лента и избранное зеркалятся в IndexedDB, поэтому вкладка живёт и без
+// сервера. iTunes Search API отдаёт access-control-allow-origin: *, так что
+// браузер может обойти артистов сам. Deezer из браузера недоступен (у него нет
+// этого заголовка), поэтому запасной источник и кэш обложек остаются серверными
+// — автономный режим сознательно урезанный, а не равноценный.
+var REL_DB = 'vinylNew';
+var _relOffline = false;      // лента показана из зеркала
+var REL_PAGE = 300;           // порция дропов
+var _relLimit = REL_PAGE;     // сколько просим у сервера сейчас
+var _relHasMirror = false;
+var _relSweeping = false;
+
+function relDb(cb) {
+  var req = indexedDB.open(REL_DB, 1);
+  req.onupgradeneeded = function(e) {
+    var db = e.target.result;
+    if (!db.objectStoreNames.contains('kv')) db.createObjectStore('kv');
+  };
+  req.onsuccess = function(e) { cb(e.target.result); };
+  req.onerror = function() { cb(null); };
+}
+
+function relDbSet(key, val) {
+  relDb(function(db) {
+    if (!db) return;
+    try { db.transaction('kv', 'readwrite').objectStore('kv').put(val, key); } catch (e) {}
+  });
+}
+
+function relDbGet(key, cb) {
+  relDb(function(db) {
+    if (!db) { cb(null); return; }
+    try {
+      var r = db.transaction('kv', 'readonly').objectStore('kv').get(key);
+      r.onsuccess = function() { cb(r.result || null); };
+      r.onerror = function() { cb(null); };
+    } catch (e) { cb(null); }
+  });
+}
+
+// Артисты ранжируются из каталогов, уже лежащих в localStorage — тем же
+// правилом, что и на сервере: логарифм от числа треков на свежесть добавления.
+function relSplitArtists(v) {
+  var out = [];
+  (v || '').split(/[\/,;]|\bfeat\b\.?|\bft\b\.?/i).forEach(function(part) {
+    part = part.replace(/^[\s.,;:\-–—]+/, '').replace(/[\s\-–—]+$/, '');
+    if (part) out.push(part);
+  });
+  return out;
+}
+
+function relLocalCatalogs() {
+  var out = [];
+  Object.keys(localStorage).forEach(function(k) {
+    if (k.indexOf('_vc_folder_') !== 0) return;
+    try {
+      var d = JSON.parse(localStorage.getItem(k));
+      if (d && d.tracks && d.tracks.length) out.push(d.tracks);
+    } catch (e) {}
+  });
+  return out;
+}
+
+function relRankArtists() {
+  var stats = {};
+  relLocalCatalogs().forEach(function(ts) {
+    var n = ts.length || 1;
+    for (var i = 0; i < ts.length; i++) {
+      var fresh = 1 - i / n;
+      var names = relSplitArtists(ts[i].artist);
+      for (var j = 0; j < names.length; j++) {
+        var key = names[j].toLowerCase();
+        var e = stats[key] || (stats[key] = {name: names[j], count: 0, fresh: 0});
+        e.count++;
+        if (fresh > e.fresh) e.fresh = fresh;
+      }
+    }
+  });
+  var arr = [];
+  Object.keys(stats).forEach(function(k) {
+    var e = stats[k];
+    e.key = k;
+    e.score = (Math.log(1 + e.count) / Math.LN2) * (0.5 + e.fresh);
+    arr.push(e);
+  });
+  arr.sort(function(a, b) { return b.score - a.score; });
+  return arr;
+}
+
+function relOwnedNames() {
+  var owned = {};
+  relLocalCatalogs().forEach(function(ts) {
+    for (var i = 0; i < ts.length; i++) {
+      var t = ts[i];
+      relSplitArtists(t.artist).forEach(function(a) {
+        var k = a.toLowerCase();
+        var set = owned[k] || (owned[k] = {});
+        set[normSearch(t.album)] = true;
+        set[normSearch(t.title)] = true;
+      });
+    }
+  });
+  return owned;
+}
+
+function relJson(url, cb) {
+  fetch(url).then(function(r){ return r.ok ? r.json() : null; }).then(cb).catch(function(){ cb(null); });
+}
+
+function relItunesReleases(name, cb) {
+  relJson('https://itunes.apple.com/search?term=' + encodeURIComponent(name)
+          + '&entity=musicArtist&limit=5', function(d) {
+    var found = null, want = normSearch(name);
+    ((d && d.results) || []).forEach(function(c) {
+      if (!found && normSearch(c.artistName) === want) found = c;
+    });
+    if (!found) { cb([]); return; }
+    relJson('https://itunes.apple.com/lookup?id=' + found.artistId
+            + '&entity=album&limit=25&sort=recent', function(a) {
+      var out = [];
+      ((a && a.results) || []).forEach(function(x) {
+        if (x.wrapperType !== 'collection') return;
+        var date = (x.releaseDate || '').slice(0, 10);
+        if (!date) return;
+        var n = x.trackCount || 0;
+        out.push({
+          rid: x.collectionId, source: 'itunes',
+          title: (x.collectionName || '').replace(/\s*[-–—]\s*(Single|EP)$/, ''),
+          date: date, tracks: n,
+          kind: n === 1 ? 'single' : (n <= 6 ? 'ep' : 'album'),
+          art: (x.artworkUrl100 || '').replace('100x100bb', '600x600bb'),
+          url: x.collectionViewUrl || ''
+        });
+      });
+      cb(out);
+    });
+  });
+}
+
+// Обход артистов прямо из браузера. Тот же темп, что на сервере: iTunes при
+// частых запросах рвёт соединение.
+function relSweepDirect() {
+  if (_relSweeping) return;
+  var ranked = relRankArtists();
+  if (!ranked.length) { showToast('Нет данных о каталоге для автономной проверки'); return; }
+  var budget = Math.max(20, Math.min(80, Math.round(Math.pow(ranked.length, 0.6))));
+  var list = ranked.slice(0, budget);
+  var owned = relOwnedNames();
+  var cutoff = new Date(Date.now() - 400 * 86400000).toISOString().slice(0, 10);
+  var items = [], i = 0;
+  _relSweeping = true;
+  releasesData = releasesData || {items: [], artists_total: ranked.length, artists_checked: 0};
+  releasesData.refreshing = true;
+  releasesData.progress = {done: 0, total: list.length};
+  renderReleases();
+
+  (function step() {
+    if (i >= list.length) {
+      _relSweeping = false;
+      relApplyStarred(items, function(finalItems) {
+        releasesData = {items: finalItems.slice(0, 300), updated_at: Date.now() / 1000,
+                        artists_total: ranked.length, artists_checked: list.length,
+                        refreshing: false, progress: {done: 0, total: 0}, starred_count: 0};
+        _cardNodes = {};
+        renderReleases();
+        relSaveMirror();
+        showToast('Проверено артистов: ' + list.length);
+      });
+      return;
+    }
+    var a = list[i++];
+    releasesData.progress = {done: i, total: list.length};
+    renderReleases();
+    relItunesReleases(a.name, function(rels) {
+      var have = owned[a.key] || {};
+      rels.forEach(function(r) {
+        if (r.date < cutoff) return;
+        r.artist = a.name;
+        r.artist_score = Math.round(a.score * 1000) / 1000;
+        r.in_library = !!have[normSearch(r.title)];
+        r.key = r.source + ':' + r.rid;
+        items.push(r);
+      });
+      setTimeout(step, 1200);
+    });
+  })();
+}
+
+// ── Зеркало и очередь избранного ──
+function relSaveMirror() {
+  if (!releasesData) return;
+  relDbSet('feed', {items: releasesData.items, updated_at: releasesData.updated_at,
+                    found: releasesData.found, artists_total: releasesData.artists_total,
+                    artists_checked: releasesData.artists_checked, saved_at: Date.now() / 1000});
+  _relHasMirror = true;
+}
+
+function relLoadMirror(cb) {
+  relDbGet('feed', function(f) {
+    _relHasMirror = !!(f && f.items && f.items.length);
+    cb(f);
+  });
+}
+
+function relPendingStars(cb) { relDbGet('pendingStars', function(p){ cb(p || {}); }); }
+
+function relQueueStar(key, on, item) {
+  relPendingStars(function(p) {
+    p[key] = {on: on, item: on ? item : null};
+    relDbSet('pendingStars', p);
+  });
+}
+
+// Отметки, поставленные без сервера, уезжают на него при первом же успешном
+// ответе — иначе они остались бы только на этом устройстве.
+function relFlushStars() {
+  relPendingStars(function(p) {
+    var keys = Object.keys(p);
+    if (!keys.length) return;
+    var i = 0, sent = 0;
+    (function next() {
+      if (i >= keys.length) {
+        relDbSet('pendingStars', {});
+        // Лента уже отрисована по данным сервера, который об этих отметках ещё
+        // не знал — перезапрашиваем, иначе они выглядели бы снятыми.
+        if (sent) setTimeout(function(){ loadReleases(true); }, 400);
+        return;
+      }
+      var k = keys[i++], v = p[k];
+      fetch('/api/releases/star', {method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({key: k, on: v.on, item: v.item})})
+        .then(function(r){ return r.json(); })
+        .then(function(d){ if (d && d.ok) sent++; next(); })
+        .catch(function(){ next(); });   // не отправилось — останется в очереди
+    })();
+  });
+}
+
+function relApplyStarred(items, cb) {
+  relDbGet('starred', function(st) {
+    st = st || {};
+    var seen = {};
+    items.forEach(function(it) { it.starred = !!st[it.key]; seen[it.key] = true; });
+    Object.keys(st).forEach(function(k) {
+      if (seen[k] || !st[k]) return;
+      var snap = JSON.parse(JSON.stringify(st[k]));
+      snap.starred = true; snap.key = k;
+      items.push(snap);
+    });
+    items.sort(function(a, b) { return a.date < b.date ? 1 : (a.date > b.date ? -1 : 0); });
+    items.sort(function(a, b) { return (a.starred ? 0 : 1) - (b.starred ? 0 : 1); });
+    cb(items);
+  });
+}
+
+function relSaveStarredLocal(items) {
+  var st = {};
+  items.forEach(function(it) { if (it.starred) st[it.key] = it; });
+  relDbSet('starred', st);
 }
 
 // ── Превью релизов ──
@@ -8353,7 +8796,7 @@ function stopPreview() {
 function closePreview() {
   stopPreview();
   _previewKey = null; _previewTracks = [];
-  renderReleases();
+  applyExpansion();
 }
 
 function findRelease(key) {
@@ -8364,14 +8807,42 @@ function findRelease(key) {
   return null;
 }
 
-function togglePreview(key) {
+// autoplay=true — только для кнопки ▶. Нажатие на саму карточку лишь
+// раскрывает список: смотреть состав альбома, не перебивая то, что играет, —
+// нормальное желание, а музыка, стартующая от простого клика, только мешает.
+function togglePreview(key, autoplay) {
   var it = findRelease(key);
   if (!it || !it.rid) { showToast('Для этого релиза превью недоступно'); return; }
-  if (_previewKey === key) { closePreview(); return; }
+
+  if (_previewKey === key) {
+    if (!autoplay) { closePreview(); return; }          // клик по карточке — свернуть
+
+    if (_previewTrack >= 0 && !previewAudio.paused) { stopPreview(); return; }
+    if (_previewTracks.length) playPreview(_previewTrack >= 0 ? _previewTrack : 0);
+    return;
+  }
 
   stopPreview();
   _previewKey = key; _previewTracks = [];
-  renderReleases();
+  // Только точечная операция: renderReleases() пересобирал весь список, из-за
+  // чего контейнер на миг схлопывался и прокрутку выбрасывало в середину.
+  applyExpansion();
+
+  if (!autoplay) {
+    fetch('/api/releases/tracks?source=' + encodeURIComponent(it.source || 'itunes')
+          + '&rid=' + encodeURIComponent(it.rid)
+          + '&artist=' + encodeURIComponent(it.artist)
+          + '&title=' + encodeURIComponent(it.title))
+      .then(function(r){ return r.json(); })
+      .then(function(d) {
+        if (_previewKey !== key) return;
+        _previewTracks = (d && d.tracks) || [];
+        applyExpansion();
+        if (!_previewTracks.length) showToast('Превью для этого релиза не нашлось');
+      })
+      .catch(function(){ if (_previewKey === key) showToast('Не удалось загрузить список'); });
+    return;
+  }
 
   // Разблокируем элемент прямо в обработчике клика: список треков приезжает
   // после fetch, а play() за пределами жеста браузер отклоняет (на iOS —
@@ -8392,7 +8863,7 @@ function togglePreview(key) {
     .then(function(d) {
       if (_previewKey !== key) return;            // пока грузилось, открыли другое
       _previewTracks = (d && d.tracks) || [];
-      renderReleases();
+      applyExpansion();
       if (_previewTracks.length) playPreview(0);
       else showToast('Превью для этого релиза не нашлось');
     })
@@ -8434,8 +8905,9 @@ function paintPreviewState() {
   var all = document.querySelectorAll('#newList .rel-btn-prev');
   for (var j = 0; j < all.length; j++) {
     var isOpen = all[j].getAttribute('data-key') === _previewKey;
-    all[j].classList.toggle('rel-playing', isOpen && _previewTrack >= 0);
-    var want = isOpen ? REL_ICON_PAUSE : REL_ICON_PLAY;
+    var playing = isOpen && _previewTrack >= 0 && !previewAudio.paused;
+    all[j].classList.toggle('rel-playing', playing);
+    var want = playing ? REL_ICON_PAUSE : REL_ICON_PLAY;
     if (all[j].innerHTML !== want) all[j].innerHTML = want;
   }
 }
@@ -8445,6 +8917,8 @@ previewAudio.addEventListener('timeupdate', function() {
   var row = document.querySelector('#newList .rel-track[data-n="' + _previewTrack + '"] .rel-track-bar');
   if (row) row.style.width = (previewAudio.currentTime / previewAudio.duration * 100) + '%';
 });
+previewAudio.addEventListener('play', function(){ paintPreviewState(); });
+previewAudio.addEventListener('pause', function(){ paintPreviewState(); });
 previewAudio.addEventListener('ended', function() {
   // Дослушали отрывок — идём к следующему треку релиза, как в обычном плеере
   if (_previewTrack >= 0 && _previewTrack + 1 < _previewTracks.length) playPreview(_previewTrack + 1);
@@ -8873,8 +9347,12 @@ function savePlEdit() {
       showToast(plEditId ? 'Плейлист обновлён' : 'Плейлист создан');
       document.getElementById('plEditOverlay').classList.remove('show');
       loadUserPlaylists();
-    } else showToast(d.error);
-  });
+    } else {
+      // Окно остаётся открытым: собранный список треков — это работа, и терять
+      // её из-за пропавшей связи нельзя. Появится сеть — жмите «Сохранить» ещё раз.
+      showToast(d.error || 'Ошибка');
+    }
+  }).catch(function() { showToast('Нет связи с сервером — изменение не сохранено'); });
 }
 
 function playPlaylist(id) {
@@ -10736,7 +11214,11 @@ class Handler(BaseHTTPRequestHandler):
             # исключительно кнопкой (/api/releases/refresh): ходить в чужие API
             # и сканировать библиотеку в фоне, когда пользователь об этом не
             # просил, — не то поведение, которого от плеера ждут.
-            self._respond_json(build_releases_feed(user))
+            try:
+                limit = int(parse_qs(parsed.query).get("limit", [RELEASES_LIMIT])[0])
+            except Exception:
+                limit = RELEASES_LIMIT
+            self._respond_json(build_releases_feed(user, max(50, min(3000, limit))))
 
         elif path == "/api/releases/preview":
             src_url = parse_qs(parsed.query).get("u", [""])[0]
