@@ -1802,10 +1802,15 @@ function getFromIDB(key) {
 // Auto-retries every 2s; when /api/version succeeds, reloads. Avoids stranding
 // users on a dead-end page when the server briefly went away (restart, LAN/HTTPS
 // toggle, network blip).
-var OFFLINE_FALLBACK = '<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"></head><body style="background:#111;color:#eee;font-family:-apple-system,BlinkMacSystemFont,sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0"><div style="text-align:center;padding:20px"><h2 style="color:#e94560;margin:0 0 12px">Сервер недоступен</h2><p id="s" style="color:rgba(255,255,255,0.5);font-size:14px;margin:0 0 16px">Жду подключения...</p><button onclick="location.reload()" style="padding:10px 20px;border:none;border-radius:8px;background:#e94560;color:#fff;font-size:14px;cursor:pointer">Попробовать сейчас</button></div><script>(function(){var t=0;function ping(){t++;document.getElementById("s").textContent="Жду подключения... ("+t+")";fetch("/api/version",{cache:"no-store"}).then(function(r){if(r.ok)location.reload()}).catch(function(){});}setInterval(ping,2000);ping();})();</script></body></html>';
+var OFFLINE_FALLBACK = '<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"></head><body style="background:#111;color:#eee;font-family:-apple-system,BlinkMacSystemFont,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0"><div style="padding:24px;max-width:340px;width:100%;text-align:center"><h2 style="color:#e94560;margin:0 0 12px">Сервер недоступен</h2><p id="s" style="color:rgba(255,255,255,0.5);font-size:14px;margin:0 0 16px">Жду подключения...</p><button id="r" style="padding:10px 20px;border:none;border-radius:8px;background:#e94560;color:#fff;font-size:14px;cursor:pointer">Попробовать сейчас</button><div style="margin-top:24px;padding-top:16px;border-top:1px solid rgba(255,255,255,0.08);text-align:left"><div style="color:rgba(255,255,255,0.4);font-size:12px;margin-bottom:8px">Сменился IP компьютера? Укажите адрес вручную:</div><div id="k"></div><div style="display:flex;gap:6px;margin-top:6px"><input id="h" placeholder="192.168.1.50" autocapitalize="off" autocorrect="off" spellcheck="false" style="flex:1;min-width:0;padding:9px 10px;border-radius:8px;border:1px solid rgba(255,255,255,0.12);background:rgba(255,255,255,0.05);color:#eee;font-size:14px"><button id="b" style="padding:9px 14px;border:none;border-radius:8px;background:#e94560;color:#fff;font-size:13px;cursor:pointer">Перейти</button></div><div style="color:rgba(255,255,255,0.25);font-size:11px;margin-top:10px;line-height:1.5">Кэш треков привязан к адресу и на новый IP не переедет.</div></div></div><script>(function(){var t=0;function ping(){t++;document.getElementById("s").textContent="Жду подключения... ("+t+")";fetch("/api/version",{cache:"no-store"}).then(function(r){return r.json()}).then(function(d){if(d&&d.version)location.reload()}).catch(function(){});}setInterval(ping,2000);ping();document.getElementById("r").onclick=function(){location.reload()};function loopback(h){h=(h||"").toLowerCase();return h==="localhost"||h==="127.0.0.1";}function norm(v){v=(v||"").trim();while(v.length&&v.charAt(v.length-1)==="/")v=v.slice(0,-1);if(!v)return "";if(v.indexOf("://")<0){v=(loopback(v.split("/")[0].split(":")[0])?"http://":"https://")+v;}try{var u=new URL(v);if(!u.port)u.port=loopback(u.hostname)?"7666":"SW_PORT";return u.protocol+"//"+u.host;}catch(e){return "";}}function go(v){var u=norm(v);if(!u)return;try{var l=JSON.parse(localStorage.getItem("_vc_hosts")||"[]").filter(function(x){return x!==u});l.unshift(u);localStorage.setItem("_vc_hosts",JSON.stringify(l.slice(0,8)));}catch(e){}location.href=u+"/";}document.getElementById("b").onclick=function(){go(document.getElementById("h").value)};document.getElementById("h").onkeydown=function(e){if(e.key==="Enter")go(this.value)};var seen=[],cfg={};try{cfg=JSON.parse(localStorage.getItem("_vc_config")||"{}")}catch(e){}function add(u){u=norm(u);if(u&&u!==location.origin&&seen.indexOf(u)<0)seen.push(u)}add(cfg.lan_host_url);(cfg.all_urls||[]).forEach(add);try{JSON.parse(localStorage.getItem("_vc_hosts")||"[]").forEach(add)}catch(e){}var k=document.getElementById("k");seen.forEach(function(u){var b=document.createElement("button");b.textContent=u;b.style.cssText="display:block;width:100%;margin-bottom:6px;padding:9px 10px;border:1px solid rgba(255,255,255,0.12);border-radius:8px;background:rgba(255,255,255,0.05);color:#eee;font-size:13px;cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:left";b.onclick=function(){go(u)};k.appendChild(b)});})();</script></body></html>';
 
 self.addEventListener('fetch', function(e) {
   var url = new URL(e.request.url);
+
+  // Cross-origin requests are none of our business: the path rules below are
+  // written for this server, and swallowing another host's /api/* call would
+  // make an unreachable address look alive when probing for a moved server.
+  if (url.origin !== self.location.origin) return;
 
   // Audio streams and covers — do NOT intercept, let browser handle directly.
   // Offline playback is handled client-side via IndexedDB blob URLs.
@@ -2463,11 +2468,16 @@ body {
 /* ── Progress bar ── */
 .progress-wrap {
   width: min(50vw, 400px); margin-top: 16px; cursor: pointer;
+  touch-action: none; -webkit-user-select: none; user-select: none;
+  /* enlarge the finger target above/below the thin bar */
+  padding: 10px 0; margin-top: 6px;
 }
 .progress-bg {
   width: 100%; height: 4px; background: rgba(255,255,255,0.15);
   border-radius: 2px; position: relative;
 }
+.progress-wrap.dragging .progress-fill { transition: none; }
+.progress-wrap.dragging .progress-bg { height: 6px; }
 .progress-fill {
   height: 100%; background: #e94560; border-radius: 2px; width: 0%;
   transition: width 0.3s linear;
@@ -2646,6 +2656,16 @@ body {
   color: rgba(255,255,255,0.6); border: 1px solid rgba(255,255,255,0.12); cursor: pointer;
 }
 .folder-btn-icon:hover { background: rgba(255,255,255,0.14); color: #fff; }
+.lan-info-btn {
+  width: 18px; height: 18px; flex-shrink: 0; padding: 0; margin-right: 2px;
+  border-radius: 50%; border: 1px solid rgba(255,255,255,0.2); background: transparent;
+  color: rgba(255,255,255,0.45); font: italic 700 11px/1 Georgia, serif; cursor: pointer;
+  align-items: center; justify-content: center; transition: background 0.15s, color 0.15s;
+}
+.lan-info-btn:hover { background: rgba(255,255,255,0.12); color: #fff; }
+.lan-info-btn.open { background: rgba(233,69,96,0.9); border-color: transparent; color: #fff; }
+.mobile-only { display: none; }
+.force-hidden { display: none !important; }
 .folder-path-input {
   flex: 1; padding: 8px 10px; border-radius: 8px;
   border: 1px solid rgba(255,255,255,0.12); background: rgba(255,255,255,0.06);
@@ -2901,6 +2921,15 @@ body { overflow: hidden; touch-action: none; position: fixed; width: 100%; heigh
   .player-mode-toggle.collapsed .player-mode-btn:not(.active) { width: 0; padding: 0; opacity: 0; overflow: hidden; pointer-events: none; }
   .player-mode-toggle.collapsed .player-mode-btn.active { color: #e94560; }
   .player-mode-toggle.collapsed { gap: 0; padding: 3px; }
+  /* Phone layout: catalog management, user admin and Meta live on the desktop
+     only, and «Загрузить» becomes an icon in the first row — that frees the
+     whole second row, leaving catalog + Профиль + Загрузить above the search. */
+  .mobile-only { display: flex; }
+  #addFolderBtn, #removeFolderBtn, #adminBtn, #metaBtn, #vkBtn { display: none !important; }
+  /* The row only survives while it still carries the LAN/WAN toggles (which a
+     phone never shows — they need the server machine — but a narrow desktop
+     window does). */
+  #metaVkRow:not(.has-toggles) { display: none; }
 }
 /* Force portrait on narrow screens */
 @media (max-width: 768px) and (orientation: landscape) {
@@ -3029,7 +3058,7 @@ body { overflow: hidden; touch-action: none; position: fixed; width: 100%; heigh
       <button class="ctrl-btn" onclick="nextTrack()"><svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M16 6h2v12h-2zM6 18l8.5-6L6 6z"/></svg></button>
     </div>
 
-    <div class="progress-wrap" onclick="seek(event)">
+    <div class="progress-wrap" id="progressWrap">
       <div class="progress-bg">
         <div class="progress-fill" id="progressFill"></div>
       </div>
@@ -3061,6 +3090,7 @@ body { overflow: hidden; touch-action: none; position: fixed; width: 100%; heigh
         <button class="folder-btn-icon" id="addFolderBtn" onclick="toggleAddFolder()" data-tip="Добавить каталог">+</button>
         <button class="folder-btn-icon" id="removeFolderBtn" onclick="removeCurrentFolder()" data-tip="Удалить каталог">&times;</button>
         <button class="folder-btn-icon" onclick="openProfile()" data-tip="Профиль" id="profileBtn"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 12c2.7 0 4.8-2.1 4.8-4.8S14.7 2.4 12 2.4 7.2 4.5 7.2 7.2 9.3 12 12 12zm0 2.4c-3.2 0-9.6 1.6-9.6 4.8v2.4h19.2v-2.4c0-3.2-6.4-4.8-9.6-4.8z"/></svg></button>
+        <button class="folder-btn-icon mobile-only" onclick="openVkModal()" data-tip="Загрузить" id="vkBtnIcon"><svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M19.35 10.04A7.49 7.49 0 0 0 12 4C9.11 4 6.6 5.64 5.35 8.04A5.994 5.994 0 0 0 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM17 13l-5 5-5-5h3V9h4v4h3z"/></svg></button>
         <button class="folder-btn-icon" onclick="openAdmin()" data-tip="Пользователи" id="adminBtn" style="display:none"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg></button>
       </div>
 
@@ -3073,9 +3103,10 @@ body { overflow: hidden; touch-action: none; position: fixed; width: 100%; heigh
       </div>
 
       <div class="fp-row" id="metaVkRow">
-        <button class="folder-btn folder-btn-secondary" style="flex:1" onclick="startMetaSearch()" data-tip="Поиск обложек, артистов и альбомов">Meta</button>
-        <button class="folder-btn folder-btn-secondary" style="flex:1" onclick="openVkModal()" data-tip="Импорт из VK, Яндекс, Spotify, Apple Music, SoundCloud">Загрузить</button>
+        <button class="folder-btn folder-btn-secondary" id="metaBtn" style="flex:1" onclick="startMetaSearch()" data-tip="Поиск обложек, артистов и альбомов">Meta</button>
+        <button class="folder-btn folder-btn-secondary" id="vkBtn" style="flex:1" onclick="openVkModal()" data-tip="Импорт из VK, Яндекс, Spotify, Apple Music, SoundCloud">Загрузить</button>
         <div id="networkToggles" style="display:none;align-items:center;gap:4px;flex-shrink:0">
+          <button id="lanInfoBtn" class="lan-info-btn" onclick="toggleLanInfo()" data-tip="Адреса подключения" style="display:none">i</button>
           <span style="font-size:10px;color:rgba(255,255,255,0.35)">LAN</span>
           <label style="position:relative;width:30px;height:16px;cursor:pointer;flex-shrink:0">
             <input type="checkbox" id="publicToggle" onchange="togglePublic(this.checked)" style="opacity:0;width:0;height:0">
@@ -3091,7 +3122,7 @@ body { overflow: hidden; touch-action: none; position: fixed; width: 100%; heigh
         </div>
       </div>
 
-      <div id="lanInfo" style="font-size:11px;color:rgba(255,255,255,0.4);display:none"></div>
+      <div id="lanInfo" style="font-size:11px;color:rgba(255,255,255,0.4);display:none;line-height:1.6"></div>
 
       <div class="search-wrap" style="position:relative">
         <input type="text" id="searchInput" class="folder-path-input" style="width:100%" placeholder="Поиск по трекам..." oninput="onSearchInput(this.value)">
@@ -3351,6 +3382,26 @@ body { overflow: hidden; touch-action: none; position: fixed; width: 100%; heigh
   </div>
 </div>
 
+<!-- Server address modal — rescue when the LAN IP changed under an installed PWA -->
+<div class="meta-overlay" id="serverOverlay" onmousedown="this._mdt=event.target" onclick="if(event.target===this&&this._mdt===this)this.classList.remove('show')">
+  <div class="meta-modal" style="width:min(420px,90vw)">
+    <h3>Подключение к серверу</h3>
+    <div style="font-size:11px;color:rgba(255,255,255,0.35);margin:6px 0 12px">Текущий адрес: <span id="srvCurrent"></span></div>
+    <div style="font-size:12px;color:rgba(255,255,255,0.4);margin-bottom:6px">Известные адреса</div>
+    <div id="srvList" style="display:flex;flex-direction:column;gap:6px"></div>
+    <div style="font-size:12px;color:rgba(255,255,255,0.4);margin:14px 0 6px">Другой адрес</div>
+    <div style="display:flex;gap:6px">
+      <input type="text" id="srvManual" class="folder-path-input" style="flex:1" placeholder="192.168.1.50 или имя.local" autocapitalize="off" autocorrect="off" spellcheck="false" onkeydown="if(event.key==='Enter')goToManualServer()">
+      <button class="folder-btn folder-btn-primary" onclick="goToManualServer()">Перейти</button>
+    </div>
+    <div id="srvHint" style="font-size:11px;color:rgba(255,255,255,0.3);margin-top:12px;line-height:1.55"></div>
+    <div style="display:flex;gap:8px;margin-top:14px;padding-top:12px;border-top:1px solid rgba(255,255,255,0.06)">
+      <button class="folder-btn folder-btn-secondary" style="flex:1" onclick="location.href='/reset'">Обновить приложение</button>
+      <button class="folder-btn folder-btn-secondary" style="flex:1" onclick="document.getElementById('serverOverlay').classList.remove('show')">Закрыть</button>
+    </div>
+  </div>
+</div>
+
 <!-- Playlist edit modal -->
 <div class="meta-overlay" id="plEditOverlay" onmousedown="this._mdt=event.target" onclick="if(event.target===this&&this._mdt===this)this.classList.remove('show')">
   <div class="meta-modal" style="width:min(480px,92vw);max-height:85vh;display:flex;flex-direction:column;overflow:hidden">
@@ -3446,7 +3497,10 @@ body { overflow: hidden; touch-action: none; position: fixed; width: 100%; heigh
         <span style="font-size:12px;color:rgba(255,255,255,0.5);flex:1" id="profileCacheInfo"></span>
         <button class="folder-btn folder-btn-secondary" style="padding:6px 12px;font-size:12px;color:#e94560" onclick="clearAllCache()">Очистить кэш</button>
       </div>
-      <button class="folder-btn folder-btn-secondary" style="width:100%;margin-top:8px;font-size:12px" onclick="location.href='/reset'">Обновить приложение</button>
+      <div style="display:flex;gap:8px;margin-top:8px">
+        <button class="folder-btn folder-btn-secondary" style="flex:1;font-size:12px" onclick="openServerDialog()">Адрес сервера</button>
+        <button class="folder-btn folder-btn-secondary" style="flex:1;font-size:12px" onclick="location.href='/reset'">Обновить приложение</button>
+      </div>
     </div>
     <div style="display:flex;gap:8px;margin-top:16px;padding-top:12px;border-top:1px solid rgba(255,255,255,0.06)">
       <button class="folder-btn folder-btn-secondary" style="flex:1" onclick="doLogout()">Выйти</button>
@@ -4550,6 +4604,11 @@ function showTab(tab) {
     document.getElementById('editBtn').style.display = 'none';
     if (isEditMode) cancelEdit();
   } else if (tab === 'playlists') {
+    // Set the count from what's already loaded: loadUserPlaylists() refreshes
+    // from the server asynchronously, so leaving the header to it kept the
+    // previous tab's text («xxx альбомов») on screen until the reply arrived —
+    // and forever if it never did.
+    document.getElementById('playlistHeader').textContent = userPlaylists.length + ' плейлистов';
     document.getElementById('editBtn').style.display = 'none';
     if (isEditMode) cancelEdit();
     loadUserPlaylists();
@@ -4581,7 +4640,7 @@ function makeBlobUrl(buf, file) {
 function prepareBlobUrl(file) {
   if (_blobUrlCache[file] || !isTrackCached(file)) return;
   getCachedAudio(file, function(buf) {
-    if (!buf) { delete cachedFiles[file]; return; }
+    if (!buf) { delete cachedFiles[cacheKey(file)]; return; }
     _blobUrlCache[file] = makeBlobUrl(buf, file);
   });
 }
@@ -4623,13 +4682,22 @@ function selectTrack(i, autoplay) {
   vinylAngle = 0;
   vinylSpeed = 0;
 
-  audio.pause();
+  // When we're about to play the new track, don't pause first: an explicit
+  // pause() in the background can make iOS release the audio session, so the
+  // following play() (e.g. from a lock-screen / CarPlay next/prev) is deferred
+  // until the app is foregrounded. Assigning a new src already stops the old
+  // track. For auto-advance this is a no-op (the track has already ended), so
+  // it doesn't affect that path.
+  if (!autoplay) audio.pause();
   // Reset lock screen position immediately so iOS doesn't show stale time
   if ('mediaSession' in navigator) {
     try { navigator.mediaSession.setPositionState(); } catch(e) {}
   }
   var streamUrl = '/api/stream/' + encodeURIComponent(t.file);
   var genAtLoad = _trackSrcGen;
+  _ctxRestored = true;   // an explicit choice replaces whatever was stored
+  if (!_ctxRestoring) { _ctxPlayed = false; _pendingSeek = 0; }
+  setTimeout(function() { savePlaybackContext(true); }, 0);
 
   function doPlay() {
     if (!autoplay) return;
@@ -4668,21 +4736,21 @@ function selectTrack(i, autoplay) {
             try { audio.currentTime = curTime; } catch(e) {}
             if (wasPlaying) audio.play().catch(function(){});
           });
-          audio.src = streamUrl;
+          setAudioSrc(streamUrl);
         }
       }
     }, 4000);
   }
 
   if (_blobUrlCache[t.file]) {
-    audio.src = _blobUrlCache[t.file];
+    setAudioSrc(_blobUrlCache[t.file]);
     doPlay();
     watchDuration(true);
   } else if (isTrackCached(t.file)) {
     // iOS requires play() synchronously within MediaSession/gesture callback.
     // Start with stream URL (or silent placeholder offline) to keep audio session,
     // then swap to blob when IDB read completes.
-    audio.src = _isOffline ? _silentBlobUrl : streamUrl;
+    setAudioSrc(_isOffline ? _silentBlobUrl : streamUrl);
     doPlay();
     // Skip the async blob swap when locked/backgrounded and streaming is
     // available: swapping src pauses playback and the re-play() runs outside the
@@ -4696,20 +4764,20 @@ function selectTrack(i, autoplay) {
         if (genAtLoad !== _trackSrcGen) return;
         if (buf) {
           _blobUrlCache[t.file] = makeBlobUrl(buf, t.file);
-          audio.src = _blobUrlCache[t.file];
+          setAudioSrc(_blobUrlCache[t.file]);
           if (autoplay) audio.play().catch(function(){});
           watchDuration(true);
         } else {
-          delete cachedFiles[t.file];
+          delete cachedFiles[cacheKey(t.file)];
           if (!_isOffline) {
-            audio.src = streamUrl;
+            setAudioSrc(streamUrl);
             if (autoplay) audio.play().catch(function(){});
           }
         }
       });
     }
   } else {
-    audio.src = streamUrl;
+    setAudioSrc(streamUrl);
     doPlay();
   }
   setTimeout(prepareNearbyBlobs, 200);
@@ -4759,6 +4827,13 @@ function selectTrack(i, autoplay) {
           img.src = img._coverUrl;
         } else if (!_isOffline) {
           img.src = coverUrl;
+          cacheCover(t.file);   // missing or just dropped as invalid — refill it
+        } else {
+          // Offline with no usable artwork: show the placeholder. Falling
+          // through left the previous track's cover spinning on the record.
+          img.style.display = 'none';
+          document.getElementById('vinylPlaceholder').style.display = '';
+          return;
         }
         img.style.display = '';
         document.getElementById('vinylPlaceholder').style.display = 'none';
@@ -4950,12 +5025,53 @@ function nextTrack() {
   }
 }
 
-function seek(e) {
-  if (!audio.duration) return;
-  var rect = e.currentTarget.getBoundingClientRect();
-  var pct = (e.clientX - rect.left) / rect.width;
-  audio.currentTime = pct * audio.duration;
-}
+// ── Timeline scrub (tap + drag, mouse & touch) ──
+(function() {
+  var wrap = document.getElementById('progressWrap');
+  if (!wrap) return;
+  var bar = wrap.querySelector('.progress-bg');
+  var seeking = false;
+
+  function pctFromX(clientX) {
+    var rect = bar.getBoundingClientRect();
+    var p = (clientX - rect.left) / rect.width;
+    return Math.max(0, Math.min(1, p));
+  }
+  function preview(pct) {
+    document.getElementById('progressFill').style.width = (pct * 100) + '%';
+    document.getElementById('timeCurrent').textContent = formatTime(pct * audio.duration);
+  }
+  function commit(pct) {
+    if (!audio.duration || isNaN(audio.duration)) return;
+    audio.currentTime = pct * audio.duration;
+  }
+
+  wrap.addEventListener('pointerdown', function(e) {
+    if (!audio.duration || isNaN(audio.duration)) return;
+    seeking = true;
+    wrap.classList.add('dragging');
+    try { wrap.setPointerCapture(e.pointerId); } catch (err) {}
+    var pct = pctFromX(e.clientX);
+    preview(pct);
+    commit(pct);
+    e.preventDefault();
+  });
+  wrap.addEventListener('pointermove', function(e) {
+    if (!seeking) return;
+    var pct = pctFromX(e.clientX);
+    preview(pct);
+    commit(pct);
+    e.preventDefault();
+  });
+  function end(e) {
+    if (!seeking) return;
+    seeking = false;
+    wrap.classList.remove('dragging');
+    try { wrap.releasePointerCapture(e.pointerId); } catch (err) {}
+  }
+  wrap.addEventListener('pointerup', end);
+  wrap.addEventListener('pointercancel', end);
+})();
 
 function setVolume(v) { audio.volume = v; }
 
@@ -5152,11 +5268,169 @@ function updateMediaSession(t) {
   }
 }
 
+// ── Playback context (survives an iOS audio interruption and an app restart) ──
+// iOS hands the Now Playing slot to whatever app grabs audio focus and never
+// gives it back on its own, and it suspends a backgrounded PWA aggressively.
+// Two things follow: the OS must always see an accurate mediaSession state
+// (a stale 'none' is what makes iOS drop us from Control Center entirely), and
+// the current track + position must live outside the page, so reopening the app
+// continues where the music stopped instead of starting from nothing.
+var PLAY_CTX_KEY = '_vc_playctx';
+var _ctxSavedAt = 0;
+var _ctxRestored = false;
+var _ctxRestoring = false;     // suppress saves while we're seeking back into place
+var _ctxPlayed = false;        // has the current track actually played this session
+var _pendingSeek = 0;          // restored position not applied yet (media still loading)
+var _wasInterrupted = false;   // paused by the system, not by the user
+
+// Assigning src runs the media load algorithm, which pauses the element and
+// fires 'pause' — indistinguishable from the system taking audio away unless we
+// flag it. 'loadstart' always follows that pause, so it clears the flag
+// deterministically (with a timeout in case the element had nothing loaded).
+var _swappingSrc = false;
+function setAudioSrc(url) {
+  _swappingSrc = true;
+  audio.src = url;
+  setTimeout(function() { _swappingSrc = false; }, 2000);
+}
+
+function setMediaPlaybackState(state) {
+  if (!('mediaSession' in navigator)) return;
+  try { navigator.mediaSession.playbackState = state; } catch(e) {}
+}
+
+function savePlaybackContext(force) {
+  // While restoring, currentTime is still 0 and the seek hasn't landed yet —
+  // saving now would overwrite the very position we're restoring to.
+  if (_ctxRestoring) return;
+  if (currentIdx < 0 || currentIdx >= tracks.length) return;
+  var now = Date.now();
+  if (!force && now - _ctxSavedAt < 4000) return;   // timeupdate fires ~4×/s
+  var file = tracks[currentIdx].file;
+  var pos = audio.currentTime || 0;
+  // A restored track sits at position 0 until its media loads and we can seek.
+  // If the app is closed in that window (or the load stalls), writing that 0
+  // would quietly erase the place we were restoring to — keep the stored one
+  // until this track has actually played.
+  if (pos < 1 && !_ctxPlayed) {
+    try {
+      var prev = JSON.parse(localStorage.getItem(PLAY_CTX_KEY) || 'null');
+      if (prev && prev.file === file && prev.position > 1) return;
+    } catch (e) {}
+  }
+  _ctxSavedAt = now;
+  try {
+    localStorage.setItem(PLAY_CTX_KEY, JSON.stringify({
+      folder: document.getElementById('folderSelect').value,
+      file: file,
+      position: pos,
+      ts: now
+    }));
+  } catch (e) {}
+}
+
+// Apply a restored position as soon as the media is far enough along to accept
+// a seek. preload can stall indefinitely, so this is also retried when playback
+// finally starts rather than relying on 'loadedmetadata' alone.
+function applyPendingSeek() {
+  if (_pendingSeek <= 1) return;
+  if (!audio.duration || isNaN(audio.duration)) return;
+  if (audio.currentTime > 1) { _pendingSeek = 0; return; }
+  try { audio.currentTime = _pendingSeek; } catch (e) { return; }
+  _pendingSeek = 0;
+  _ctxRestoring = false;
+  onTimeUpdate();
+}
+
+// Called once per catalog load: put the player back on the track it stopped on,
+// loaded and seeked but NOT playing — iOS blocks playback without a gesture, and
+// music starting by itself when you open the app would be wrong anyway. The
+// point is that the first tap (in the app, on the lock screen, or in Control
+// Center) continues instead of restarting.
+function restorePlaybackContext() {
+  if (_ctxRestored || currentIdx >= 0 || !tracks.length) return;
+  var st = null;
+  try { st = JSON.parse(localStorage.getItem(PLAY_CTX_KEY) || 'null'); } catch (e) {}
+  if (!st || !st.file) return;
+  if (st.folder && st.folder !== document.getElementById('folderSelect').value) return;
+  var idx = -1;
+  for (var i = 0; i < tracks.length; i++) {
+    if (tracks[i].file === st.file) { idx = i; break; }
+  }
+  if (idx < 0) return;
+  _ctxRestored = true;
+  _ctxRestoring = true;
+  _ctxPlayed = false;
+  selectTrack(idx, false);
+  _pendingSeek = st.position || 0;
+  if (_pendingSeek > 1) {
+    applyPendingSeek();
+  } else {
+    _ctxRestoring = false;
+  }
+  setMediaPlaybackState('paused');
+}
+
+// Re-publish everything the OS reads for its Now Playing widget. Worth doing
+// whenever we come back to the foreground: after another app took audio focus
+// this is the only lever a web page has to reclaim the entry.
+function refreshNowPlaying() {
+  if (currentIdx < 0 || currentIdx >= tracks.length) return;
+  updateMediaSession(tracks[currentIdx]);
+  onTimeUpdate();
+  setMediaPlaybackState(audio.paused ? 'paused' : 'playing');
+}
+
+function initPlaybackContext() {
+  audio.addEventListener('loadedmetadata', applyPendingSeek);
+
+  audio.addEventListener('play', function() {
+    _wasInterrupted = false;
+    _ctxPlayed = true;
+    _ctxRestoring = false;
+    applyPendingSeek();   // preload may have stalled; the seek lands now
+    if (!isPlaying) setPlayState(true);
+    setMediaPlaybackState('playing');
+  });
+
+  audio.addEventListener('loadstart', function() { _swappingSrc = false; });
+
+  audio.addEventListener('pause', function() {
+    // Our own track switch (see setAudioSrc) and the end of a track both fire
+    // 'pause' without anything having gone wrong.
+    if (_swappingSrc || audio.ended) return;
+    if (isPlaying) {
+      // We never asked for this pause, so something took the audio away: another
+      // app started playing, a call came in, headphones were unplugged.
+      _wasInterrupted = true;
+      setPlayState(false);
+    }
+    // 'paused' rather than leaving it at 'none': it keeps the page registered as
+    // a media session, which is what lets the lock screen resume us later.
+    setMediaPlaybackState('paused');
+    savePlaybackContext(true);
+  });
+
+  document.addEventListener('visibilitychange', function() {
+    if (document.hidden) { savePlaybackContext(true); return; }
+    refreshNowPlaying();
+  });
+
+  // pagehide is the last reliable hook before iOS suspends or discards the PWA.
+  window.addEventListener('pagehide', function() { savePlaybackContext(true); });
+}
+
 function initMediaSession() {
   if (!('mediaSession' in navigator)) return;
   navigator.mediaSession.setActionHandler('play', function() {
-    if (currentIdx < 0 && tracks.length > 0) selectTrack(0, true);
-    else { audio.play(); setPlayState(true); }
+    if (currentIdx < 0 && tracks.length > 0) { selectTrack(0, true); return; }
+    if (currentIdx < 0) return;
+    // A restored track may have lost its src (iOS unloads media in suspended
+    // pages), in which case play() would silently reject — reload it instead.
+    if (!audio.currentSrc && !audio.src) { selectTrack(currentIdx, true); return; }
+    var p = audio.play();
+    if (p && p.catch) p.catch(function() { selectTrack(currentIdx, true); });
+    setPlayState(true);
   });
   navigator.mediaSession.setActionHandler('pause', function() {
     audio.pause(); setPlayState(false);
@@ -5173,6 +5447,7 @@ function initMediaSession() {
 
 // Update position state for lock screen progress bar
 function onTimeUpdate() {
+  if (!audio.paused) savePlaybackContext();
   if ('mediaSession' in navigator && audio.duration && !isNaN(audio.duration)) {
     try {
       navigator.mediaSession.setPositionState({
@@ -5242,7 +5517,10 @@ function applyConfig(cfg) {
   var isDemo = userRole === 'demo';
   isLocal = cfg.is_local !== false; // true if server says client is local, default true for cached
   document.getElementById('adminBtn').style.display = isAdmin ? '' : 'none';
-  document.getElementById('networkToggles').style.display = (isAdmin && !_isOffline && isLocal) ? 'flex' : 'none';
+  var showNetToggles = isAdmin && !_isOffline && isLocal;
+  document.getElementById('networkToggles').style.display = showNetToggles ? 'flex' : 'none';
+  document.getElementById('metaVkRow').classList.toggle('has-toggles', showNetToggles);
+  document.getElementById('vkBtnIcon').classList.toggle('force-hidden', isDemo || _isOffline);
   document.getElementById('downloadCatalogBtn').style.display = (isAdmin && !_isOffline) ? '' : 'none';
   document.getElementById('metaVkRow').style.display = (isDemo || _isOffline) ? 'none' : '';
   document.getElementById('addFolderBtn').style.display = (isDemo || _isOffline) ? 'none' : '';
@@ -5254,11 +5532,144 @@ function showOfflineBanner(show) {
   if (!banner) {
     banner = document.createElement('div');
     banner.id = 'offlineBanner';
-    banner.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:9999;background:rgba(233,69,96,0.9);color:#fff;text-align:center;padding:6px 16px;padding-top:max(6px,env(safe-area-inset-top));font-size:12px;font-weight:500;pointer-events:none;transition:opacity .3s;backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);';
-    banner.textContent = 'Офлайн-режим';
+    banner.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:9999;background:rgba(233,69,96,0.9);color:#fff;text-align:center;padding:6px 16px;padding-top:max(6px,env(safe-area-inset-top));font-size:12px;font-weight:500;cursor:pointer;transition:opacity .3s;backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);';
+    // Tappable: most often "offline" here means the server's LAN IP changed and
+    // this origin is dead, so give a one-tap way to point the app elsewhere.
+    banner.textContent = 'Офлайн-режим — нажмите, чтобы указать адрес сервера';
+    banner.onclick = function() { openServerDialog(); };
     document.body.appendChild(banner);
   }
+  banner.style.pointerEvents = show ? 'auto' : 'none';
   banner.style.opacity = show ? '1' : '0';
+}
+
+// ── Server address rescue ──
+// The PWA is bound to the origin it was installed from (https://<LAN-IP>:7656).
+// Move the Mac to another Wi-Fi and that IP changes, so the installed app points
+// at a dead origin — and "Обновить приложение" can't help, /reset is same-origin.
+// This dialog lets you jump to the server's current address without deleting the
+// PWA, and pushes the stable <hostname>.local address, which survives a network
+// change for good (origin unchanged → Service Worker and track cache survive).
+var SRV_PORT = 'PORT_PLACEHOLDER';
+
+function normalizeServerUrl(v) {
+  v = (v || '').trim().replace(/\/+$/, '');
+  if (!v) return '';
+  if (!/^https?:\/\//i.test(v)) {
+    var bare = v.split('/')[0];
+    var isLoopback = /^(localhost|127\.0\.0\.1)(:|$)/i.test(bare);
+    v = (isLoopback ? 'http://' : 'https://') + v;
+  }
+  try {
+    var u = new URL(v);
+    if (!u.port) u.port = /^(localhost|127\.0\.0\.1)$/i.test(u.hostname) ? '7666' : SRV_PORT;
+    return u.protocol + '//' + u.host;
+  } catch (e) {
+    return '';
+  }
+}
+
+function savedServerHosts() {
+  try { return JSON.parse(localStorage.getItem('_vc_hosts') || '[]') || []; } catch (e) { return []; }
+}
+
+function rememberServerHost(url) {
+  var list = savedServerHosts().filter(function(u) { return u !== url; });
+  list.unshift(url);
+  try { localStorage.setItem('_vc_hosts', JSON.stringify(list.slice(0, 8))); } catch (e) {}
+}
+
+// Every address we've ever seen for this server: the stable .local one first,
+// then the LAN IPs the server last reported, then anything typed by hand.
+function knownServerUrls() {
+  var out = [];
+  function add(u) { u = normalizeServerUrl(u); if (u && out.indexOf(u) < 0) out.push(u); }
+  var cfg = {};
+  try { cfg = JSON.parse(localStorage.getItem('_vc_config') || '{}'); } catch (e) {}
+  add(cfg.lan_host_url);
+  (cfg.all_urls || []).forEach(add);
+  savedServerHosts().forEach(add);
+  add(location.origin);
+  return out;
+}
+
+// A no-cors probe: a resolved promise means the host answered AND its
+// certificate is already trusted on this device. A rejection is ambiguous
+// (unreachable, or just an unaccepted self-signed cert), so we only ever mark
+// the confirmed ones.
+function probeServer(url, cb) {
+  var done = false;
+  var timer = setTimeout(function() { if (!done) { done = true; cb(false); } }, 4000);
+  function finish(ok) { if (!done) { done = true; clearTimeout(timer); cb(ok); } }
+  if (url === location.origin) {
+    // Same origin: the SW answers a dead server with a 200 {error:'offline'},
+    // so the status code proves nothing — the body does.
+    fetch('/api/version', {cache: 'no-store'})
+      .then(function(r) { return r.json(); })
+      .then(function(d) { finish(!!(d && d.version)); })
+      .catch(function() { finish(false); });
+  } else {
+    fetch(url + '/api/version', {mode: 'no-cors', cache: 'no-store'})
+      .then(function() { finish(true); })
+      .catch(function() { finish(false); });
+  }
+}
+
+function renderServerList() {
+  var box = document.getElementById('srvList');
+  var urls = knownServerUrls();
+  box.innerHTML = '';
+  urls.forEach(function(url, i) {
+    var isCurrent = (url === location.origin);
+    var isStable = /\.local(:|$)/i.test(url.replace(/^https?:\/\//, ''));
+    var btn = document.createElement('button');
+    btn.className = 'folder-btn folder-btn-secondary';
+    btn.style.cssText = 'padding:10px 12px;text-align:left;white-space:normal;display:flex;align-items:center;gap:8px';
+    btn.innerHTML = '<span id="srvDot' + i + '" style="width:7px;height:7px;border-radius:50%;background:rgba(255,255,255,0.15);flex-shrink:0"></span>'
+      + '<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;font-size:13px">' + url + '</span>'
+      + (isStable ? '<span style="font-size:10px;color:#52b788;flex-shrink:0">стабильный</span>' : '')
+      + (isCurrent ? '<span style="font-size:10px;color:rgba(255,255,255,0.3);flex-shrink:0">сейчас</span>' : '');
+    btn.onclick = function() { goToServer(url); };
+    box.appendChild(btn);
+    probeServer(url, function(ok) {
+      var dot = document.getElementById('srvDot' + i);
+      if (dot && ok) dot.style.background = '#52b788';
+    });
+  });
+  if (!urls.length) box.innerHTML = '<div style="font-size:12px;color:rgba(255,255,255,0.25)">Нет сохранённых адресов</div>';
+
+  var cfg = {};
+  try { cfg = JSON.parse(localStorage.getItem('_vc_config') || '{}'); } catch (e) {}
+  var stable = normalizeServerUrl(cfg.lan_host_url);
+  var hint = 'Офлайн-кэш браузер хранит отдельно для каждого адреса, поэтому после перехода на новый IP треки скачиваются заново.';
+  if (stable && stable !== location.origin) {
+    hint += ' Чтобы это не повторялось, установите PWA из Safari по адресу <b style="color:rgba(255,255,255,0.55)">' + stable + '</b> — он не меняется при смене Wi-Fi. (Chrome имена .local не резолвит, там пользуйтесь IP.)';
+  } else if (stable) {
+    hint += ' Сейчас приложение уже открыто по стабильному адресу — смена сети ему не страшна.';
+  }
+  document.getElementById('srvHint').innerHTML = hint;
+}
+
+function goToServer(url) {
+  if (!url) return;
+  rememberServerHost(url);
+  if (url === location.origin) { location.href = '/'; return; }
+  location.href = url + '/';
+}
+
+function goToManualServer() {
+  var url = normalizeServerUrl(document.getElementById('srvManual').value);
+  if (!url) { showToast('Введите IP или имя хоста'); return; }
+  goToServer(url);
+}
+
+function openServerDialog() {
+  var prof = document.getElementById('profileOverlay');
+  if (prof) prof.classList.remove('show');
+  document.getElementById('srvCurrent').textContent = location.origin;
+  document.getElementById('srvManual').value = '';
+  renderServerList();
+  document.getElementById('serverOverlay').classList.add('show');
 }
 
 function loadConfig() {
@@ -5283,10 +5694,15 @@ function loadConfig() {
       window.location.reload();
       return;
     }
-    if (cfg.error === 'offline') { if (!hadCache) enterOfflineMode(); return; }
+    // The SW answers {error:'offline'} when it couldn't reach the server. With a
+    // cached config we used to just return — so a PWA whose origin died (the
+    // Mac's LAN IP changed) looked perfectly alive, played nothing and offered
+    // no way out. Retry a few times to ride out a restart, then go offline for
+    // real, which also surfaces the tappable banner → «Подключение к серверу».
+    if (cfg.error === 'offline') { if (hadCache) retryConfigThenGoOffline(); else enterOfflineMode(); return; }
     _isOffline = false;
     showOfflineBanner(false);
-    try { localStorage.setItem('_vc_config', JSON.stringify(cfg)); } catch(e){}
+    lsSet('_vc_config', JSON.stringify(cfg));
     applyConfig(cfg);
     if (cfg.last_folder) {
       document.getElementById('folderSelect').value = cfg.last_folder;
@@ -5295,12 +5711,62 @@ function loadConfig() {
     // Cache the state of every catalog in the background so you can switch to
     // (and play cached tracks from) any catalog, even offline or over a flaky LAN.
     setTimeout(function(){ prefetchAllFolderStates(cfg.folders, cfg.last_folder); }, 3000);
+    // Pick up a caching run that a lost connection (or a cert re-prompt) cut short.
+    setTimeout(resumeCacheQueue, 4000);
   }).catch(function() {
     if (!hadCache) enterOfflineMode();
   });
 }
 
+// Server unreachable but we have a cached config: give it a few seconds (server
+// restart, LAN/HTTPS toggle, Wi-Fi blip) before declaring the app offline.
+var _offlineRetryPending = false;
+function retryConfigThenGoOffline(attemptsLeft) {
+  if (attemptsLeft === undefined) {
+    if (_offlineRetryPending) return;
+    _offlineRetryPending = true;
+    attemptsLeft = 3;
+  }
+  if (_isOffline) { _offlineRetryPending = false; return; }
+  if (attemptsLeft <= 0) {
+    _offlineRetryPending = false;
+    enterOfflineMode();
+    return;
+  }
+  setTimeout(function() {
+    fetch('/api/config', {cache: 'no-store'}).then(function(r){ return r.json(); }).then(function(cfg) {
+      if (cfg && cfg.error) throw new Error('offline');
+      _offlineRetryPending = false;
+      _isOffline = false;
+      showOfflineBanner(false);
+      lsSet('_vc_config', JSON.stringify(cfg));
+      applyConfig(cfg);
+    }).catch(function() { retryConfigThenGoOffline(attemptsLeft - 1); });
+  }, 2500);
+}
+
 var _statesPrefetched = false;
+// localStorage writer that makes room instead of silently failing. Catalog
+// blobs (_vc_folder_*) are the big, most-regenerable entries, so they are the
+// first thing evicted when the quota is hit — playlists and config must win.
+function lsSet(key, value) {
+  try {
+    localStorage.setItem(key, value);
+    return true;
+  } catch (e) {
+    var victims = Object.keys(localStorage).filter(function(k) {
+      return k.indexOf('_vc_folder_') === 0 && k !== key;
+    }).sort(function(a, b) {
+      return (localStorage.getItem(b) || '').length - (localStorage.getItem(a) || '').length;
+    });
+    for (var i = 0; i < victims.length; i++) {
+      try { localStorage.removeItem(victims[i]); } catch (e2) {}
+      try { localStorage.setItem(key, value); return true; } catch (e3) {}
+    }
+    return false;
+  }
+}
+
 function prefetchAllFolderStates(folders, skipPath) {
   if (_statesPrefetched || _isOffline || !folders || !folders.length) return;
   _statesPrefetched = true;
@@ -5317,8 +5783,16 @@ function prefetchAllFolderStates(folders, skipPath) {
       .then(function(r){ return r.json(); })
       .then(function(data) {
         if (data && !data.error && data.tracks) {
-          try { localStorage.setItem('_vc_folder_' + path, JSON.stringify(data)); } catch(e){}
+          lsSet('_vc_folder_' + path, JSON.stringify(data));
         }
+        // Playlists live in a separate endpoint and were never prefetched, so
+        // offline every catalog but the last-opened one looked empty.
+        return fetch('/api/playlists', {method:'POST', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({folder: path, action: 'list'})})
+          .then(function(r){ return r.json(); })
+          .then(function(d) {
+            if (d && d.playlists) lsSet('_vc_playlists_' + path, JSON.stringify(d.playlists));
+          });
       })
       .catch(function(){})
       .then(function(){ setTimeout(next, 400); });  // gentle on the single-threaded server
@@ -5481,6 +5955,9 @@ function applyFolderData(data) {
   renderAlbums();
   checkIfNumbered();
   buildDefaultQueue();
+  // Put the player back where it stopped (paused) before anything else touches
+  // currentIdx — this is what keeps the context across an app restart.
+  restorePlaybackContext();
   // Playlists must refresh with the catalog too (like tracks/albums). Show this
   // folder's cached playlists immediately, then refresh from the server.
   var folder = document.getElementById('folderSelect').value;
@@ -5498,7 +5975,7 @@ function applyFolderData(data) {
       .then(function(r){return r.json()}).then(function(d) {
         if (!d.playlists) return;
         userPlaylists = d.playlists;
-        try { localStorage.setItem('_vc_playlists_' + folder, JSON.stringify(userPlaylists)); } catch(e){}
+        lsSet('_vc_playlists_' + folder, JSON.stringify(userPlaylists));
         renderPlaylists();
         if (activeTab === 'playlists') document.getElementById('playlistHeader').textContent = userPlaylists.length + ' плейлистов';
       }).catch(function(){});
@@ -5552,7 +6029,7 @@ function loadFolder(path, retries) {
         if (!hadCache) showToast(data.error);
         return;
       }
-      try { localStorage.setItem('_vc_folder_' + path, JSON.stringify(data)); } catch(e){}
+      lsSet('_vc_folder_' + path, JSON.stringify(data));
       applyFolderData(data);
     })
     .catch(function() {
@@ -5581,6 +6058,38 @@ function setToggle(id, dotId, on) {
   dot.style.background = on ? '#e94560' : '#888';
 }
 
+// The address list is bulky and rarely needed, so it lives behind the "i"
+// spoiler and starts collapsed on every load. Content and open/closed state are
+// tracked separately: the panel may hold text while staying hidden.
+var _lanInfoOpen = false;
+var _lanInfoHasContent = false;
+
+function applyLanInfoVisibility() {
+  var info = document.getElementById('lanInfo');
+  var btn = document.getElementById('lanInfoBtn');
+  if (btn) {
+    btn.style.display = _lanInfoHasContent ? 'flex' : 'none';
+    btn.classList.toggle('open', _lanInfoOpen && _lanInfoHasContent);
+  }
+  if (info) info.style.display = (_lanInfoOpen && _lanInfoHasContent) ? '' : 'none';
+}
+
+function setLanInfo(html, forceOpen) {
+  var info = document.getElementById('lanInfo');
+  if (!info) return;
+  _lanInfoHasContent = !!html;
+  info.innerHTML = html || '';
+  // Progress messages from an LAN/WAN switch the user just flipped are worth
+  // unfolding by themselves; the plain address refresh never forces anything.
+  if (forceOpen && _lanInfoHasContent) _lanInfoOpen = true;
+  applyLanInfoVisibility();
+}
+
+function toggleLanInfo() {
+  _lanInfoOpen = !_lanInfoOpen;
+  applyLanInfoVisibility();
+}
+
 function syncNetworkState(retriesLeft) {
   if (!isAdmin) return;
   if (retriesLeft === undefined) retriesLeft = 5;
@@ -5592,7 +6101,6 @@ function syncNetworkState(retriesLeft) {
     var wan = results[1];
     // If server just restarted, endpoints may briefly return {error:'offline'} via SW
     if (cfg && cfg.error) throw new Error('not-ready');
-    var info = document.getElementById('lanInfo');
     var parts = [];
 
     setToggle('publicToggle', 'publicDot', cfg.public);
@@ -5608,15 +6116,15 @@ function syncNetworkState(retriesLeft) {
           lanPart += ' <a href="' + cfg.all_urls[u] + '" target="_blank" class="net-link">' + cfg.all_urls[u] + '</a>';
         }
         parts.push(lanPart);
+        // The IPs above change with every new Wi-Fi; the .local name doesn't, so
+        // it's the address a phone should install the PWA from.
+        if (cfg.lan_host_url) {
+          parts.push('<span style="color:#52b788">&#9679;</span> Для PWA на iPhone (Safari, адрес не меняется при смене сети): <a href="' + cfg.lan_host_url + '" target="_blank" class="net-link">' + cfg.lan_host_url + '</a>');
+        }
       }
     }
 
-    if (parts.length) {
-      info.style.display = '';
-      info.innerHTML = parts.join('<br>');
-    } else {
-      info.style.display = 'none';
-    }
+    setLanInfo(parts.length ? parts.join('<br>') : '');
   }).catch(function() {
     if (retriesLeft > 0) setTimeout(function(){ syncNetworkState(retriesLeft - 1); }, 1500);
   });
@@ -5624,9 +6132,7 @@ function syncNetworkState(retriesLeft) {
 
 function togglePublic(enabled) {
   setToggle('publicToggle', 'publicDot', enabled);
-  var info = document.getElementById('lanInfo');
-  info.style.display = '';
-  info.textContent = enabled ? 'Подключаю LAN...' : 'Отключаю LAN...';
+  setLanInfo(enabled ? 'Подключаю LAN...' : 'Отключаю LAN...', true);
 
   if (!enabled) {
     // Disable WAN too if it's on
@@ -5694,11 +6200,8 @@ function startWanMode(mode) {
       body: JSON.stringify({enabled: true})});
   }
 
-  var info = document.getElementById('lanInfo');
-  info.style.display = '';
-
   if (mode === 'tunnel') {
-    info.innerHTML = '<span style="color:#e9a545">&#9679;</span> Запускаю туннель...';
+    setLanInfo('<span style="color:#e9a545">&#9679;</span> Запускаю туннель...', true);
     fetch('/api/wan/start', {method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({mode: 'tunnel'})}).then(function() {
       wanPollCount = 0;
@@ -5728,8 +6231,7 @@ function pollWanStatus() {
     } else {
       wanPollCount++;
       if (wanPollCount < 25) {
-        var info = document.getElementById('lanInfo');
-        info.innerHTML = '<span style="color:#e9a545">&#9679;</span> Запускаю туннель... (' + wanPollCount + 'с)';
+        setLanInfo('<span style="color:#e9a545">&#9679;</span> Запускаю туннель... (' + wanPollCount + 'с)', true);
         setTimeout(pollWanStatus, 1000);
       } else {
         wanPollCount = 0;
@@ -5757,12 +6259,48 @@ function searchArtist(name) {
   input.focus();
 }
 
+// ── Search matching ──
+// The list shows tag metadata (title/artist/album), but the filename on disk
+// usually spells the same track differently: «0005. DarkLux, XGODEN - Smack That
+// (Slowed & Reverb).mp3» versus title «Smack That(Slowed & Reverb)» and artist
+// «DarkLux/XGODEN». Searching only one of the two sources loses whichever
+// spelling the user happens to remember, so the haystack holds both and all
+// punctuation is flattened to spaces on both sides.
+function normSearch(s) {
+  return (s || '').toLowerCase()
+    .replace(/[\/\\,;&()\[\]{}«»"'`~!?:+_.\-–—]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+// Every term must appear somewhere in the haystack, so «крид malo» finds a track
+// whose artist comes from the tag and whose title comes from the filename.
+function searchTerms(q) {
+  return normSearch(q).split(' ').filter(function(x) { return x; });
+}
+
+function matchesTerms(hay, terms) {
+  for (var i = 0; i < terms.length; i++) {
+    if (hay.indexOf(terms[i]) < 0) return false;
+  }
+  return true;
+}
+
+// Cached per track — rebuilt automatically whenever the catalog is reloaded.
+function trackHay(t) {
+  if (t._hay === undefined) {
+    var fromFile = (t.file || '').replace(/^\d+[.\s]+/, '').replace(/\.[a-z0-9]{2,5}$/i, '');
+    t._hay = normSearch(t.title + ' ' + t.artist + ' ' + t.album + ' ' + fromFile);
+  }
+  return t._hay;
+}
+
 function onSearchInput(q) {
   var btn = document.getElementById('searchClear');
   btn.classList.toggle('show', q.length > 0);
   clearTimeout(searchTimer);
   q = q.trim().toLowerCase();
-  if (!q) {
+  if (!q || !searchTerms(q).length) {
     filteredTracks = null;
     filteredAlbums = null;
     renderTracks();
@@ -5772,25 +6310,23 @@ function onSearchInput(q) {
     return;
   }
   searchTimer = setTimeout(function() {
+    var terms = searchTerms(q);
     // Filter tracks
     filteredTracks = [];
     for (var i = 0; i < tracks.length; i++) {
-      var t = tracks[i];
-      var hay = (t.title + ' ' + t.artist + ' ' + t.album).toLowerCase();
-      if (hay.indexOf(q) >= 0) filteredTracks.push(i);
+      if (matchesTerms(trackHay(tracks[i]), terms)) filteredTracks.push(i);
     }
     // Filter albums
     filteredAlbums = [];
     for (var a = 0; a < albums.length; a++) {
       var alb = albums[a];
-      var hay = (alb.name + ' ' + alb.artist).toLowerCase();
-      if (hay.indexOf(q) >= 0) {
+      if (matchesTerms(normSearch(alb.name + ' ' + alb.artist), terms)) {
         filteredAlbums.push(a);
       } else {
         // Check if any track in album matches
         for (var ti = 0; ti < alb.tracks.length; ti++) {
           var t = tracks[alb.tracks[ti]];
-          if (t && (t.title + ' ' + t.artist).toLowerCase().indexOf(q) >= 0) {
+          if (t && matchesTerms(trackHay(t), terms)) {
             filteredAlbums.push(a);
             break;
           }
@@ -5865,7 +6401,7 @@ function autoMetaForTrack(t) {
       showToast('Meta: ' + (d.artist || '') + ' — ' + (d.album || ''));
       // Refresh current track info
       if (currentIdx >= 0 && tracks[currentIdx].file === t.file) {
-        if (d.artist) tracks[currentIdx].artist = d.artist;
+        if (d.artist) { tracks[currentIdx].artist = d.artist; tracks[currentIdx]._hay = undefined; }
         if (d.album) tracks[currentIdx].album = d.album;
         if (d.has_cover) tracks[currentIdx].has_cover = true;
         document.getElementById('trackArtist').textContent = d.artist || '';
@@ -6652,24 +7188,33 @@ var plEditTracks = [];
 
 function loadUserPlaylists() {
   var folder = document.getElementById('folderSelect').value;
-  if (!folder) return;
+  function setHeader() {
+    if (activeTab === 'playlists') {
+      document.getElementById('playlistHeader').textContent = userPlaylists.length + ' плейлистов';
+    }
+  }
+  if (!folder) { userPlaylists = []; renderPlaylists(); setHeader(); return; }
   if (_isOffline) {
     try {
       var saved = localStorage.getItem('_vc_playlists_' + folder);
-      if (saved) { userPlaylists = JSON.parse(saved); }
-    } catch(e){}
+      userPlaylists = saved ? JSON.parse(saved) : [];
+    } catch(e){ userPlaylists = []; }
     renderPlaylists();
-    document.getElementById('playlistHeader').textContent = userPlaylists.length + ' плейлистов';
+    setHeader();
     return;
   }
   fetch('/api/playlists', {method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({folder: folder, action: 'list'})})
   .then(function(r){return r.json()}).then(function(d) {
-    userPlaylists = d.playlists || [];
-    try { localStorage.setItem('_vc_playlists_' + folder, JSON.stringify(userPlaylists)); } catch(e){}
+    // An unreachable server comes back as {error:'offline'} from the SW with a
+    // 200, so an unguarded `d.playlists || []` used to wipe both the list and
+    // its localStorage copy — the very cache the offline mode reads from.
+    if (!d || d.error || !d.playlists) { setHeader(); return; }
+    userPlaylists = d.playlists;
+    lsSet('_vc_playlists_' + folder, JSON.stringify(userPlaylists));
     renderPlaylists();
-    document.getElementById('playlistHeader').textContent = userPlaylists.length + ' плейлистов';
-  });
+    setHeader();
+  }).catch(function(){ setHeader(); });
 }
 
 var expandedPlaylist = null;
@@ -7626,13 +8171,7 @@ function bulkCache() {
   var todo = files.filter(function(f) { return !isTrackCached(f); });
   exitSelection();
   if (!todo.length) { showToast('Уже в кэше'); return; }
-  showToast('Кэширую ' + todo.length + '...');
-  var done = 0;
-  (function next() {
-    if (!todo.length) { renderTracks(); showToast('Кэшировано: ' + done); return; }
-    var f = todo.shift();
-    cacheTrack(f, function(ok) { if (ok) done++; next(); });
-  })();
+  beginCaching(todo);
 }
 
 function bulkDelete() {
@@ -7797,15 +8336,17 @@ function openTrackEdit(idx) {
 
 function uncacheEditTrack() {
   if (editingTrackIdx < 0 || editingTrackIdx >= tracks.length) return;
-  var file = tracks[editingTrackIdx].file;
+  var key = cacheKey(tracks[editingTrackIdx].file);
+  var audioKey = _audioKeyIndex[key] || key;
+  var coverKey = _coverKeyIndex[key] || ('cover:' + key);
   // Remove audio and cover from cache
   openCacheDB(function(db) {
     var tx = db.transaction('audio', 'readwrite');
     var store = tx.objectStore('audio');
-    store.delete(file);
-    store.delete('cover:' + file);
+    store.delete(audioKey);
+    store.delete(coverKey);
     tx.oncomplete = function() {
-      delete cachedFiles[file];
+      delete cachedFiles[key]; delete _audioKeyIndex[key]; delete _coverKeyIndex[key];
       document.getElementById('trackEditCacheRow').style.display = 'none';
       renderTracks();
       renderAlbums();
@@ -7859,7 +8400,7 @@ function saveTrackEdit() {
           for (var i = 0; i < tracks.length; i++) {
             if (tracks[i].file === d.new_file) {
               currentIdx = i;
-              audio.src = '/api/stream/' + encodeURIComponent(d.new_file);
+              setAudioSrc('/api/stream/' + encodeURIComponent(d.new_file));
               audio.currentTime = playPos;
               audio.play();
               setPlayState(true);
@@ -7883,10 +8424,18 @@ function showAppInfo() {
 }
 
 function scrollTracklistTop() {
-  var tl = document.getElementById('trackList');
-  if (tl) tl.scrollTo({top: 0, behavior: 'smooth'});
-  var al = document.getElementById('albumList');
-  if (al) al.scrollTo({top: 0, behavior: 'smooth'});
+  ['trackList', 'albumList', 'playlistsList'].forEach(function(id) {
+    var el = document.getElementById(id);
+    if (!el || !el.scrollTop) return;
+    var start = el.scrollTop;
+    el.scrollTo({top: 0, behavior: 'smooth'});
+    // Chrome silently drops a programmatic smooth scroll on these long, lazily
+    // populated lists (scroll anchoring wins), so jump outright if the animation
+    // never started. Safari animates fine and never reaches the fallback.
+    setTimeout(function() {
+      if (el.scrollTop > 0 && el.scrollTop >= start) el.scrollTo({top: 0, behavior: 'instant'});
+    }, 250);
+  });
 }
 
 // ── Tooltips (JS, position:fixed) ──
@@ -7937,6 +8486,23 @@ function openCacheDB(cb) {
   req.onerror = function() { showToast('Не удалось открыть кэш'); };
 }
 
+// Tracks live on disk as "NN. Artist - Title.ext". Adding/removing tracks
+// renumbers every file (and can change the padding width), so the "NN. " prefix
+// is unstable. Key the offline cache by the number-stripped name instead, so a
+// cached track keeps matching after a sync even though its filename changed.
+function cacheKey(file) {
+  if (!file) return file;
+  return file.replace(/^\d+\.\s+/, '');
+}
+
+// Blobs are NOT moved to migrate old (full-filename) keys — copying ~1 GB of
+// audio on iOS crashes the PWA. Instead we build a lightweight index from the
+// key list alone (getAllKeys returns only strings, never the blob values), so a
+// blob cached under an old numbered name is still found by its stable name.
+//   cacheKey(storedKey) -> storedKey
+var _audioKeyIndex = {}; // stable name -> actual audio key in IDB
+var _coverKeyIndex = {}; // stable name -> actual cover key in IDB
+
 function refreshCachedList() {
   openCacheDB(function(db) {
     var tx = db.transaction('audio', 'readonly');
@@ -7944,7 +8510,19 @@ function refreshCachedList() {
     var req = store.getAllKeys();
     req.onsuccess = function() {
       cachedFiles = {};
-      for (var i = 0; i < req.result.length; i++) if (req.result[i].indexOf('cover:') !== 0) cachedFiles[req.result[i]] = true;
+      _audioKeyIndex = {};
+      _coverKeyIndex = {};
+      var keys = req.result || [];
+      for (var i = 0; i < keys.length; i++) {
+        var k = keys[i];
+        if (k.indexOf('cover:') === 0) {
+          _coverKeyIndex[cacheKey(k.slice(6))] = k;
+        } else {
+          var ak = cacheKey(k);
+          cachedFiles[ak] = true;
+          _audioKeyIndex[ak] = k;
+        }
+      }
       if (typeof renderTracks === 'function') renderTracks();
       prepareNearbyBlobs();
       backfillMissingCovers();
@@ -7952,47 +8530,104 @@ function refreshCachedList() {
   });
 }
 
-function isTrackCached(file) { return !!cachedFiles[file]; }
+function isTrackCached(file) { return !!cachedFiles[cacheKey(file)]; }
 
+// onDone(ok, reason): 'ok' | 'http' (server replied, file missing/forbidden)
+// | 'net' (fetch rejected — connection or TLS died) | 'db' (IndexedDB full).
+// The queue needs that distinction: one bad file should be skipped, a dead
+// connection must stop the run instead of racing through it.
 function cacheTrack(file, onDone) {
   var url = '/api/stream/' + encodeURIComponent(file);
+  var key = cacheKey(file);
   fetch(url).then(function(r) {
-    if (!r.ok) throw new Error('fetch failed');
+    if (!r.ok) { var err = new Error('http ' + r.status); err.kind = 'http'; throw err; }
+    var ct = r.headers.get('content-type') || '';
+    if (ct.indexOf('application/json') === 0) {
+      // 200 with a JSON body means an error envelope, not a track.
+      var e2 = new Error('not audio'); e2.kind = 'http'; throw e2;
+    }
     return r.arrayBuffer();
   }).then(function(buf) {
+    if (!buf || buf.byteLength < 2048) { var e3 = new Error('too small'); e3.kind = 'http'; throw e3; }
     openCacheDB(function(db) {
       var tx = db.transaction('audio', 'readwrite');
-      tx.objectStore('audio').put(buf, file);
+      tx.objectStore('audio').put(buf, key);
       tx.oncomplete = function() {
-        cachedFiles[file] = true;
+        cachedFiles[key] = true;
+        _audioKeyIndex[key] = key;
         // Also cache cover art if available
         cacheCover(file);
-        if (onDone) onDone(true);
+        if (onDone) onDone(true, 'ok');
       };
-      tx.onerror = function() { if (onDone) onDone(false); };
+      tx.onerror = function() { if (onDone) onDone(false, 'db'); };
     });
-  }).catch(function() { if (onDone) onDone(false); });
+  }).catch(function(e) { if (onDone) onDone(false, (e && e.kind) || 'net'); });
+}
+
+// A response can be HTTP 200 and still not be the file we asked for: when the
+// session has expired the server used to answer /api/cover/ and /api/stream/
+// with {"error":"unauthorized"} — 25 bytes of JSON, status 200. That got stored
+// as the artwork (or as the track), and since it was "cached" nothing ever
+// refetched it: the placeholder stayed forever, online and offline alike.
+// Check what we actually received, both on the way in and on the way out — the
+// server is fixed now, but caches poisoned by older builds must heal themselves.
+function looksLikeImage(buf) {
+  if (!buf || buf.byteLength < 12) return false;
+  var b = new Uint8Array(buf, 0, 12);
+  if (b[0] === 0xFF && b[1] === 0xD8 && b[2] === 0xFF) return true;                 // JPEG
+  if (b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4E && b[3] === 0x47) return true; // PNG
+  if (b[0] === 0x47 && b[1] === 0x49 && b[2] === 0x46) return true;                 // GIF
+  if (b[0] === 0x42 && b[1] === 0x4D) return true;                                  // BMP
+  if (b[0] === 0x52 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x46 &&
+      b[8] === 0x57 && b[9] === 0x45 && b[10] === 0x42 && b[11] === 0x50) return true; // WEBP
+  return false;
+}
+
+function dropCachedEntry(key, indexObj, indexKey) {
+  openCacheDB(function(db) {
+    try {
+      var tx = db.transaction('audio', 'readwrite');
+      tx.objectStore('audio').delete(key);
+    } catch (e) {}
+  });
+  if (indexObj) delete indexObj[indexKey];
 }
 
 function cacheCover(file) {
   var url = '/api/cover/' + encodeURIComponent(file);
   fetch(url).then(function(r) {
-    if (!r.ok) return;
+    if (!r.ok) return null;
+    var ct = r.headers.get('content-type') || '';
+    if (ct.indexOf('image/') !== 0) return null;   // an error body, not artwork
     return r.arrayBuffer();
   }).then(function(buf) {
-    if (!buf) return;
+    if (!looksLikeImage(buf)) return;
     openCacheDB(function(db) {
       var tx = db.transaction('audio', 'readwrite');
-      tx.objectStore('audio').put(buf, 'cover:' + file);
+      var ck = 'cover:' + cacheKey(file);
+      tx.objectStore('audio').put(buf, ck);
+      tx.oncomplete = function() { _coverKeyIndex[cacheKey(file)] = ck; };
     });
   }).catch(function() {});
 }
 
 function getCachedCover(file, cb) {
+  // Prefer the actual stored key (may be a legacy numbered name), fall back to
+  // the stable key for freshly-cached covers not yet in the index.
+  var storedKey = _coverKeyIndex[cacheKey(file)] || ('cover:' + cacheKey(file));
   openCacheDB(function(db) {
     var tx = db.transaction('audio', 'readonly');
-    var req = tx.objectStore('audio').get('cover:' + file);
-    req.onsuccess = function() { cb(req.result || null); };
+    var req = tx.objectStore('audio').get(storedKey);
+    req.onsuccess = function() {
+      var buf = req.result || null;
+      if (buf && !looksLikeImage(buf)) {
+        // Poisoned by an expired session — drop it so the usual network path
+        // refills the artwork instead of showing a placeholder forever.
+        dropCachedEntry(storedKey, _coverKeyIndex, cacheKey(file));
+        buf = null;
+      }
+      cb(buf);
+    };
     req.onerror = function() { cb(null); };
   });
 }
@@ -8046,16 +8681,19 @@ function setCoverSrc(img, file, hasCover, placeholderEl) {
   }
 }
 
-// Backfill cover IDB entries for tracks cached before cacheCover was added
+// Backfill cover IDB entries for tracks cached before cacheCover was added.
+// Iterate the loaded tracks (not the cache keys): covers are fetched from the
+// server by the real on-disk filename, while the cache itself is keyed by the
+// number-stripped name.
 function backfillMissingCovers() {
-  if (_isOffline) return;
-  var files = Object.keys(cachedFiles);
+  if (_isOffline || typeof tracks === 'undefined' || !tracks.length) return;
+  var list = tracks.filter(function(t) { return t.has_cover && isTrackCached(t.file); });
   var i = 0;
   function step() {
-    if (i >= files.length) return;
-    var f = files[i++];
-    getCachedCover(f, function(buf) {
-      if (!buf) cacheCover(f);
+    if (i >= list.length) return;
+    var t = list[i++];
+    getCachedCover(t.file, function(buf) {
+      if (!buf) cacheCover(t.file);
       setTimeout(step, 150); // avoid hammering network
     });
   }
@@ -8063,20 +8701,40 @@ function backfillMissingCovers() {
 }
 
 function uncacheTrack(file) {
+  var key = cacheKey(file);
+  var audioKey = _audioKeyIndex[key] || key;
+  var coverKey = _coverKeyIndex[key] || ('cover:' + key);
   openCacheDB(function(db) {
     var tx = db.transaction('audio', 'readwrite');
     var store = tx.objectStore('audio');
-    store.delete(file);
-    store.delete('cover:' + file);
-    tx.oncomplete = function() { delete cachedFiles[file]; renderTracks(); renderAlbums(); showToast('Удалено из кэша'); };
+    store.delete(audioKey);
+    store.delete(coverKey);
+    tx.oncomplete = function() {
+      delete cachedFiles[key]; delete _audioKeyIndex[key]; delete _coverKeyIndex[key];
+      renderTracks(); renderAlbums(); showToast('Удалено из кэша');
+    };
   });
 }
 
 function getCachedAudio(file, cb) {
+  // Resolve to the actual stored key (a legacy numbered name for blobs cached
+  // before this build), falling back to the stable key.
+  var storedKey = _audioKeyIndex[cacheKey(file)] || cacheKey(file);
   openCacheDB(function(db) {
     var tx = db.transaction('audio', 'readonly');
-    var req = tx.objectStore('audio').get(file);
-    req.onsuccess = function() { cb(req.result || null); };
+    var req = tx.objectStore('audio').get(storedKey);
+    req.onsuccess = function() {
+      var buf = req.result || null;
+      // Same 200-with-JSON poisoning as covers: no real track is 2 KB, and a
+      // stored error body would just play silence. Returning null makes the
+      // caller un-mark the track and fall back to streaming.
+      if (buf && buf.byteLength < 2048) {
+        dropCachedEntry(storedKey, _audioKeyIndex, cacheKey(file));
+        delete cachedFiles[cacheKey(file)];
+        buf = null;
+      }
+      cb(buf);
+    };
     req.onerror = function() { cb(null); };
   });
 }
@@ -8097,12 +8755,37 @@ function startCacheAll() {
   beginCaching(files);
 }
 
+// The queue survives a reload: a long run over LAN/HTTPS gets killed whenever
+// the server restarts or the phone stops trusting the certificate, and the only
+// cure is reloading the page so Safari re-prompts for the cert. Persisting the
+// remaining files means that reload costs nothing.
+var CACHE_QUEUE_KEY = '_vc_cachequeue';
+var _cacheFails = 0;        // consecutive failures that looked like connection loss
+var _cacheSkipped = 0;      // files the server itself refused — skipped, not retried
+var _cacheResumed = false;
+
+function saveCacheQueue() {
+  try {
+    if (cachingActive && cacheQueue.length) {
+      localStorage.setItem(CACHE_QUEUE_KEY, JSON.stringify({
+        queue: cacheQueue, total: cacheTotalCount,
+        folder: document.getElementById('folderSelect').value
+      }));
+    } else {
+      localStorage.removeItem(CACHE_QUEUE_KEY);
+    }
+  } catch (e) {}
+}
+
 function beginCaching(files) {
   cacheQueue = files.slice();
   cacheTotalCount = files.length;
   cachingActive = true;
+  _cacheFails = 0;
+  _cacheSkipped = 0;
   showToast('Кэширование: 0/' + cacheTotalCount);
   updateCacheBtn();
+  saveCacheQueue();
   cacheNextInQueue();
 }
 
@@ -8111,20 +8794,95 @@ function cacheNextInQueue() {
     var was = cachingActive;
     cachingActive = false;
     updateCacheBtn();
-    if (was) { showToast('Кэширование завершено'); refreshCachedList(); }
+    saveCacheQueue();
+    if (was) {
+      showToast(_cacheSkipped ? ('Кэширование завершено, пропущено: ' + _cacheSkipped) : 'Кэширование завершено');
+      refreshCachedList();
+    }
     return;
   }
   var done = cacheTotalCount - cacheQueue.length;
   showToast('Кэширование: ' + done + '/' + cacheTotalCount);
-  var file = cacheQueue.shift();
+  var file = cacheQueue[0];
   updateCacheBtn();
-  cacheTrack(file, function() { cacheNextInQueue(); });
+  cacheTrack(file, function(ok, reason) {
+    if (ok) {
+      cacheQueue.shift();
+      _cacheFails = 0;
+      saveCacheQueue();
+      cacheNextInQueue();
+      return;
+    }
+    if (reason === 'http') {
+      // The server answered and said no — the file is gone or forbidden.
+      // Skipping keeps a single bad track from stalling the whole run.
+      cacheQueue.shift();
+      _cacheSkipped++;
+      _cacheFails = 0;
+      saveCacheQueue();
+      cacheNextInQueue();
+      return;
+    }
+    if (reason === 'db') {
+      cachingActive = false;
+      updateCacheBtn();
+      saveCacheQueue();
+      showToast('Хранилище устройства переполнено, кэширование остановлено');
+      refreshCachedList();
+      return;
+    }
+    // 'net' — the connection died. Leave the file at the head of the queue and
+    // back off; without this the loop used to fail instantly on every remaining
+    // track, so the counter raced to the end having downloaded nothing.
+    _cacheFails++;
+    if (_cacheFails < 4) { setTimeout(cacheNextInQueue, 1500 * _cacheFails); return; }
+    pauseCachingOnError();
+  });
+}
+
+function pauseCachingOnError() {
+  cachingActive = false;
+  _cacheFails = 0;
+  updateCacheBtn();
+  var left = cacheQueue.length;
+  // Keep the queue on disk even though caching is no longer active.
+  try {
+    localStorage.setItem(CACHE_QUEUE_KEY, JSON.stringify({
+      queue: cacheQueue, total: cacheTotalCount,
+      folder: document.getElementById('folderSelect').value
+    }));
+  } catch (e) {}
+  refreshCachedList();
+  showConfirm('Соединение с сервером потеряно, осталось ' + left + ' треков.\n\nЧаще всего это HTTPS-сертификат, который браузер перестал принимать. Перезагрузить приложение? Останется подтвердить доверие к сертификату — загрузка продолжится сама.',
+    function() { window.location.reload(); }, 'Перезагрузить');
+}
+
+// Called once after a successful config load: if a run was interrupted, pick it
+// up where it stopped.
+function resumeCacheQueue() {
+  if (_cacheResumed || cachingActive || _isOffline) return;
+  var st = null;
+  try { st = JSON.parse(localStorage.getItem(CACHE_QUEUE_KEY) || 'null'); } catch (e) {}
+  if (!st || !st.queue || !st.queue.length) return;
+  var folder = document.getElementById('folderSelect').value;
+  if (st.folder && folder && st.folder !== folder) return;
+  _cacheResumed = true;
+  cacheQueue = st.queue.filter(function(f) { return !isTrackCached(f); });
+  if (!cacheQueue.length) { try { localStorage.removeItem(CACHE_QUEUE_KEY); } catch (e) {} return; }
+  cacheTotalCount = st.total || cacheQueue.length;
+  cachingActive = true;
+  _cacheFails = 0;
+  _cacheSkipped = 0;
+  showToast('Продолжаю кэширование: осталось ' + cacheQueue.length);
+  updateCacheBtn();
+  cacheNextInQueue();
 }
 
 function stopCacheAll() {
   cacheQueue = [];
   cachingActive = false;
   updateCacheBtn();
+  saveCacheQueue();
   showToast('Кэширование остановлено');
   refreshCachedList();
 }
@@ -8217,7 +8975,19 @@ function warmAppCache() {
 (function() {
   var curVersion = 'APP_BUILD_HASH';
   function checkUpdate() {
-    fetch('/api/version').then(function(r){return r.json()}).then(function(d) {
+    fetch('/api/version', {cache: 'no-store'}).then(function(r){return r.json()}).then(function(d) {
+      // The SW turns a failed /api/* call into {error:'offline'}, so a dead
+      // server never rejects here — watch for that flag explicitly, otherwise a
+      // PWA pointing at a stale LAN IP polls forever without noticing.
+      if (d && d.error) { retryConfigThenGoOffline(); return; }
+      if (_isOffline) {
+        // Server is reachable again — rebuild state from the live config.
+        _isOffline = false;
+        showOfflineBanner(false);
+        loadConfig();
+        showToast('Подключение восстановлено');
+        return;
+      }
       if (d.version && d.version !== curVersion) {
         // Server has newer version — clear only SW app caches (NOT IndexedDB audio)
         showToast('Обновление приложения...');
@@ -8246,6 +9016,7 @@ initBgCanvas();
 // Hide volume slider on iOS (audio.volume is read-only)
 if(_isIOS){var vw=document.querySelector('.volume-wrap input[type=range]');if(vw)vw.style.display='none';var vs=document.querySelector('.volume-wrap span');if(vs)vs.style.display='none';}
 initMediaSession();
+initPlaybackContext();
 initWidgetBridge();
 
 // Detect online/offline transitions
@@ -8464,7 +9235,7 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/sw.js":
             # Inject build hash so SW updates when app changes
             build_hash = hashlib.md5(HTML_PAGE.encode()).hexdigest()[:8]
-            sw_code = SW_JS.replace("BUILD_HASH", build_hash)
+            sw_code = SW_JS.replace("BUILD_HASH", build_hash).replace("SW_PORT", str(SERVER_PORT))
             self._respond(200, "application/javascript", sw_code.encode("utf-8"))
             return
 
@@ -8501,6 +9272,14 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if not user:
+            # /api/cover/ и /api/stream/ читаются как двоичные данные, а не как
+            # JSON: отдать сюда 200 с {"error": "unauthorized"} — значит скормить
+            # клиенту 25 байт JSON вместо картинки или трека. Клиент видел
+            # успешный ответ и клал этот мусор в офлайн-кэш навсегда. Для таких
+            # эндпоинтов нужен честный 401.
+            if path.startswith("/api/cover/") or path.startswith("/api/stream/"):
+                self._respond(401, "text/plain", b"Unauthorized")
+                return
             self._respond_json({"error": "unauthorized"})
             return
 
@@ -8513,6 +9292,7 @@ class Handler(BaseHTTPRequestHandler):
             proto = "https" if _use_https else "http"
             lan_url = "{}://{}:{}".format(proto, local_ip, SERVER_PORT) if IS_PUBLIC else None
             all_urls = ["{}://{}:{}".format(proto, ip, SERVER_PORT) for ip in get_all_local_ips()] if IS_PUBLIC else []
+            lan_host_url = get_lan_host_url() if IS_PUBLIC else None
             # Detect if client is the server machine (localhost or own IP)
             client_ip = self.client_address[0] if self.client_address else ''
             local_ips = set(['127.0.0.1', '::1'] + get_all_local_ips())
@@ -8523,6 +9303,9 @@ class Handler(BaseHTTPRequestHandler):
                 "public": IS_PUBLIC,
                 "lan_url": lan_url,
                 "all_urls": all_urls,
+                # Стабильный адрес по mDNS-имени: не меняется при смене сети,
+                # поэтому именно его надо использовать для установки PWA.
+                "lan_host_url": lan_host_url,
                 "username": user,
                 "is_admin": udata.get("is_admin", False) if udata else False,
                 "role": udata.get("role", "user") if udata else "user",
@@ -9027,7 +9810,7 @@ class Handler(BaseHTTPRequestHandler):
                 redirect_url = "{}://127.0.0.1:{}".format(proto, SERVER_PORT)
                 lan_url = "{}://{}:{}".format(proto, local_ip, SERVER_PORT)
                 all_urls = ["{}://{}:{}".format(proto, ip, SERVER_PORT) for ip in all_ips]
-                self._respond_json({"ok": True, "public": True, "redirect_url": redirect_url, "lan_url": lan_url, "ip": local_ip, "all_urls": all_urls})
+                self._respond_json({"ok": True, "public": True, "redirect_url": redirect_url, "lan_url": lan_url, "ip": local_ip, "all_urls": all_urls, "lan_host_url": get_lan_host_url()})
                 try: self.wfile.flush()
                 except Exception: pass
                 def _restart_and_watchdog():
@@ -9922,22 +10705,69 @@ KEY_FILE = Path.home() / ".vinyl_key.pem"
 _use_https = False
 
 
-def _cert_covers_current_ips():
-    """Check if existing cert SAN covers all current local IPs."""
+def _read_cert_san():
+    """Возвращает SAN сертификата как (set(IP), set(DNS)) или None, если не прочитать.
+
+    Читаем через cryptography, а если её нет — через `openssl x509 -text`:
+    флаг `-ext` есть только в OpenSSL 1.1.1+, а на macOS системный openssl —
+    это LibreSSL, где он отсутствует. Раньше проверка там всегда падала в
+    except, сертификат перевыпускался при каждом запуске, и на iPhone каждый раз
+    приходилось заново принимать самоподписанный сертификат.
+    """
     if not CERT_FILE.exists():
-        return False
+        return None
+    try:
+        from cryptography import x509
+        from cryptography.x509.oid import ExtensionOID
+        cert = x509.load_pem_x509_certificate(CERT_FILE.read_bytes())
+        san = cert.extensions.get_extension_for_oid(ExtensionOID.SUBJECT_ALTERNATIVE_NAME).value
+        import ipaddress as _ipa
+        return (set(str(i) for i in san.get_values_for_type(x509.IPAddress)),
+                set(san.get_values_for_type(x509.DNSName)))
+    except Exception:
+        pass
     try:
         out = subprocess.check_output(
-            ["openssl", "x509", "-in", str(CERT_FILE), "-noout", "-ext", "subjectAltName"],
+            ["openssl", "x509", "-in", str(CERT_FILE), "-noout", "-text"],
             stderr=subprocess.DEVNULL, timeout=5
         ).decode()
-        current_ips = set(get_all_local_ips()) | {"127.0.0.1"}
-        for ip in current_ips:
-            if "IP Address:" + ip not in out:
-                return False
-        return True
+        lines = out.split("\n")
+        value = ""
+        for i, line in enumerate(lines):
+            if "Subject Alternative Name" in line:
+                # значение идёт со следующей строки и может переноситься
+                for cont in lines[i + 1:]:
+                    if not cont.startswith("                "):
+                        break
+                    value += " " + cont.strip()
+                break
+        if not value:
+            return None
+        ips, dns = set(), set()
+        for part in value.split(","):
+            part = part.strip()
+            if part.startswith("IP Address:"):
+                ips.add(part[len("IP Address:"):].strip())
+            elif part.startswith("DNS:"):
+                dns.add(part[len("DNS:"):].strip())
+        return (ips, dns)
     except Exception:
+        return None
+
+
+def _cert_covers_current_names():
+    """Покрывает ли текущий сертификат все локальные IP и mDNS-имя машины."""
+    san = _read_cert_san()
+    if san is None:
         return False
+    cert_ips, cert_dns = san
+    for ip in set(get_all_local_ips()) | {"127.0.0.1"}:
+        if ip not in cert_ips:
+            return False
+    host = get_mdns_hostname()
+    if host and host not in cert_dns:
+        return False
+    return True
 
 
 def _cert_expires_soon(days_threshold=30):
@@ -9960,16 +10790,27 @@ _SSL_ERROR_THRESHOLD = 5
 
 
 def _cert_needs_renewal():
-    """Check if certificate needs renewal (expired, bad IPs, or too many SSL errors)."""
+    """Нужно ли перевыпускать сертификат: его нет, он истекает или не покрывает
+    текущие адреса машины.
+
+    Раньше сюда входил и счётчик TLS-ошибок, но это делало только хуже:
+    ssl.SSLError в handle() — это почти всегда клиент, который ещё не принял
+    самоподписанный сертификат (или оборвал соединение). Пять таких ошибок
+    перевыпускали сертификат и перезапускали HTTPS-сервер, после чего телефону
+    надо было принимать доверие заново — то есть ошибки порождали ещё больше
+    ошибок, а все текущие загрузки рвались на середине.
+    """
     global _ssl_error_count
     if not CERT_FILE.exists() or not KEY_FILE.exists():
         return True
     if _cert_expires_soon():
         return True
-    if not _cert_covers_current_ips():
+    if not _cert_covers_current_names():
         return True
     if _ssl_error_count >= _SSL_ERROR_THRESHOLD:
-        return True
+        # Диагностика, но не повод трогать рабочий сертификат.
+        print("HTTPS: {} TLS-ошибок рукопожатия (клиент не принял сертификат?)".format(_ssl_error_count))
+        _ssl_error_count = 0
     return False
 
 
@@ -10022,23 +10863,29 @@ def _cert_watchdog():
 def _generate_self_signed_cert(force=False):
     """Генерирует self-signed сертификат для HTTPS (LAN/offline)."""
     if not force and CERT_FILE.exists() and KEY_FILE.exists():
-        if _cert_covers_current_ips():
+        if _cert_covers_current_names():
             return True
-        print("HTTPS: IP изменился, перегенерирую сертификат...")
+        print("HTTPS: адреса изменились, перегенерирую сертификат...")
     san_ips = list(set(["127.0.0.1"] + get_all_local_ips()))
+    # mDNS-имя в SAN — чтобы PWA можно было поставить по стабильному адресу
+    # https://<имя>.local:PORT, который переживает смену сети.
+    san_dns = ["localhost"]
+    host = get_mdns_hostname()
+    if host:
+        san_dns += [host, host[:-len(".local")]]
     # Try openssl CLI first, then Python fallback
-    if _generate_cert_openssl(san_ips):
+    if _generate_cert_openssl(san_ips, san_dns):
         return True
-    if _generate_cert_python(san_ips):
+    if _generate_cert_python(san_ips, san_dns):
         return True
     print("HTTPS: не удалось создать сертификат")
     return False
 
 
-def _generate_cert_openssl(san_ips):
+def _generate_cert_openssl(san_ips, san_dns=("localhost",)):
     """Генерация через openssl CLI."""
     try:
-        san_entries = ",".join("IP:" + ip for ip in san_ips) + ",DNS:localhost"
+        san_entries = ",".join(["IP:" + ip for ip in san_ips] + ["DNS:" + d for d in san_dns])
         subprocess.run([
             "openssl", "req", "-x509", "-newkey", "rsa:2048",
             "-keyout", str(KEY_FILE), "-out", str(CERT_FILE),
@@ -10055,7 +10902,7 @@ def _generate_cert_openssl(san_ips):
         return False
 
 
-def _generate_cert_python(san_ips):
+def _generate_cert_python(san_ips, san_dns=("localhost",)):
     """Fallback: генерация через Python (без openssl CLI)."""
     try:
         from datetime import datetime, timedelta
@@ -10069,7 +10916,7 @@ def _generate_cert_python(san_ips):
 
             key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
             subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "insideside-music")])
-            san_list = [x509.DNSName("localhost")]
+            san_list = [x509.DNSName(d) for d in san_dns]
             for ip in san_ips:
                 try: san_list.append(x509.IPAddress(_ipa.ip_address(ip)))
                 except Exception: pass
@@ -10172,6 +11019,76 @@ def get_local_ip():
         if ip.startswith("192.168."):
             return ip
     return ips[0]
+
+
+_mdns_name_cache = None      # (timestamp, "<имя>.local" | None)
+_mdns_resolve_cache = None    # (timestamp, host, host если резолвится иначе None)
+_MDNS_TTL = 300
+
+
+def get_mdns_hostname():
+    """Стабильное mDNS-имя ЭТОЙ машины (например MacBook-M4-Pro.local).
+
+    Имя определяется на сервере в рантайме, ничего не захардкожено: на другой
+    машине подставится её собственное имя, на Linux/Windows — из
+    socket.gethostname().
+
+    В отличие от LAN-IP оно не меняется при переходе в другую сеть, поэтому
+    установленная по этому адресу PWA переживает смену Wi-Fi: origin остаётся
+    прежним, а вместе с ним — Service Worker и весь офлайн-кэш треков.
+    Возвращает None, если имя нельзя превратить в валидную DNS-метку.
+    """
+    global _mdns_name_cache
+    now = time.time()
+    if _mdns_name_cache and now - _mdns_name_cache[0] < _MDNS_TTL:
+        return _mdns_name_cache[1]
+    name = ""
+    if sys.platform == "darwin":
+        try:
+            name = subprocess.check_output(
+                ["scutil", "--get", "LocalHostName"],
+                stderr=subprocess.DEVNULL, timeout=5
+            ).decode().strip()
+        except Exception:
+            name = ""
+    if not name:
+        try:
+            name = socket.gethostname().split(".")[0].strip()
+        except Exception:
+            name = ""
+    host = name + ".local" if re.match(r"^[A-Za-z0-9][A-Za-z0-9-]{0,62}$", name or "") else None
+    _mdns_name_cache = (now, host)
+    return host
+
+
+def get_lan_host_url():
+    """URL по стабильному mDNS-имени — рекомендуемый адрес для установки PWA.
+
+    Отдаём его только если сервер сам может разрезолвить это имя: суффикс
+    .local работает лишь пока в системе крутится mDNS-ответчик (mDNSResponder
+    в macOS — всегда, avahi в Linux и Bonjour в Windows — не всегда). Без него
+    адрес никуда не ведёт, и рекомендовать его в UI было бы обманом: клиент
+    просто получит NXDOMAIN. В сертификат имя при этом кладётся всегда, чтобы
+    адрес заработал сразу, если ответчик появится позже.
+    """
+    global _mdns_resolve_cache
+    host = get_mdns_hostname()
+    if not host:
+        return None
+    now = time.time()
+    if not (_mdns_resolve_cache and now - _mdns_resolve_cache[0] < _MDNS_TTL
+            and _mdns_resolve_cache[1] == host):
+        resolvable = None
+        try:
+            socket.getaddrinfo(host, None)
+            resolvable = host
+        except Exception:
+            resolvable = None
+        _mdns_resolve_cache = (now, host, resolvable)
+    if _mdns_resolve_cache[2] != host:
+        return None
+    proto = "https" if _use_https else "http"
+    return "{}://{}:{}".format(proto, host, SERVER_PORT)
 
 
 def _start_local_server():
@@ -10336,6 +11253,9 @@ def main():
     if public or IS_PUBLIC:
         local_ip = get_local_ip()
         print("LAN: {}://{}:{}".format(proto, local_ip, SERVER_PORT))
+        host_url = get_lan_host_url()
+        if host_url:
+            print("LAN (стабильный адрес для PWA): " + host_url)
     print("Ctrl+C для остановки")
     if not no_browser:
         webbrowser.open(url)
