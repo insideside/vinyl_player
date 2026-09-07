@@ -1,0 +1,182 @@
+name: Build Installers
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: pip install pyinstaller httpx mutagen vkpymusic musicbrainzngs Pillow
+      - name: Generate icon PNGs
+        run: |
+          python3 -c "
+          from PIL import Image, ImageDraw
+          import os
+          os.makedirs('build_assets/VinylPlayer.iconset', exist_ok=True)
+          sizes = [16,32,64,128,256,512,1024]
+          for s in sizes:
+              img = Image.new('RGBA', (s, s), (0,0,0,0))
+              d = ImageDraw.Draw(img)
+              d.rounded_rectangle([0,0,s-1,s-1], radius=s//5, fill=(28,28,28,255))
+              cx, cy = s//2, s//2
+              r_outer = int(s*0.37)
+              d.ellipse([cx-r_outer,cy-r_outer,cx+r_outer,cy+r_outer], fill=(17,17,17,255), outline=(51,51,51,255), width=max(1,s//170))
+              r_label = int(s*0.12)
+              d.ellipse([cx-r_label,cy-r_label,cx+r_label,cy+r_label], fill=(233,69,96,255))
+              r_hole = max(2, int(s*0.02))
+              d.ellipse([cx-r_hole,cy-r_hole,cx+r_hole,cy+r_hole], fill=(28,28,28,255))
+              img.save(f'build_assets/icon_{s}.png')
+          mapping = {'icon_16x16.png':16,'icon_16x16@2x.png':32,'icon_32x32.png':32,'icon_32x32@2x.png':64,'icon_128x128.png':128,'icon_128x128@2x.png':256,'icon_256x256.png':256,'icon_256x256@2x.png':512,'icon_512x512.png':512,'icon_512x512@2x.png':1024}
+          for fname, sz in mapping.items():
+              Image.open(f'build_assets/icon_{sz}.png').save(f'build_assets/VinylPlayer.iconset/{fname}')
+          "
+          iconutil -c icns build_assets/VinylPlayer.iconset -o build_assets/VinylPlayer.icns
+      - name: Build
+        run: bash build_mac.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: VinylPlayer-macOS
+          path: dist/VinylPlayer-macOS.dmg
+
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: pip install pyinstaller httpx mutagen vkpymusic musicbrainzngs Pillow
+      - name: Generate icon
+        run: |
+          python -c "
+          from PIL import Image, ImageDraw
+          import os
+          os.makedirs('build_assets', exist_ok=True)
+          s = 256
+          img = Image.new('RGBA', (s, s), (0,0,0,0))
+          d = ImageDraw.Draw(img)
+          d.rounded_rectangle([0,0,s-1,s-1], radius=s//5, fill=(28,28,28,255))
+          cx, cy = s//2, s//2
+          r_outer = int(s*0.37)
+          d.ellipse([cx-r_outer,cy-r_outer,cx+r_outer,cy+r_outer], fill=(17,17,17,255), outline=(51,51,51,255))
+          r_label = int(s*0.12)
+          d.ellipse([cx-r_label,cy-r_label,cx+r_label,cy+r_label], fill=(233,69,96,255))
+          img.save('build_assets/icon_256.png')
+          "
+      - name: Download cloudflared
+        run: curl -fsSL -o build_assets\cloudflared.exe https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe
+      - name: Build
+        run: |
+          python -m PyInstaller --name VinylPlayer --windowed --icon build_assets\icon_256.png --onefile --noconfirm --clean --hidden-import httpx --hidden-import httpx._transports --hidden-import httpx._transports.default --hidden-import httpcore --hidden-import httpcore._async --hidden-import httpcore._sync --hidden-import h11 --hidden-import anyio --hidden-import anyio._backends --hidden-import anyio._backends._asyncio --hidden-import certifi --hidden-import mutagen --hidden-import mutagen.mp3 --hidden-import mutagen.id3 --hidden-import mutagen.id3._frames --hidden-import mutagen.id3._specs --hidden-import mutagen.flac --hidden-import mutagen.mp4 --hidden-import mutagen.oggvorbis --hidden-import mutagen.ogg --hidden-import vkpymusic --hidden-import musicbrainzngs --collect-all vkpymusic --collect-all musicbrainzngs --add-binary "build_assets\cloudflared.exe;." vinyl_player.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: VinylPlayer-Windows
+          path: dist/VinylPlayer.exe
+
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: pip install pyinstaller httpx mutagen vkpymusic musicbrainzngs Pillow
+      - name: Generate icon
+        run: |
+          python3 -c "
+          from PIL import Image, ImageDraw
+          import os
+          os.makedirs('build_assets', exist_ok=True)
+          s = 256
+          img = Image.new('RGBA', (s, s), (0,0,0,0))
+          d = ImageDraw.Draw(img)
+          d.rounded_rectangle([0,0,s-1,s-1], radius=s//5, fill=(28,28,28,255))
+          cx, cy = s//2, s//2
+          r_outer = int(s*0.37)
+          d.ellipse([cx-r_outer,cy-r_outer,cx+r_outer,cy+r_outer], fill=(17,17,17,255), outline=(51,51,51,255))
+          r_label = int(s*0.12)
+          d.ellipse([cx-r_label,cy-r_label,cx+r_label,cy+r_label], fill=(233,69,96,255))
+          img.save('build_assets/icon_256.png')
+          "
+      - name: Build
+        run: bash build_linux.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: VinylPlayer-Linux
+          path: dist/vinyl-player_*_amd64.deb
+
+  build-android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+      - name: Generate launcher icons
+        run: |
+          pip install Pillow
+          python3 -c "
+          from PIL import Image, ImageDraw
+          import os
+          sizes = {'mipmap-mdpi': 48, 'mipmap-hdpi': 72, 'mipmap-xhdpi': 96, 'mipmap-xxhdpi': 144, 'mipmap-xxxhdpi': 192}
+          s = 512
+          img = Image.new('RGBA', (s, s), (0,0,0,0))
+          d = ImageDraw.Draw(img)
+          d.rounded_rectangle([0,0,s-1,s-1], radius=s//5, fill=(28,28,28,255))
+          cx, cy = s//2, s//2
+          r_outer = int(s*0.37)
+          d.ellipse([cx-r_outer,cy-r_outer,cx+r_outer,cy+r_outer], fill=(17,17,17,255), outline=(51,51,51,255))
+          r_label = int(s*0.12)
+          d.ellipse([cx-r_label,cy-r_label,cx+r_label,cy+r_label], fill=(233,69,96,255))
+          for folder, sz in sizes.items():
+              out = img.resize((sz, sz), Image.LANCZOS)
+              path = f'android/app/src/main/res/{folder}/ic_launcher.png'
+              os.makedirs(os.path.dirname(path), exist_ok=True)
+              out.save(path)
+          "
+      - name: Download Gradle wrapper
+        working-directory: android
+        run: |
+          mkdir -p gradle/wrapper
+          curl -fsSL -o gradle/wrapper/gradle-wrapper.jar \
+            "https://raw.githubusercontent.com/gradle/gradle/v8.5.0/gradle/wrapper/gradle-wrapper.jar"
+      - name: Build APK
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleRelease
+      - uses: actions/upload-artifact@v4
+        with:
+          name: VinylPlayer-Android
+          path: android/app/build/outputs/apk/release/*.apk
+
+  release:
+    needs: [build-macos, build-windows, build-linux, build-android]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/download-artifact@v4
+      - name: Upload to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            VinylPlayer-macOS/VinylPlayer-macOS.dmg
+            VinylPlayer-Windows/VinylPlayer.exe
+            VinylPlayer-Linux/vinyl-player_*_amd64.deb
+            VinylPlayer-Android/*.apk
