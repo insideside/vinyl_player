@@ -7,6 +7,7 @@ Vinyl Record Music Player
 
 import base64
 import json
+import math
 import mimetypes
 import os
 import platform
@@ -20,6 +21,7 @@ import threading
 import time
 import webbrowser
 from collections import OrderedDict
+from datetime import datetime, timedelta
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse, unquote, quote
@@ -1107,6 +1109,659 @@ def group_by_album(tracks):
     return list(albums.values())
 
 
+# ──────────────────── Новинки артистов ────────────────────
+# Что вышло у артистов, которые уже есть в библиотеке. Список артистов нигде не
+# зашит: он каждый раз пересчитывается из текущего каталога, поэтому при
+# пополнении, чистке или смене библиотеки раздел перестраивается сам.
+#
+# Источник — iTunes Search API (без ключа и регистрации), запасной — Deezer.
+# На выборке из этой библиотеки iTunes нашёл всех артистов, включая русский
+# андерграунд, и по свежести релизов заметно обгонял Deezer.
+
+RELEASES_FILE = Path.home() / ".vinyl_releases.json"
+RELEASES_TTL = 24 * 3600        # как часто перепроверять одного артиста
+RELEASES_SCHEMA = 2             # растёт, когда в записи релиза добавляются поля
+RELEASES_WINDOW_DAYS = 400      # что вообще считаем «новинкой»
+_releases_lock = threading.Lock()
+_releases_state = {"running": False, "done": 0, "total": 0, "started": 0}
+
+
+ART_DIR = Path.home() / ".vinyl_release_art"
+ART_MAX_FILES = 600          # ~30 МБ при обложках 600×600
+ART_HOSTS_SUFFIX = (".mzstatic.com", ".dzcdn.net")
+
+
+def _art_allowed(url):
+    """Только картинки Apple и Deezer и только по https.
+
+    Проверяем именно окончание с точкой: у «evil-mzstatic.com» его нет, так что
+    подставить чужой хост не выйдет. Без этого ручка была бы открытым прокси.
+    """
+    try:
+        u = urlparse(url)
+    except Exception:
+        return False
+    host = (u.hostname or "").lower()
+    return u.scheme == "https" and any(host.endswith(sfx) for sfx in ART_HOSTS_SUFFIX)
+
+
+def _art_path(url):
+    return ART_DIR / (hashlib.md5(url.encode("utf-8")).hexdigest() + ".img")
+
+
+def _art_sniff(buf):
+    if buf[:3] == b"\xff\xd8\xff":
+        return "image/jpeg"
+    if buf[:4] == b"\x89PNG":
+        return "image/png"
+    if buf[:4] == b"RIFF" and buf[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
+
+def _art_evict():
+    """Держим каталог в разумных пределах, выбрасывая самые давние файлы."""
+    try:
+        files = sorted(ART_DIR.glob("*.img"), key=lambda f: f.stat().st_mtime)
+        for f in files[:-ART_MAX_FILES]:
+            try: f.unlink()
+            except Exception: pass
+    except Exception:
+        pass
+
+
+def get_release_art(url):
+    """Байты обложки: с диска, иначе скачиваем и кладём на диск.
+
+    В кэше новинок лежит только ссылка, поэтому без этого браузер тянул бы
+    картинки с серверов Apple при каждом открытии вкладки и после каждой чистки
+    своего кэша. Здесь они переживают и перезапуск сервера.
+    """
+    path = _art_path(url)
+    try:
+        if path.is_file():
+            data = path.read_bytes()
+            mime = _art_sniff(data)
+            if mime:
+                os.utime(str(path), None)      # отметка использования для вытеснения
+                return data, mime
+    except Exception:
+        pass
+    client = _http()
+    try:
+        r = client.get(url)
+        if r.status_code != 200:
+            return None, None
+        data = r.content
+    except Exception:
+        return None, None
+    finally:
+        try: client.close()
+        except Exception: pass
+    mime = _art_sniff(data)
+    if not mime:
+        return None, None
+    try:
+        ART_DIR.mkdir(exist_ok=True)
+        os.chmod(str(ART_DIR), 0o700)
+        path.write_bytes(data)
+        _art_evict()
+    except Exception:
+        pass
+    return data, mime
+
+
+STARRED_FILE = Path.home() / ".vinyl_starred.json"
+
+
+def _starred_load():
+    """Отмеченные релизы: {пользователь: {ключ: снимок релиза}}.
+
+    Отдельный файл, а не поле в кэше новинок: обновление переписывает кэш
+    целиком в фоновом потоке, и отметка, поставленная в этот момент, потерялась
+    бы. Храним не только ключ, но и сам релиз — отмеченное обязано оставаться
+    видимым, даже когда оно выпало из окна ленты или артист вышел из проверки.
+    """
+    try:
+        return json.loads(STARRED_FILE.read_text())
+    except Exception:
+        return {}
+
+
+def _starred_save(data):
+    try:
+        STARRED_FILE.write_text(json.dumps(data, ensure_ascii=False))
+        os.chmod(str(STARRED_FILE), 0o600)
+    except Exception:
+        pass
+
+
+def set_release_starred(user, key, on, item=None):
+    with _releases_lock:
+        data = _starred_load()
+        mine = data.setdefault(user, {})
+        if on:
+            mine[key] = item or mine.get(key) or {}
+        else:
+            mine.pop(key, None)
+        _starred_save(data)
+        return len(mine)
+
+
+def _releases_load():
+    try:
+        return json.loads(RELEASES_FILE.read_text())
+    except Exception:
+        return {"artists": {}, "updated_at": 0}
+
+
+def _releases_save(data):
+    try:
+        RELEASES_FILE.write_text(json.dumps(data, ensure_ascii=False))
+        os.chmod(str(RELEASES_FILE), 0o600)
+    except Exception:
+        pass
+
+
+def _norm_title(s):
+    """Свести название к сравнимому виду: без регистра, пунктуации и хвостов
+    вроде « - Single», которые iTunes дописывает к синглам и EP."""
+    s = (s or "").lower()
+    s = re.sub(r"\s*[-–—]\s*(single|ep|deluxe|remastered)\b.*$", "", s)
+    s = re.sub(r"\((feat|prod|slowed|sped|remix)[^)]*\)", " ", s)
+    s = re.sub(r"[^\w\s]", " ", s, flags=re.UNICODE)
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def split_artists(value):
+    r"""Теги хранят соисполнителей через «/», имена файлов — через «,».
+
+    Точку после feat/ft забираем разделителем: с `\bfeat\.?\b` граница слова
+    после точки не совпадала, точка оставалась в имени, и «Linkin Park feat. Jay-Z»
+    давало артиста «. Jay-Z» — отдельную запись в рейтинге и лишний запрос к API.
+    Ведущую пунктуацию срезаем, хвостовую точку — нет: есть имена вроде
+    «nicebeatzprod.».
+    """
+    out = []
+    for part in re.split(r"[/,;]|\bfeat\b\.?|\bft\b\.?", value or "", flags=re.IGNORECASE):
+        part = part.strip().lstrip(".,;:-–— ").rstrip(" -–—")
+        if part:
+            out.append(part)
+    return out
+
+
+def rank_library_artists(tracks):
+    """Ранжирует артистов библиотеки: сколько у них треков и насколько свежо их
+    добавляли.
+
+    Каталог отсортирован по имени файла, а файлы пронумерованы от новых к
+    старым, поэтому позиция трека в списке — уже готовая мера свежести, ничего
+    дополнительно читать с диска не нужно. Счёт растёт логарифмически от числа
+    треков (иначе один огромный артист забивает всё) и умножается на свежесть,
+    так что артист с двумя треками, добавленными вчера, обгоняет артиста с
+    сотней треков, которых не касались полгода.
+    """
+    n = len(tracks) or 1
+    stats = {}
+    for idx, t in enumerate(tracks):
+        # _fresh проставляет _collect_user_tracks (по каталогу, а не по общему
+        # списку); позиционный расчёт — запасной путь для прямого вызова.
+        fresh = t.get("_fresh")
+        if fresh is None:
+            fresh = 1.0 - idx / n
+        for a in split_artists(t.get("artist") or ""):
+            key = a.lower()
+            e = stats.setdefault(key, {"name": a, "count": 0, "fresh": 0.0})
+            e["count"] += 1
+            if fresh > e["fresh"]:
+                e["fresh"] = fresh
+    for e in stats.values():
+        e["score"] = math.log(1 + e["count"], 2) * (0.5 + e["fresh"])
+    return stats
+
+
+def _artist_budget(total_artists):
+    """Сколько артистов проверять за цикл. Растёт вместе с библиотекой, но
+    медленнее неё — иначе на большой коллекции упрёмся в лимиты API."""
+    return max(25, min(120, int(total_artists ** 0.6)))
+
+
+def _http():
+    return HttpClient(timeout=12, follow_redirects=True,
+                      headers={"User-Agent": "insideside-music/1.0 (release tracker)"})
+
+
+def _get_json(client, url, params=None, tries=3):
+    """GET с повторами: iTunes при частых обращениях троттлит и рвёт соединение
+    (Connection reset by peer), и одна такая осечка не должна выглядеть как
+    «данных нет» — иначе мы зря уходим на запасной источник или отдаём пустоту."""
+    for i in range(tries):
+        try:
+            r = client.get(url, params=params or {})
+            if r.status_code == 200:
+                return r.json()
+            if r.status_code in (400, 401, 403, 404):
+                return {}
+        except Exception:
+            pass
+        time.sleep(1.5 * (i + 1))
+    return {}
+
+
+def _itunes_artist_releases(client, name):
+    """(itunes_id, [релизы]) или (None, []). Два запроса на нового артиста и
+    один на уже известного."""
+    r = _get_json(client, "https://itunes.apple.com/search",
+                  {"term": name, "entity": "musicArtist", "limit": 5})
+    found = None
+    for cand in r.get("results", []):
+        if _norm_title(cand.get("artistName")) == _norm_title(name):
+            found = cand
+            break
+    if not found:
+        return None, []
+    return found["artistId"], _itunes_albums(client, found["artistId"])
+
+
+def _itunes_albums(client, artist_id):
+    r = _get_json(client, "https://itunes.apple.com/lookup",
+                  {"id": artist_id, "entity": "album", "limit": 25, "sort": "recent"})
+    out = []
+    for a in r.get("results", []):
+        if a.get("wrapperType") != "collection":
+            continue
+        date = (a.get("releaseDate") or "")[:10]
+        if not date:
+            continue
+        art = a.get("artworkUrl100") or ""
+        out.append({
+            "rid": a.get("collectionId"),
+            "title": re.sub(r"\s*[-–—]\s*(Single|EP)$", "", a.get("collectionName") or ""),
+            "date": date,
+            "kind": ("single" if (a.get("trackCount") or 0) == 1
+                     else "ep" if (a.get("trackCount") or 0) <= 6 else "album"),
+            "tracks": a.get("trackCount") or 0,
+            "art": art.replace("100x100bb", "600x600bb"),
+            "url": a.get("collectionViewUrl") or "",
+            "source": "itunes",
+        })
+    return out
+
+
+def _deezer_artist_releases(client, name):
+    """Запасной источник, когда iTunes не знает артиста."""
+    r = _get_json(client, "https://api.deezer.com/search/artist", {"q": name, "limit": 5})
+    found = None
+    for cand in r.get("data", []):
+        if _norm_title(cand.get("name")) == _norm_title(name):
+            found = cand
+            break
+    if not found:
+        return None, []
+    al = _get_json(client, "https://api.deezer.com/artist/%d/albums" % found["id"], {"limit": 25})
+    out = []
+    for a in al.get("data", []):
+        date = a.get("release_date") or ""
+        if not date:
+            continue
+        rt = (a.get("record_type") or "album").lower()
+        out.append({
+            "rid": a.get("id"),
+            "title": a.get("title") or "",
+            "date": date[:10],
+            "kind": "single" if rt == "single" else "ep" if rt == "ep" else "album",
+            "tracks": a.get("nb_tracks") or 0,
+            "art": a.get("cover_big") or a.get("cover_medium") or "",
+            "url": a.get("link") or "",
+            "source": "deezer",
+        })
+    return found["id"], out
+
+
+def _fetch_artist(client, name, cached):
+    """Один артист: сначала iTunes (по известному id — одним запросом),
+    при неудаче Deezer. Возвращает запись кэша или None."""
+    try:
+        if cached and cached.get("itunes_id"):
+            rel = _itunes_albums(client, cached["itunes_id"])
+            if rel:
+                return {"name": name, "itunes_id": cached["itunes_id"], "v": RELEASES_SCHEMA,
+                        "releases": rel, "checked_at": time.time()}
+        aid, rel = _itunes_artist_releases(client, name)
+        if rel:
+            return {"name": name, "itunes_id": aid, "v": RELEASES_SCHEMA, "releases": rel, "checked_at": time.time()}
+    except Exception:
+        pass
+    try:
+        did, rel = _deezer_artist_releases(client, name)
+        if rel:
+            return {"name": name, "deezer_id": did, "v": RELEASES_SCHEMA, "releases": rel, "checked_at": time.time()}
+    except Exception:
+        pass
+    # Артист не найден — всё равно помечаем время, чтобы не долбить API каждый цикл
+    return {"name": name, "releases": [], "v": RELEASES_SCHEMA, "checked_at": time.time(), "not_found": True}
+
+
+_preview_cache = {}      # (source, rid) -> [треки]; в памяти, живёт до перезапуска
+
+# Отдавать ссылку на превью прямо в браузер нельзя: Apple присылает файл с
+# Content-Type "audio/x-m4p", а canPlayType на него отвечает пустой строкой —
+# то есть браузер не обязан его проигрывать (iOS Safari к типам аудио особенно
+# придирчив). Проксируем и выставляем корректный тип.
+# Список хостов закрытый: без него это был бы открытый прокси, через который
+# можно ходить куда угодно от имени сервера.
+PREVIEW_HOSTS = {
+    "audio-ssl.itunes.apple.com": "audio/mp4",
+    "audio-preview.itunes.apple.com": "audio/mp4",
+    "cdnt-preview.dzcdn.net": "audio/mpeg",
+    "cdns-preview.dzcdn.net": "audio/mpeg",
+}
+
+
+def _preview_mime(url):
+    try:
+        host = urlparse(url).hostname or ""
+    except Exception:
+        return None
+    if urlparse(url).scheme != "https":
+        return None
+    if host in PREVIEW_HOSTS:
+        return PREVIEW_HOSTS[host]
+    # У Deezer превью раскиданы по cdns-preview-a..z.dzcdn.net
+    if re.match(r"^cdns-preview-[a-z0-9]\.dzcdn\.net$", host):
+        return "audio/mpeg"
+    return None
+
+
+def _find_release_id(client, source, artist, album):
+    """Найти тот же релиз в другом источнике — по артисту и названию."""
+    if not artist or not album:
+        return None
+    if source == "deezer":
+        q = _get_json(client, "https://api.deezer.com/search/album",
+                      {"q": 'artist:"%s" album:"%s"' % (artist, album), "limit": 5})
+        for a in q.get("data", []):
+            if _norm_title(a.get("title")).startswith(_norm_title(album)[:14]):
+                return a.get("id")
+        return None
+    q = _get_json(client, "https://itunes.apple.com/search",
+                  {"term": "%s %s" % (artist, album), "entity": "album", "limit": 5})
+    for a in q.get("results", []):
+        if _norm_title(a.get("collectionName")).startswith(_norm_title(album)[:14]):
+            return a.get("collectionId")
+    return None
+
+
+def release_tracks(source, rid, artist=None, album=None):
+    """Треки релиза с 30-секундными превью.
+
+    Отдельный запрос на релиз, поэтому дёргается только когда пользователь
+    действительно нажал «прослушать» — тянуть это для всей ленты значило бы
+    сотни лишних обращений к API ради того, что почти никто не откроет.
+
+    Если основной источник ничего не дал (нет превью, троттлинг, релиза там
+    просто нет), тот же релиз ищется во втором по артисту и названию. На выборке
+    из этой библиотеки Deezer нашёл 10 релизов из 10, так что подстраховка
+    рабочая, а не формальная.
+    """
+    out = _fetch_release_tracks(source, rid)
+    if out:
+        return out
+    alt = "deezer" if source != "deezer" else "itunes"
+    client = _http()
+    try:
+        alt_rid = _find_release_id(client, alt, artist, album)
+    except Exception:
+        alt_rid = None
+    finally:
+        try: client.close()
+        except Exception: pass
+    if alt_rid:
+        return _fetch_release_tracks(alt, alt_rid)
+    return []
+
+
+def _fetch_release_tracks(source, rid):
+    key = (source, str(rid))
+    if key in _preview_cache:
+        return _preview_cache[key]
+    out = []
+    client = _http()
+    try:
+        if source == "deezer":
+            d = _get_json(client, "https://api.deezer.com/album/%s/tracks" % rid)
+            for i, t in enumerate(d.get("data", []), 1):
+                if t.get("preview"):
+                    out.append({"n": t.get("track_position") or i, "title": t.get("title") or "",
+                                "duration": t.get("duration") or 0, "preview": t["preview"]})
+        else:
+            d = _get_json(client, "https://itunes.apple.com/lookup",
+                          {"id": rid, "entity": "song", "limit": 50})
+            results = d.get("results", [])
+            # В ответе первым идёт сам альбом — берём его название, чтобы срезать
+            # хвост вида «Трек - Название Альбома», который iTunes дописывает у
+            # концертников и саундтреков.
+            album = next((x.get("collectionName") for x in results
+                          if x.get("wrapperType") == "collection"), "") or ""
+            for t in results:
+                if t.get("wrapperType") == "track" and t.get("previewUrl"):
+                    name = t.get("trackName") or ""
+                    if album and name.endswith(album) and len(name) > len(album) + 2:
+                        name = re.sub(r"\s*[-–—(]\s*$", "", name[:-len(album)]).strip()
+                    out.append({"n": t.get("trackNumber") or len(out) + 1,
+                                "title": name or t.get("trackName") or "",
+                                "duration": round((t.get("trackTimeMillis") or 0) / 1000),
+                                "preview": t["previewUrl"]})
+    except Exception:
+        return []
+    finally:
+        try: client.close()
+        except Exception: pass
+    out.sort(key=lambda x: x["n"])
+    if out:
+        _preview_cache[key] = out
+    return out
+
+
+_lib_snapshot = {}   # user -> (timestamp, tracks); скан 3000+ файлов дорогой
+_LIB_SNAPSHOT_TTL = 120
+
+
+def _collect_user_tracks_cached(user):
+    """То же, что _collect_user_tracks, но с коротким кэшем.
+
+    Лента запрашивается при каждом открытии вкладки, а сканирование читает теги
+    у нескольких тысяч файлов. Без кэша сервер занимался бы этим впустую при
+    каждом переключении вкладок.
+    """
+    now = time.time()
+    got = _lib_snapshot.get(user)
+    if got and now - got[0] < _LIB_SNAPSHOT_TTL:
+        return got[1]
+    tracks = _collect_user_tracks(user)
+    _lib_snapshot[user] = (now, tracks)
+    return tracks
+
+
+def _collect_user_tracks(user):
+    """Треки всех каталогов пользователя, у каждого проставлена свежесть 0..1.
+
+    Считается внутри своего каталога, а не по сквозному списку: иначе второй и
+    последующие каталоги целиком получали бы низкую свежесть просто потому, что
+    идут ниже. Нумерованный каталог даёт свежесть позицией (файлы пронумерованы
+    от новых к старым), ненумерованный — временем изменения файла.
+    """
+    tracks = []
+    for folder in get_user_folders(user):
+        try:
+            if not Path(folder).is_dir():
+                continue
+            part = scan_library(folder)
+        except Exception:
+            continue
+        n = len(part) or 1
+        numbered = sum(1 for t in part if re.match(r"^\d+\.\s", t.get("file", ""))) > n / 2
+        if numbered:
+            for idx, t in enumerate(part):
+                t["_fresh"] = 1.0 - idx / n
+        else:
+            mtimes = []
+            for t in part:
+                try:
+                    mtimes.append(os.path.getmtime(str(Path(folder) / t["file"])))
+                except Exception:
+                    mtimes.append(0.0)
+            lo, hi = min(mtimes), max(mtimes)
+            span = (hi - lo) or 1.0
+            for t, mt in zip(part, mtimes):
+                t["_fresh"] = (mt - lo) / span
+        tracks += part
+    return tracks
+
+
+def refresh_releases(user):
+    """Фоновое обновление. Идёт по ранжированному списку артистов текущей
+    библиотеки; артистов вне топа тоже понемногу добирает — по давности
+    последней проверки, чтобы со временем покрыть всех."""
+    global _releases_state
+    with _releases_lock:
+        if _releases_state["running"]:
+            return
+        _releases_state = {"running": True, "done": 0, "total": 0, "started": time.time()}
+    try:
+        _lib_snapshot.pop(user, None)          # обновление читает библиотеку заново
+        tracks = _collect_user_tracks_cached(user)
+        stats = rank_library_artists(tracks)
+        data = _releases_load()
+        cache = data.setdefault("artists", {})
+
+        ranked = sorted(stats.items(), key=lambda kv: -kv[1]["score"])
+        budget = _artist_budget(len(ranked))
+        top = ranked[:budget]
+        # «Разведка»: немного артистов из хвоста, дольше всех не проверявшихся
+        tail = sorted(ranked[budget:],
+                      key=lambda kv: cache.get(kv[0], {}).get("checked_at", 0))[:10]
+        # После обновления схемы один раз добираем всех, кто уже лежит в кэше:
+        # иначе часть записей осталась бы без новых полей до своей очереди.
+        if data.get("schema", 0) < RELEASES_SCHEMA:
+            seen = set(k for k, _ in top + tail)
+            top = top + [kv for kv in ranked if kv[0] in cache and kv[0] not in seen]
+
+        now = time.time()
+        todo = [(k, v) for k, v in top + tail
+                if now - cache.get(k, {}).get("checked_at", 0) > RELEASES_TTL
+                or cache.get(k, {}).get("v", 0) < RELEASES_SCHEMA]
+        with _releases_lock:
+            _releases_state["total"] = len(todo)
+
+        client = _http()
+        try:
+            for key, meta in todo:
+                entry = _fetch_artist(client, meta["name"], cache.get(key))
+                if entry:
+                    cache[key] = entry
+                with _releases_lock:
+                    _releases_state["done"] += 1
+                time.sleep(1.2)   # iTunes не любит частых запросов
+        finally:
+            try: client.close()
+            except Exception: pass
+
+        # Выкидываем артистов, которых в библиотеке уже нет
+        for gone in [k for k in cache if k not in stats]:
+            cache.pop(gone, None)
+        data["updated_at"] = time.time()
+        data["schema"] = RELEASES_SCHEMA
+        _releases_save(data)
+    except Exception as ex:
+        print("Новинки: ошибка обновления: {}".format(ex))
+    finally:
+        with _releases_lock:
+            _releases_state["running"] = False
+
+
+def build_releases_feed(user):
+    """Лента для клиента. «Есть ли уже в библиотеке» считается здесь, а не в
+    кэше: библиотека меняется чаще, чем данные о релизах."""
+    tracks = _collect_user_tracks_cached(user)
+    stats = rank_library_artists(tracks)
+    data = _releases_load()
+    cache = data.get("artists", {})
+
+    owned = {}   # artist key -> set нормализованных названий (альбомы и треки)
+    for t in tracks:
+        names = {_norm_title(t.get("album")), _norm_title(t.get("title"))}
+        names.discard("")
+        for a in split_artists(t.get("artist") or ""):
+            owned.setdefault(a.lower(), set()).update(names)
+
+    cutoff = datetime.now() - timedelta(days=RELEASES_WINDOW_DAYS)
+    cutoff_s = cutoff.strftime("%Y-%m-%d")
+    items = []
+    for key, meta in stats.items():
+        entry = cache.get(key)
+        if not entry:
+            continue
+        have = owned.get(key, set())
+        for rel in entry.get("releases", []):
+            if rel.get("date", "") < cutoff_s:
+                continue
+            items.append({
+                "artist": meta["name"],
+                "rid": rel.get("rid"),
+                "artist_score": round(meta["score"], 3),
+                "artist_tracks": meta["count"],
+                "title": rel.get("title", ""),
+                "date": rel.get("date", ""),
+                "kind": rel.get("kind", "album"),
+                "tracks": rel.get("tracks", 0),
+                "art": rel.get("art", ""),
+                "url": rel.get("url", ""),
+                "source": rel.get("source", ""),
+                "in_library": _norm_title(rel.get("title")) in have,
+            })
+    starred = _starred_load().get(user, {})
+    seen = set()
+    for it in items:
+        k = "{}:{}".format(it.get("source") or "itunes", it.get("rid"))
+        it["key"] = k
+        it["starred"] = k in starred
+        seen.add(k)
+    # Отмеченное, которого в ленте уже нет (вышло из окна дат, артист выпал из
+    # проверки), возвращаем из снимка: «жду выхода» не должно исчезать само.
+    for k, snap in starred.items():
+        if k in seen or not snap:
+            continue
+        rev = dict(snap)
+        rev["key"] = k
+        rev["starred"] = True
+        rev.setdefault("artist_score", 0)
+        rev.setdefault("in_library", False)
+        items.append(rev)
+
+    # Сначала свежие; при равной дате — артист, который вам ближе
+    items.sort(key=lambda x: (x["date"], x["artist_score"]), reverse=True)
+    # Отмеченные — всегда наверху, порядок между ними прежний
+    items.sort(key=lambda x: not x.get("starred"))
+    checked = sum(1 for k in stats if k in cache)
+    # Отметка схемы хранится один раз на весь файл и снимается по завершении
+    # обновления. Если проверять её по каждому артисту, то записи, не попавшие
+    # в бюджет цикла, держали бы флаг поднятым вечно и обновление запускалось бы
+    # снова и снова.
+    schema_stale = data.get("schema", 0) < RELEASES_SCHEMA
+    return {
+        "items": items[:300],
+        "starred_count": len(starred),
+        "schema_stale": schema_stale,
+        "updated_at": data.get("updated_at", 0),
+        "artists_total": len(stats),
+        "artists_checked": checked,
+        "budget": _artist_budget(len(stats)),
+        "refreshing": _releases_state["running"],
+        "progress": {"done": _releases_state["done"], "total": _releases_state["total"]},
+    }
+
+
 # ──────────────────── Playlists ────────────────────
 
 def _playlists_file(music_dir):
@@ -1768,10 +2423,26 @@ self.addEventListener('install', function(e) {
 self.addEventListener('activate', function(e) {
   e.waitUntil(
     caches.keys().then(function(names) {
-      return Promise.all(names.filter(function(n) {
+      var stale = names.filter(function(n) {
         return n.startsWith('app-') && n !== CACHE_APP;
-      }).map(function(n) { return caches.delete(n); }));
-    }).then(function() { return self.clients.claim(); })
+      });
+      return Promise.all(stale.map(function(n) { return caches.delete(n); }))
+        .then(function() { return stale.length > 0; });
+    }).then(function(wasUpdate) {
+      return self.clients.claim().then(function() {
+        // Страница отдаётся из кэша сразу (см. обработчик fetch), поэтому после
+        // обновления сервера первое обновление показывало бы старую сборку, а
+        // новую — только второе. Активация нового воркера означает новый билд:
+        // просим открытые вкладки перезагрузиться. Клиент это сообщение уже
+        // слушал, но никто его не слал.
+        // Только при обновлении: на первой установке воркера перезагружать
+        // нечего, страница и так свежая.
+        if (!wasUpdate) return;
+        return self.clients.matchAll({type: 'window'}).then(function(list) {
+          list.forEach(function(c) { c.postMessage({action: 'reload'}); });
+        });
+      });
+    })
   );
 });
 
@@ -2509,6 +3180,114 @@ body {
   transition: color 0.2s;
 }
 .playlist-tab.active { color: #e94560; border-bottom: 2px solid #e94560; }
+#tabNew { letter-spacing: 0.06em; font-weight: 600; position: relative; }
+
+.rel-group-title {
+  font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase;
+  color: rgba(255,255,255,0.28); padding: 16px 14px 7px;
+}
+.rel-group-title:first-child { padding-top: 6px; }
+.rel-card {
+  position: relative;
+  display: flex; gap: 11px; align-items: center; padding: 9px 12px;
+  margin: 0 8px 6px; border-radius: 12px;
+  background: rgba(255,255,255,0.035); border: 1px solid rgba(255,255,255,0.055);
+  transition: background 0.15s, border-color 0.15s;
+}
+.rel-card:hover { background: rgba(255,255,255,0.06); }
+/* Релиз, которого нет в библиотеке — то, ради чего раздел и нужен */
+.rel-card.rel-missing { border-color: rgba(233,69,96,0.35); background: rgba(233,69,96,0.05); }
+.rel-card.rel-missing:hover { background: rgba(233,69,96,0.09); }
+.rel-card.rel-owned { opacity: 0.5; }
+
+.rel-art {
+  width: 58px; height: 58px; flex-shrink: 0; border-radius: 8px; object-fit: cover;
+  background: rgba(255,255,255,0.05); box-shadow: 0 2px 8px rgba(0,0,0,0.35);
+}
+.rel-art-ph {
+  width: 58px; height: 58px; flex-shrink: 0; border-radius: 8px;
+  background: linear-gradient(135deg, rgba(255,255,255,0.09), rgba(255,255,255,0.03));
+  display: flex; align-items: center; justify-content: center;
+  color: rgba(255,255,255,0.18); font-size: 22px;
+}
+.rel-body { flex: 1; min-width: 0; }
+.rel-artist {
+  font-size: 11px; color: rgba(255,255,255,0.42); margin-bottom: 2px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.rel-title {
+  font-size: 14px; font-weight: 600; color: #eee; line-height: 1.25;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.rel-meta { display: flex; align-items: center; gap: 6px; margin-top: 5px; flex-wrap: wrap; }
+.rel-badge {
+  font-size: 9px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase;
+  padding: 2px 6px; border-radius: 5px;
+  background: rgba(255,255,255,0.09); color: rgba(255,255,255,0.55);
+}
+.rel-badge.kind-album { background: rgba(82,183,136,0.16); color: #7fd4a8; }
+.rel-badge.kind-ep    { background: rgba(233,165,69,0.16); color: #e9a545; }
+.rel-badge.kind-soon  { background: rgba(233,69,96,0.9);  color: #fff; }
+.rel-date { font-size: 11px; color: rgba(255,255,255,0.3); }
+.rel-have { font-size: 11px; color: rgba(82,183,136,0.75); }
+.rel-actions { display: flex; gap: 6px; flex-shrink: 0; margin-top: 6px; }
+.rel-btn {
+  width: 32px; height: 32px; border-radius: 9px; border: 1px solid rgba(255,255,255,0.12);
+  background: rgba(255,255,255,0.06); color: rgba(255,255,255,0.6);
+  display: flex; align-items: center; justify-content: center; cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.rel-btn:hover { background: rgba(255,255,255,0.14); color: #fff; }
+.rel-btn.rel-btn-get { background: #e94560; border-color: transparent; color: #fff; }
+/* Звёздочка вынесена в угол карточки и не выглядит кнопкой: она вне потока,
+   поэтому ряд действий из-за неё не съезжает. */
+.rel-btn.rel-btn-star {
+  position: absolute; top: 3px; right: 5px; z-index: 1;
+  width: 22px; height: 22px; border: none; background: none;
+  color: rgba(255,255,255,0.22);
+}
+.rel-btn.rel-btn-star:hover { background: none; color: rgba(255,255,255,0.65); }
+.rel-btn.rel-btn-star.on, .rel-btn.rel-btn-star.on:hover { color: #e9a545; background: none; }
+/* Закреплённые — тёплая рамка, чтобы отличались от «нет в библиотеке» */
+.rel-card.rel-starred { border-color: rgba(233,165,69,0.4); }
+.rel-btn.rel-btn-get:hover { background: #d13a54; }
+.rel-note {
+  padding: 10px 14px; font-size: 11px; color: rgba(255,255,255,0.3); line-height: 1.5;
+}
+/* Превью: список треков разворачивается под карточкой */
+/* Раскрытая карточка и список треков должны читаться как одна рамка:
+   у карточки снизу убираем отступ, скругление и границу, у списка — сверху. */
+.rel-card.expanded { margin-bottom: 0; border-radius: 12px 12px 0 0; border-bottom-color: transparent; }
+.rel-tracks {
+  margin: 0 8px 6px; padding: 2px 0 4px; border-radius: 0 0 12px 12px;
+  background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.055);
+  border-top: none; overflow: hidden;
+}
+.rel-tracks.missing { border-color: rgba(233,69,96,0.35); background: rgba(233,69,96,0.045); }
+.rel-tracks.owned { border-color: rgba(255,255,255,0.055); opacity: 0.75; }
+.rel-track {
+  display: flex; align-items: center; gap: 9px; padding: 7px 12px;
+  cursor: pointer; position: relative; transition: background 0.12s;
+}
+.rel-track:hover { background: rgba(255,255,255,0.05); }
+.rel-track.playing { background: rgba(233,69,96,0.1); }
+.rel-track-n {
+  width: 16px; flex-shrink: 0; text-align: right;
+  font-size: 10px; color: rgba(255,255,255,0.25);
+}
+.rel-track.playing .rel-track-n { color: #e94560; }
+.rel-track-name {
+  flex: 1; min-width: 0; font-size: 12px; color: rgba(255,255,255,0.72);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.rel-track.playing .rel-track-name { color: #fff; }
+.rel-track-dur { font-size: 10px; color: rgba(255,255,255,0.22); flex-shrink: 0; }
+/* Полоса под строкой — прогресс 30-секундного отрывка */
+.rel-track-bar {
+  position: absolute; left: 0; bottom: 0; height: 2px; width: 0;
+  background: #e94560; transition: width 0.25s linear;
+}
+.rel-btn.rel-playing { background: #e94560; border-color: transparent; color: #fff; }
 .tab-slider {
   flex: 1; overflow: hidden; position: relative;
 }
@@ -2942,6 +3721,13 @@ body { overflow: hidden; touch-action: none; position: fixed; width: 100%; heigh
   }
 }
 .playlist-header span { cursor: pointer; }
+/* Трек, выбранный «играть следующим» */
+.playlist-item.queued-next { box-shadow: inset 2px 0 0 #e9a545; }
+.next-badge {
+  flex-shrink: 0; margin-left: 6px; padding: 1px 6px; border-radius: 5px;
+  background: rgba(233,165,69,0.16); color: #e9a545;
+  font-size: 9px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase;
+}
 .loading-spinner { width:28px;height:28px;border:3px solid rgba(255,255,255,0.1);border-top-color:#e94560;border-radius:50%;animation:lspin .7s linear infinite; }
 @keyframes lspin { to { transform:rotate(360deg); } }
 </style>
@@ -3134,6 +3920,7 @@ body { overflow: hidden; touch-action: none; position: fixed; width: 100%; heigh
       <button class="playlist-tab active" id="tabTracks" onclick="showTab('tracks')">Треки</button>
       <button class="playlist-tab" id="tabAlbums" onclick="showTab('albums')">Альбомы</button>
       <button class="playlist-tab" id="tabPlaylists" onclick="showTab('playlists')">Плейлисты</button>
+      <button class="playlist-tab" id="tabNew" onclick="showTab('new')">NEW</button>
     </div>
 
     <div class="playlist-header" style="display:flex;align-items:center;gap:8px">
@@ -3158,6 +3945,7 @@ body { overflow: hidden; touch-action: none; position: fixed; width: 100%; heigh
         <div class="playlist-list tab-panel-visible" id="trackList"></div>
         <div class="coverflow-wrap tab-panel-hidden" id="albumList"></div>
         <div class="coverflow-wrap tab-panel-hidden" id="playlistsList"></div>
+        <div class="coverflow-wrap tab-panel-hidden" id="newList"></div>
       </div>
     </div>
   </div>
@@ -3501,6 +4289,7 @@ body { overflow: hidden; touch-action: none; position: fixed; width: 100%; heigh
         <button class="folder-btn folder-btn-secondary" style="flex:1;font-size:12px" onclick="openServerDialog()">Адрес сервера</button>
         <button class="folder-btn folder-btn-secondary" style="flex:1;font-size:12px" onclick="location.href='/reset'">Обновить приложение</button>
       </div>
+      <div id="buildInfo" style="font-size:11px;color:rgba(255,255,255,0.3);margin-top:8px;line-height:1.5"></div>
     </div>
     <div style="display:flex;gap:8px;margin-top:16px;padding-top:12px;border-top:1px solid rgba(255,255,255,0.06)">
       <button class="folder-btn folder-btn-secondary" style="flex:1" onclick="doLogout()">Выйти</button>
@@ -3608,6 +4397,7 @@ body { overflow: hidden; touch-action: none; position: fixed; width: 100%; heigh
   </div>
 </div>
 <audio id="audioEl"></audio>
+<audio id="previewEl" preload="none"></audio>
 
 <!-- Track context menu -->
 <div class="ctx-menu" id="ctxMenu"></div>
@@ -4461,13 +5251,16 @@ function renderTracks() {
         + '<div class="artist">' + esc(t.artist) + '</div></div></div>';
     } else {
       var offDisabled = _isOffline && !isTrackCached(t.file);
-      html += '<div class="playlist-item' + (i === currentIdx ? ' active' : '') + (offDisabled ? ' disabled' : '') + '"'
+      var queuedNext = (t.file === _forceNextFile);
+      html += '<div class="playlist-item' + (i === currentIdx ? ' active' : '') + (offDisabled ? ' disabled' : '')
+        + (queuedNext ? ' queued-next' : '') + '"'
         + (offDisabled ? '' : ' onclick="playFromList(' + i + ')"')
         + (offDisabled ? ' style="opacity:0.3;pointer-events:none"' : '')
         + ' oncontextmenu="event.preventDefault();showCtxMenu(event,' + i + ')"'
         + ' data-longpress="' + i + '">'
         + '<div class="cover-thumb">' + coverHtml + '</div>'
-        + '<div class="info"><div class="name-row"><span class="name">' + esc(t.title) + '</span>' + fmtBadgeHtml(t) + '</div>'
+        + '<div class="info"><div class="name-row"><span class="name">' + esc(t.title) + '</span>' + fmtBadgeHtml(t)
+        + (queuedNext ? '<span class="next-badge" data-tip="Играет следующим">следующий</span>' : '') + '</div>'
         + '<div class="artist">' + esc(t.artist) + '</div></div>'
         + (isTrackCached(t.file)
           ? '<span style="width:6px;height:6px;border-radius:50%;background:#52b788;flex-shrink:0" data-tip="В кэше"></span>'
@@ -4585,8 +5378,8 @@ function toggleAlbum(i) {
 
 function showTab(tab) {
   activeTab = tab;
-  var tabs = ['tracks', 'albums', 'playlists'];
-  var panels = {tracks: 'trackList', albums: 'albumList', playlists: 'playlistsList'};
+  var tabs = ['tracks', 'albums', 'playlists', 'new'];
+  var panels = {tracks: 'trackList', albums: 'albumList', playlists: 'playlistsList', new: 'newList'};
   for (var i = 0; i < tabs.length; i++) {
     var btn = document.getElementById('tab' + tabs[i].charAt(0).toUpperCase() + tabs[i].slice(1));
     if (btn) btn.className = 'playlist-tab' + (tabs[i] === tab ? ' active' : '');
@@ -4599,10 +5392,18 @@ function showTab(tab) {
   var showCache = tab === 'tracks';
   document.getElementById('cacheBtn').style.display = showCache ? '' : 'none';
   document.getElementById('cachedOnlyBtn').style.display = showCache ? '' : 'none';
+  if (tab !== 'new' && typeof stopPreview === 'function') stopPreview();
   if (tab === 'albums') {
     document.getElementById('playlistHeader').textContent = (filteredAlbums ? filteredAlbums.length + ' / ' : '') + albums.length + ' альбомов';
     document.getElementById('editBtn').style.display = 'none';
     if (isEditMode) cancelEdit();
+  } else if (tab === 'new') {
+    document.getElementById('editBtn').style.display = 'none';
+    if (isEditMode) cancelEdit();
+    document.getElementById('playlistHeader').textContent =
+      releasesData ? (releasesData.items.length + ' новинок') : 'Новинки';
+    if (!releasesData) loadReleases();
+    else renderReleases();
   } else if (tab === 'playlists') {
     // Set the count from what's already loaded: loadUserPlaylists() refreshes
     // from the server asynchronously, so leaving the header to it kept the
@@ -4650,6 +5451,9 @@ function prepareNearbyBlobs() {
   var startPos = playQueuePos >= 0 ? playQueuePos : 0;
   // Evict distant blob URLs to reduce iOS memory pressure
   var nearSet = {};
+  // Трек, выбранный «играть следующим», обязан остаться готовым: иначе его
+  // блоб вытеснялся как «далёкий», и переключение в фоне попадало в пустоту.
+  if (_forceNextFile) nearSet[_forceNextFile] = true;
   for (var n = 0; n <= 3; n++) {
     var np = startPos + (n <= 2 ? n : -1);
     if (np < 0) np += playQueue.length;
@@ -4671,6 +5475,7 @@ function prepareNearbyBlobs() {
     var idx = playQueue[pos];
     if (idx >= 0 && idx < tracks.length) prepareBlobUrl(tracks[idx].file);
   }
+  if (_forceNextFile) prepareBlobUrl(_forceNextFile);
 }
 
 function selectTrack(i, autoplay) {
@@ -5008,13 +5813,14 @@ function prevTrack() {
 }
 
 function nextTrack() {
-  if (_forceNextIdx >= 0) {
-    var idx = _forceNextIdx;
-    _forceNextIdx = -1;
+  var forced = forcedNextIndex();
+  if (forced >= 0) {
+    _forceNextFile = null;
     // Move queue position to this track so next continues from there
-    var qPos = playQueue.indexOf(idx);
+    var qPos = playQueue.indexOf(forced);
     if (qPos >= 0) playQueuePos = qPos;
-    selectTrack(idx, isPlaying);
+    selectTrack(forced, isPlaying);
+    renderTracks();
     return;
   }
   if (playQueue.length > 0) {
@@ -5385,6 +6191,9 @@ function initPlaybackContext() {
   audio.addEventListener('loadedmetadata', applyPendingSeek);
 
   audio.addEventListener('play', function() {
+    // Одновременно играть отрывок из «Новинок» и трек из плеера нельзя —
+    // побеждает тот, что запустили последним.
+    if (typeof stopPreview === 'function') stopPreview();
     _wasInterrupted = false;
     _ctxPlayed = true;
     _ctxRestoring = false;
@@ -5521,6 +6330,7 @@ function applyConfig(cfg) {
   document.getElementById('networkToggles').style.display = showNetToggles ? 'flex' : 'none';
   document.getElementById('metaVkRow').classList.toggle('has-toggles', showNetToggles);
   document.getElementById('vkBtnIcon').classList.toggle('force-hidden', isDemo || _isOffline);
+  syncNewTabVisibility();
   document.getElementById('downloadCatalogBtn').style.display = (isAdmin && !_isOffline) ? '' : 'none';
   document.getElementById('metaVkRow').style.display = (isDemo || _isOffline) ? 'none' : '';
   document.getElementById('addFolderBtn').style.display = (isDemo || _isOffline) ? 'none' : '';
@@ -5807,6 +6617,7 @@ function showLoadingIndicator() {
 function enterOfflineMode() {
   _isOffline = true;
   showOfflineBanner(true);
+  syncNewTabVisibility();
   // Auto-activate cached-only filter
   showCachedOnly = true;
   var cBtn = document.getElementById('cachedOnlyBtn');
@@ -5951,6 +6762,7 @@ function applyFolderData(data) {
     var btn = document.getElementById('cachedOnlyBtn');
     if (btn) btn.classList.add('active');
   }
+  _forceNextFile = null;   // отметка относилась к прежнему каталогу
   renderTracks();
   renderAlbums();
   checkIfNumbered();
@@ -7063,6 +7875,30 @@ document.addEventListener('keydown', function(e) {
 });
 
 // ── Profile & Admin ──
+// Показываем сборку страницы и сборку сервера рядом. Если они разошлись —
+// значит браузер держит старую страницу из кэша Service Worker, и виноват не
+// сервер. Без этого «я обновил, но ничего не поменялось» приходится
+// диагностировать вслепую.
+function renderBuildInfo() {
+  var el = document.getElementById('buildInfo');
+  if (!el) return;
+  var mine = 'APP_BUILD_HASH';
+  el.innerHTML = 'Сборка приложения: <b style="color:rgba(255,255,255,0.5)">' + mine + '</b>'
+    + (_isOffline ? ' &middot; <span style="color:#e94560">офлайн</span>' : '');
+  fetch('/api/version', {cache: 'no-store'}).then(function(r){ return r.json(); }).then(function(d) {
+    if (!d || !d.version) return;
+    var same = d.version === mine;
+    el.innerHTML = 'Сборка приложения: <b style="color:rgba(255,255,255,0.5)">' + mine + '</b>'
+      + '<br>Сборка сервера: <b style="color:' + (same ? 'rgba(255,255,255,0.5)' : '#e94560') + '">'
+      + d.version + '</b>'
+      + (same ? ' &middot; актуально'
+              : '<br><span style="color:#e94560">Страница устарела — нажмите «Обновить приложение»</span>')
+      + (_isOffline ? '<br><span style="color:#e94560">Сервер сейчас недоступен (офлайн-режим)</span>' : '');
+  }).catch(function() {
+    el.innerHTML += '<br><span style="color:#e94560">Сервер не отвечает</span>';
+  });
+}
+
 function openProfile() {
   document.getElementById('profileUser').textContent = 'Пользователь: ' + currentUser;
   document.getElementById('profOldPw').value = '';
@@ -7071,6 +7907,7 @@ function openProfile() {
   var count = Object.keys(cachedFiles).length;
   var infoEl = document.getElementById('profileCacheInfo');
   infoEl.textContent = count ? count + ' треков в кэше' : 'Кэш пуст';
+  renderBuildInfo();
   document.getElementById('profileOverlay').classList.add('show');
   // Calculate cache size asynchronously
   if (count) {
@@ -7179,6 +8016,464 @@ function loadAdminUsers() {
     }
     document.getElementById('adminUserList').innerHTML = html || '<div style="color:rgba(255,255,255,0.3);padding:12px">Нет пользователей</div>';
   });
+}
+
+// ── Новинки артистов ──
+// Раздел строится от библиотеки: сервер ранжирует артистов по числу треков и
+// свежести их добавления, ходит за релизами в iTunes (запасной — Deezer) и
+// отмечает то, чего в каталоге ещё нет. Ничего не зашито: пополнили библиотеку —
+// поменялся и список отслеживаемых артистов.
+var releasesData = null;
+var _relLoading = false;
+var _relPollTimer = null;
+
+// Развёрнутый релиз запоминаем по устойчивому ключу, а не по индексу в массиве:
+// лента перестраивается при каждом обновлении, порядок и состав меняются, и
+// индекс начинает указывать на чужой альбом — список треков «перепрыгивал» на
+// соседнюю карточку.
+function relKey(it) { return (it.source || 'itunes') + ':' + it.rid; }
+
+function relEsc(s) { return esc(s || ''); }
+
+function loadReleases(silent) {
+  if (_isOffline || _relLoading) return;
+  _relLoading = true;
+  if (!silent && !releasesData) {
+    document.getElementById('newList').innerHTML =
+      '<div style="display:flex;flex-direction:column;align-items:center;padding:40px 20px;color:rgba(255,255,255,0.3)">'
+      + '<div class="loading-spinner"></div><div style="margin-top:12px;font-size:13px">Собираю новинки...</div></div>';
+  }
+  fetch('/api/releases').then(function(r){ return r.json(); }).then(function(d) {
+    _relLoading = false;
+    if (!d || d.error) return;
+    releasesData = d;
+    renderReleases();
+    updateReleasesBadge();
+    // Пока фоновое обновление идёт — подтягиваем прогресс
+    if (_relPollTimer) { clearTimeout(_relPollTimer); _relPollTimer = null; }
+    if (d.refreshing) _relPollTimer = setTimeout(function(){ loadReleases(true); }, 4000);
+  }).catch(function() {
+    _relLoading = false;
+    if (!releasesData) {
+      document.getElementById('newList').innerHTML =
+        '<div class="rel-note">Не удалось получить новинки. Проверьте соединение с сервером.</div>';
+    }
+  });
+}
+
+// Раздел живёт только онлайн: данные приходят с сервера, а офлайн вкладка
+// показывала бы пустоту. Прячем её и уводим с неё, если она была открыта.
+function syncNewTabVisibility() {
+  var tab = document.getElementById('tabNew');
+  if (!tab) return;
+  tab.style.display = _isOffline ? 'none' : '';
+  if (_isOffline) {
+    if (typeof stopPreview === 'function') stopPreview();
+    if (activeTab === 'new') showTab('tracks');
+  } else {
+    updateReleasesBadge();   // вернулись онлайн — счётчик тоже возвращаем
+  }
+}
+
+function updateReleasesBadge() {
+  // Счётчик на вкладке убран намеренно: он почти всегда упирался в «99+» и не
+  // нёс информации. Число видно в шапке списка.
+}
+
+function relGroupOf(dateStr) {
+  var today = new Date(); today.setHours(0,0,0,0);
+  var d = new Date(dateStr + 'T00:00:00');
+  var days = Math.round((d - today) / 86400000);
+  if (days > 0) return 'Скоро';
+  if (days >= -30) return 'За месяц';
+  if (days >= -90) return 'За три месяца';
+  if (days >= -180) return 'За полгода';
+  return 'Раньше';
+}
+
+function relWhen(ts) {
+  var mins = Math.round((Date.now() / 1000 - ts) / 60);
+  if (mins < 1) return 'только что';
+  if (mins < 60) return mins + ' мин назад';
+  var h = Math.round(mins / 60);
+  if (h < 24) return h + ' ч назад';
+  return Math.round(h / 24) + ' дн назад';
+}
+
+function relDateLabel(dateStr) {
+  var m = ['янв','фев','мар','апр','мая','июн','июл','авг','сен','окт','ноя','дек'];
+  var d = new Date(dateStr + 'T00:00:00');
+  if (isNaN(d)) return dateStr;
+  var s = d.getDate() + ' ' + m[d.getMonth()];
+  var now = new Date();
+  if (d.getFullYear() !== now.getFullYear()) s += ' ' + d.getFullYear();
+  return s;
+}
+
+function renderReleases() {
+  var box = document.getElementById('newList');
+  if (!releasesData) return;
+  var items = releasesData.items || [];
+
+  // Три независимых блока: строка состояния и подвал меняются часто (прогресс
+  // проверки), а карточки — почти никогда. Раньше всё это перерисовывалось
+  // одним innerHTML, из-за чего <img> пересоздавались и обложки грузились
+  // заново на каждый тик.
+  if (!document.getElementById('relCards')) {
+    box.innerHTML = '<div id="relStatus"></div><div id="relCards"></div><div id="relFooter"></div>';
+  }
+  var statusEl = document.getElementById('relStatus');
+  var cardsEl = document.getElementById('relCards');
+  var footEl = document.getElementById('relFooter');
+
+  if (activeTab === 'new') {
+    document.getElementById('playlistHeader').textContent = items.length + ' новинок';
+  }
+
+  if (releasesData.refreshing) {
+    var p = releasesData.progress || {};
+    var pct = p.total ? Math.round(p.done / p.total * 100) : 0;
+    statusEl.innerHTML = '<div class="rel-note"><span style="color:#e9a545">&#9679;</span> Проверяю артистов'
+      + (p.total ? ' — ' + p.done + ' из ' + p.total + ' (' + pct + '%)' : '...') + '</div>';
+  } else {
+    statusEl.innerHTML = '';
+  }
+
+  if (!items.length) {
+    cardsEl.innerHTML = '<div class="rel-note" style="text-align:center;padding:32px 20px">'
+      + (releasesData.refreshing
+          ? 'Проверяю артистов — это занимает пару минут, можно уйти с вкладки.'
+          : 'Новинки ещё не собраны.<br>Проверка ходит в iTunes и Deezer по вашим артистам '
+            + '(' + releasesData.artists_total + ' в библиотеке) и занимает пару минут. '
+            + 'Сама она не запускается.'
+            + '<br><button class="folder-btn folder-btn-primary" style="margin-top:14px;font-size:12px" '
+            + 'onclick="refreshReleases()">Проверить новинки</button>')
+      + '</div>';
+    _cardNodes = {};
+    footEl.innerHTML = '';
+    return;
+  }
+
+  // Узлы карточек переиспользуются, поэтому перерисовка дешёвая и обложки не
+  // моргают — ни при клике, ни при отметке, ни при обновлении ленты.
+  syncReleaseCards(items);
+  applyExpansion();
+
+  footEl.innerHTML = '<div class="rel-note">Проверено артистов: ' + releasesData.artists_checked
+       + ' из ' + releasesData.artists_total + '. Кого проверять, определяется по числу треков '
+       + 'артиста и тому, насколько недавно вы его пополняли.'
+       + (releasesData.updated_at
+          ? '<br>Последняя проверка: ' + relWhen(releasesData.updated_at) + '.' : '')
+       + ' Автоматически не обновляется.'
+       + '<br><button class="folder-btn folder-btn-secondary" style="margin-top:8px;font-size:11px;padding:6px 12px" '
+       + (releasesData.refreshing ? 'disabled ' : '')
+       + 'onclick="refreshReleases()">' + (releasesData.refreshing ? 'Проверяю...' : 'Проверить новинки') + '</button></div>';
+}
+
+var REL_ICON_PLAY  = '<svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>';
+var REL_ICON_PAUSE = '<svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>';
+var REL_ICON_STAR  = '<svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M12 17.27 18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/></svg>';
+
+// Узлы карточек переиспользуются: при любой перерисовке существующие элементы
+// переставляются, а не создаются заново. Иначе каждый <img> рождался пустым и
+// обложки «пропадали и появлялись» — при клике, при отметке, при обновлении.
+var _cardNodes = {};
+
+function releaseCardHtml(it) {
+  var key = it.key || relKey(it);
+  var g = relGroupOf(it.date);
+  var soon = g === 'Скоро';
+  var kindLabel = soon ? 'скоро' : (it.kind === 'album' ? 'альбом' : it.kind === 'ep' ? 'EP' : 'сингл');
+  var kindCls = soon ? 'kind-soon' : ('kind-' + it.kind);
+  // Через свой сервер: он кладёт картинку на диск, поэтому она переживает и
+  // перезапуск сервера, и чистку кэша браузера.
+  var art = it.art
+    ? '<img class="rel-art" src="/api/releases/art?u=' + encodeURIComponent(it.art) + '" loading="lazy" decoding="async" onerror="this.outerHTML=\'<div class=&quot;rel-art-ph&quot;>&#9834;</div>\'">'
+    : '<div class="rel-art-ph">&#9834;</div>';
+  var stop = 'event.stopPropagation();';
+  return art
+    + '<div class="rel-body">'
+    +   '<div class="rel-artist">' + relEsc(it.artist) + '</div>'
+    +   '<div class="rel-title">' + relEsc(it.title) + '</div>'
+    +   '<div class="rel-meta">'
+    +     '<span class="rel-badge ' + kindCls + '">' + kindLabel + '</span>'
+    +     '<span class="rel-date">' + relDateLabel(it.date) + '</span>'
+    +     (it.tracks > 1 ? '<span class="rel-date">' + it.tracks + ' трек.</span>' : '')
+    +     (it.in_library ? '<span class="rel-have">&#10003; в библиотеке</span>' : '')
+    +   '</div>'
+    + '</div>'
+    + '<div class="rel-actions">'
+    +   '<button class="rel-btn rel-btn-star' + (it.starred ? ' on' : '') + '" data-key="' + relEsc(key) + '"'
+    +     ' data-tip="Добавить в избранное" onclick="' + stop + 'toggleStar(\'' + relEsc(key) + '\')">' + REL_ICON_STAR + '</button>'
+    +   (it.rid ? '<button class="rel-btn rel-btn-prev" data-key="' + relEsc(key) + '"'
+        + ' data-tip="Прослушать отрывок" onclick="' + stop + 'togglePreview(\'' + relEsc(key) + '\')">'
+        + REL_ICON_PLAY + '</button>' : '')
+    +   (it.in_library || userRole === 'demo' ? ''
+        : '<button class="rel-btn rel-btn-get" data-tip="Найти и скачать" onclick="' + stop + 'getRelease(\'' + relEsc(key) + '\')">'
+          + '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg></button>')
+    +   (it.url ? '<a class="rel-btn" href="' + relEsc(it.url) + '" target="_blank" rel="noopener" data-tip="Открыть у источника" onclick="' + stop + '">'
+          + '<svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7zM5 5h5V3H3v18h18v-7h-2v5H5V5z"/></svg></a>' : '')
+    + '</div>';
+}
+
+function relState(it) {
+  return (it.in_library ? '1' : '0') + (it.starred ? 'S' : '-') + (it.tracks || 0) + it.date;
+}
+
+function syncReleaseCards(items) {
+  var cardsEl = document.getElementById('relCards');
+  if (!cardsEl) return;
+  var frag = document.createDocumentFragment();
+  var lastGroup = null;
+  var used = {};
+  for (var i = 0; i < items.length; i++) {
+    var it = items[i];
+    var key = it.key || relKey(it);
+    used[key] = true;
+    var g = it.starred ? 'Избранное' : relGroupOf(it.date);
+    if (g !== lastGroup) {
+      var t = document.createElement('div');
+      t.className = 'rel-group-title';
+      t.textContent = g;
+      frag.appendChild(t);
+      lastGroup = g;
+    }
+    var node = _cardNodes[key];
+    var state = relState(it);
+    if (!node) {
+      node = document.createElement('div');
+      node.setAttribute('data-key', key);
+      if (it.rid) { node.setAttribute('onclick', "togglePreview('" + key.replace(/'/g, "\\'") + "')"); node.style.cursor = 'pointer'; }
+      node.innerHTML = releaseCardHtml(it);
+      _cardNodes[key] = node;
+    } else if (node._state !== state) {
+      // Состояние изменилось — перерисовываем всё, кроме обложки: она уже
+      // загружена, а новый <img> пришлось бы ждать заново.
+      var img = node.firstChild;
+      node.innerHTML = releaseCardHtml(it);
+      if (img && img.tagName === 'IMG' && node.firstChild && node.firstChild.tagName === 'IMG') {
+        node.replaceChild(img, node.firstChild);
+      }
+    }
+    node._state = state;
+    node.className = 'rel-card ' + (it.in_library ? 'rel-owned' : 'rel-missing')
+                   + (it.starred ? ' rel-starred' : '');
+    frag.appendChild(node);        // перенос уже существующего узла
+  }
+  for (var k in _cardNodes) if (!used[k]) delete _cardNodes[k];
+  cardsEl.innerHTML = '';          // карточки уже во фрагменте, удаляются только заголовки
+  cardsEl.appendChild(frag);
+}
+
+// Отметка: закрепляет релиз наверху и переживает обновление списка — сервер
+// хранит и ключ, и снимок релиза.
+function toggleStar(key) {
+  var it = findRelease(key);
+  if (!it) return;
+  var on = !it.starred;
+  it.starred = on;
+  it.key = key;
+  resortReleases();
+  fetch('/api/releases/star', {method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({key: key, on: on, item: on ? it : null})})
+    .then(function(r){ return r.json(); })
+    .then(function(d){ if (!d || !d.ok) { it.starred = !on; resortReleases(); showToast('Не удалось сохранить'); } })
+    .catch(function(){ it.starred = !on; resortReleases(); showToast('Не удалось сохранить'); });
+  showToast(on ? 'В избранном' : 'Убрано из избранного');
+}
+
+function resortReleases() {
+  if (!releasesData) return;
+  releasesData.items.sort(function(a, b) {
+    if (a.date !== b.date) return a.date < b.date ? 1 : -1;
+    return (b.artist_score || 0) - (a.artist_score || 0);
+  });
+  releasesData.items.sort(function(a, b) { return (a.starred ? 0 : 1) - (b.starred ? 0 : 1); });
+  syncReleaseCards(releasesData.items);
+  applyExpansion();
+}
+
+// Разворачивание/сворачивание — точечная операция над двумя узлами, без
+// пересборки списка: карточки и их <img> остаются на месте.
+function applyExpansion() {
+  var cardsEl = document.getElementById('relCards');
+  if (!cardsEl) return;
+  var old = cardsEl.querySelector('.rel-tracks');
+  if (old) old.remove();
+  var prev = cardsEl.querySelector('.rel-card.expanded');
+  if (prev) prev.classList.remove('expanded');
+  if (!_previewKey) { paintPreviewState(); return; }
+  var card = cardsEl.querySelector('.rel-card[data-key="' + _previewKey + '"]');
+  if (!card) { paintPreviewState(); return; }
+  card.classList.add('expanded');
+  card.insertAdjacentHTML('afterend', previewTracksHtml(card.classList.contains('rel-owned')));
+  paintPreviewState();
+}
+
+function refreshReleases() {
+  if (_isOffline) return;
+  showToast('Запускаю проверку новинок...');
+  fetch('/api/releases/refresh', {method: 'POST'}).then(function(){
+    setTimeout(function(){ loadReleases(true); }, 800);
+  }).catch(function(){});
+}
+
+// Передаём релиз в существующее окно импорта: подставляем «артист — название»
+// и сразу запускаем поиск, чтобы не набирать руками.
+function getRelease(key) {
+  var it = findRelease(key);
+  if (!it) return;
+  if (!document.getElementById('folderSelect').value) {
+    showToast('Сначала выберите каталог');
+    return;
+  }
+  openVkModal();
+  showImpTab('search');
+  var input = document.getElementById('vkSearchQuery');
+  input.value = it.artist + ' ' + it.title;
+  vkSearchTracks();
+}
+
+// ── Превью релизов ──
+// Отдельный audio-элемент: в основном живёт контекст воспроизведения (текущий
+// трек, позиция, Now Playing), и подменять в нём src ради 30-секундного отрывка
+// значило бы этот контекст потерять.
+var previewAudio = document.getElementById('previewEl');
+var _previewKey = null;        // ключ развёрнутого релиза (source:rid)
+var _previewTrack = -1;        // играющий трек внутри релиза
+var _previewTracks = [];
+
+function stopPreview() {
+  try { previewAudio.pause(); } catch (e) {}
+  previewAudio.removeAttribute('src');
+  _previewTrack = -1;
+  paintPreviewState();
+}
+
+function closePreview() {
+  stopPreview();
+  _previewKey = null; _previewTracks = [];
+  renderReleases();
+}
+
+function findRelease(key) {
+  if (!releasesData) return null;
+  for (var i = 0; i < releasesData.items.length; i++) {
+    if (relKey(releasesData.items[i]) === key) return releasesData.items[i];
+  }
+  return null;
+}
+
+function togglePreview(key) {
+  var it = findRelease(key);
+  if (!it || !it.rid) { showToast('Для этого релиза превью недоступно'); return; }
+  if (_previewKey === key) { closePreview(); return; }
+
+  stopPreview();
+  _previewKey = key; _previewTracks = [];
+  renderReleases();
+
+  // Разблокируем элемент прямо в обработчике клика: список треков приезжает
+  // после fetch, а play() за пределами жеста браузер отклоняет (на iOS —
+  // всегда). Проигрываем тишину сейчас, подменим src, когда придут треки.
+  try {
+    previewAudio.src = _silentBlobUrl;
+    var warm = previewAudio.play();
+    if (warm && warm.catch) warm.catch(function(){});
+  } catch (e) {}
+
+  // артист и название нужны серверу, чтобы найти тот же релиз во втором
+  // источнике, если основной ничего не отдал
+  fetch('/api/releases/tracks?source=' + encodeURIComponent(it.source || 'itunes')
+        + '&rid=' + encodeURIComponent(it.rid)
+        + '&artist=' + encodeURIComponent(it.artist)
+        + '&title=' + encodeURIComponent(it.title))
+    .then(function(r){ return r.json(); })
+    .then(function(d) {
+      if (_previewKey !== key) return;            // пока грузилось, открыли другое
+      _previewTracks = (d && d.tracks) || [];
+      renderReleases();
+      if (_previewTracks.length) playPreview(0);
+      else showToast('Превью для этого релиза не нашлось');
+    })
+    .catch(function(){ if (_previewKey === key) showToast('Не удалось загрузить превью'); });
+}
+
+function playPreview(n) {
+  var t = _previewTracks[n];
+  if (!t) return;
+  if (_previewTrack === n && !previewAudio.paused) { stopPreview(); return; }
+  // Останавливаем основной плеер до превью. setPlayState(false) сначала —
+  // иначе обработчик pause посчитает это системным прерыванием.
+  if (!audio.paused) { setPlayState(false); audio.pause(); }
+  _previewTrack = n;
+  // Через свой сервер: он исправляет Content-Type, который у Apple нестандартный
+  previewAudio.src = '/api/releases/preview?u=' + encodeURIComponent(t.preview);
+  var p = previewAudio.play();
+  if (p && p.catch) p.catch(function(err) {
+    // NotAllowedError здесь означает, что жест не дошёл — не пугаем формулировкой
+    // про формат, она сбивает с толку.
+    showToast(err && err.name === 'NotAllowedError'
+      ? 'Нажмите ещё раз, чтобы включить звук'
+      : 'Не удалось воспроизвести отрывок');
+    _previewTrack = -1; paintPreviewState();
+  });
+  paintPreviewState();
+}
+
+// Точечная перерисовка строк — полный renderReleases на каждом тике прогресса
+// сбрасывал бы прокрутку списка.
+function paintPreviewState() {
+  var rows = document.querySelectorAll('#newList .rel-track');
+  for (var i = 0; i < rows.length; i++) {
+    var on = parseInt(rows[i].getAttribute('data-n'), 10) === _previewTrack;
+    rows[i].classList.toggle('playing', on);
+    var bar = rows[i].querySelector('.rel-track-bar');
+    if (bar && !on) bar.style.width = '0';
+  }
+  var all = document.querySelectorAll('#newList .rel-btn-prev');
+  for (var j = 0; j < all.length; j++) {
+    var isOpen = all[j].getAttribute('data-key') === _previewKey;
+    all[j].classList.toggle('rel-playing', isOpen && _previewTrack >= 0);
+    var want = isOpen ? REL_ICON_PAUSE : REL_ICON_PLAY;
+    if (all[j].innerHTML !== want) all[j].innerHTML = want;
+  }
+}
+
+previewAudio.addEventListener('timeupdate', function() {
+  if (_previewTrack < 0 || !previewAudio.duration) return;
+  var row = document.querySelector('#newList .rel-track[data-n="' + _previewTrack + '"] .rel-track-bar');
+  if (row) row.style.width = (previewAudio.currentTime / previewAudio.duration * 100) + '%';
+});
+previewAudio.addEventListener('ended', function() {
+  // Дослушали отрывок — идём к следующему треку релиза, как в обычном плеере
+  if (_previewTrack >= 0 && _previewTrack + 1 < _previewTracks.length) playPreview(_previewTrack + 1);
+  else stopPreview();
+});
+previewAudio.addEventListener('error', function() {
+  if (_previewTrack < 0) return;
+  _previewTrack = -1; paintPreviewState();
+});
+
+function previewTracksHtml(owned) {
+  var cls = 'rel-tracks' + (owned ? ' owned' : ' missing');
+  if (!_previewTracks.length) {
+    return '<div class="' + cls + '"><div class="rel-track"><div class="rel-track-name" '
+         + 'style="color:rgba(255,255,255,0.3)">Загружаю превью...</div></div></div>';
+  }
+  var h = '<div class="' + cls + '">';
+  for (var i = 0; i < _previewTracks.length; i++) {
+    var t = _previewTracks[i];
+    var mm = Math.floor((t.duration || 0) / 60), ss = ('0' + ((t.duration || 0) % 60)).slice(-2);
+    h += '<div class="rel-track' + (i === _previewTrack ? ' playing' : '') + '" data-n="' + i + '"'
+       + ' onclick="playPreview(' + i + ')">'
+       + '<span class="rel-track-n">' + (t.n || i + 1) + '</span>'
+       + '<span class="rel-track-name">' + relEsc(t.title) + '</span>'
+       + (t.duration ? '<span class="rel-track-dur">' + mm + ':' + ss + '</span>' : '')
+       + '<span class="rel-track-bar"></span>'
+       + '</div>';
+  }
+  return h + '</div>';
 }
 
 // ── Playlists ──
@@ -7989,7 +9284,9 @@ function showCtxMenu(e, idx) {
     html += '<div class="ctx-item danger" onclick="bulkDelete()">' + _ctxSvg(_ctxSvgs.del) + ' Удалить выбранные</div>';
   } else {
     var isCached = idx >= 0 && idx < tracks.length && isTrackCached(tracks[idx].file);
-    html += '<div class="ctx-item" onclick="ctxPlayNext()">' + _ctxSvg(_ctxSvgs.next) + ' Играть следующим</div>';
+    var _qn = (_ctxIdx >= 0 && tracks[_ctxIdx] && tracks[_ctxIdx].file === _forceNextFile);
+    html += '<div class="ctx-item" onclick="ctxPlayNext()">' + _ctxSvg(_ctxSvgs.next)
+          + (_qn ? ' Убрать из очереди' : ' Играть следующим') + '</div>';
     html += '<div class="ctx-item" onclick="ctxToggleCache()">' + _ctxSvg(_ctxSvgs.cache) + ' ' + (isCached ? 'Удалить из кэша' : 'Кэшировать') + '</div>';
     html += '<div class="ctx-item" onclick="ctxSelectStart()">' + _ctxSvg(_ctxSvgs.select) + ' Выбрать</div>';
     html += '<div class="ctx-sep"></div><div class="ctx-sub-header">Добавить в плейлист</div>';
@@ -8025,14 +9322,36 @@ function hideCtxMenu() {
   document.removeEventListener('touchstart', _ctxOutside, true);
 }
 
-var _forceNextIdx = -1;
+// Что играть следующим, помним по имени файла, а не по индексу: массив tracks
+// пересобирается при перезагрузке каталога, поиске и сортировке, и сохранённый
+// индекс начинал указывать на другую песню.
+var _forceNextFile = null;
+
+function forcedNextIndex() {
+  if (!_forceNextFile) return -1;
+  for (var i = 0; i < tracks.length; i++) {
+    if (tracks[i].file === _forceNextFile) return i;
+  }
+  return -1;
+}
 
 function ctxPlayNext() {
   var idx = _ctxIdx;
   hideCtxMenu();
   if (idx < 0 || idx >= tracks.length) return;
-  _forceNextIdx = idx;
-  showToast(tracks[idx].title + ' — следующий');
+  var file = tracks[idx].file;
+  if (_forceNextFile === file) {          // повторный выбор снимает отметку
+    _forceNextFile = null;
+    showToast('Отменено');
+  } else {
+    _forceNextFile = file;
+    // Готовим трек заранее: на iOS переключение с виджета или экрана блокировки
+    // происходит в фоне, где загрузка по сети затормаживается, и неподготовленный
+    // трек остаётся молчать до открытия приложения.
+    prepareBlobUrl(file);
+    showToast(tracks[idx].title + ' — следующий');
+  }
+  renderTracks();
 }
 
 function ctxAddToPlaylist(plId, where) {
@@ -8424,7 +9743,7 @@ function showAppInfo() {
 }
 
 function scrollTracklistTop() {
-  ['trackList', 'albumList', 'playlistsList'].forEach(function(id) {
+  ['trackList', 'albumList', 'playlistsList', 'newList'].forEach(function(id) {
     var el = document.getElementById(id);
     if (!el || !el.scrollTop) return;
     var start = el.scrollTop;
@@ -9024,6 +10343,7 @@ window.addEventListener('online', function() {
   if (_isOffline) {
     _isOffline = false;
     showOfflineBanner(false);
+    syncNewTabVisibility();
     showCachedOnly = false;
     var btn = document.getElementById('cachedOnlyBtn');
     if (btn) btn.classList.remove('active');
@@ -9410,6 +10730,69 @@ class Handler(BaseHTTPRequestHandler):
                 self.wfile.write(img_data)
             else:
                 self._respond(404, "text/plain", b"No cover")
+
+        elif path == "/api/releases":
+            # Только отдаём накопленное. Проверка артистов запускается
+            # исключительно кнопкой (/api/releases/refresh): ходить в чужие API
+            # и сканировать библиотеку в фоне, когда пользователь об этом не
+            # просил, — не то поведение, которого от плеера ждут.
+            self._respond_json(build_releases_feed(user))
+
+        elif path == "/api/releases/preview":
+            src_url = parse_qs(parsed.query).get("u", [""])[0]
+            mime = _preview_mime(src_url)
+            if not mime:
+                self._respond(400, "text/plain", b"Bad preview url")
+                return
+            try:
+                client = _http()
+                try:
+                    resp = client.get(src_url)
+                    if resp.status_code != 200:
+                        self._respond(502, "text/plain", b"Preview unavailable")
+                        return
+                    body = resp.content
+                finally:
+                    try: client.close()
+                    except Exception: pass
+            except Exception:
+                self._respond(502, "text/plain", b"Preview unavailable")
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", mime)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "public, max-age=86400")
+            self.send_header("Accept-Ranges", "none")
+            self.end_headers()
+            self.wfile.write(body)
+
+        elif path == "/api/releases/art":
+            art_url = parse_qs(parsed.query).get("u", [""])[0]
+            if not _art_allowed(art_url):
+                self._respond(400, "text/plain", b"Bad art url")
+                return
+            body, mime = get_release_art(art_url)
+            if not body:
+                self._respond(404, "text/plain", b"No art")
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", mime)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "public, max-age=2592000, immutable")
+            self.end_headers()
+            self.wfile.write(body)
+
+        elif path == "/api/releases/tracks":
+            params = parse_qs(parsed.query)
+            rid = params.get("rid", [""])[0]
+            src = params.get("source", ["itunes"])[0]
+            if not rid:
+                self._respond_json({"ok": False, "error": "no id"})
+                return
+            tracks = release_tracks(src, rid,
+                                    params.get("artist", [""])[0],
+                                    params.get("title", [""])[0])
+            self._respond_json({"ok": True, "tracks": tracks})
 
         elif path == "/api/wan/status":
             active = _tunnel_proc is not None and _tunnel_proc.poll() is None
@@ -9831,6 +11214,21 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception: pass
                 threading.Timer(1.0, _stop_server).start()  # stop LAN server; local stays up
 
+
+        elif path == "/api/releases/star":
+            key = str(data.get("key", ""))
+            if not key:
+                self._respond_json({"ok": False, "error": "no key"})
+                return
+            n = set_release_starred(user, key, bool(data.get("on")), data.get("item"))
+            self._respond_json({"ok": True, "starred_count": n})
+
+        elif path == "/api/releases/refresh":
+            if _releases_state["running"]:
+                self._respond_json({"ok": True, "already": True})
+                return
+            threading.Thread(target=refresh_releases, args=(user,), daemon=True).start()
+            self._respond_json({"ok": True})
 
         elif path == "/api/cert/renew":
             if not udata or not udata.get("is_admin"):
