@@ -8557,17 +8557,43 @@ function initMediaSession() {
     mediaLog('ms:seekto', (d && d.seekTime !== undefined ? d.seekTime.toFixed(1) : '?'));
     if (d.seekTime !== undefined && audio.duration) audio.currentTime = d.seekTime;
   });
-  // iOS: override seek buttons to act as prev/next
-  setMediaAction('seekbackward', function() {
-    mediaLog('ms:seekback');
-    if (previewSkip(-1)) return;
-    prevTrack();
-  });
-  setMediaAction('seekforward', function() {
-    mediaLog('ms:seekfwd');
-    if (previewSkip(1)) return;
-    nextTrack();
-  });
+  // Навигация разведена по платформам, и это вынужденно.
+  //
+  // iOS выбирает вид виджета по составу команд: есть previoustrack/nexttrack —
+  // рисуются стрелки треков, и пропадает полоса прокрутки; нет — кнопки
+  // перемотки +-15 вместе с полосой, а нужна именно она. Поэтому там
+  // переключение висит на seekbackward/seekforward.
+  //
+  // На десктопе всё наоборот: медиа-клавиши клавиатуры (и кнопки наушников)
+  // шлют ровно previoustrack/nexttrack, а до seekbackward/seekforward им не
+  // добраться — как только навигационные команды убрали ради вида виджета,
+  // клавиши перестали переключать треки. Возвращаем их, но только вне iOS,
+  // чтобы виджет в PWA остался прежним. Перемотку на десктопе при этом не
+  // вешаем: кнопка «назад на 10 секунд» в панели браузера двигала бы не
+  // время, а трек.
+  if (_isIOS) {
+    setMediaAction('seekbackward', function() {
+      mediaLog('ms:seekback');
+      if (previewSkip(-1)) return;
+      prevTrack();
+    });
+    setMediaAction('seekforward', function() {
+      mediaLog('ms:seekfwd');
+      if (previewSkip(1)) return;
+      nextTrack();
+    });
+  } else {
+    setMediaAction('previoustrack', function() {
+      mediaLog('ms:prev', mediaLogState());
+      if (previewSkip(-1)) return;
+      prevTrack();
+    });
+    setMediaAction('nexttrack', function() {
+      mediaLog('ms:next', mediaLogState());
+      if (previewSkip(1)) return;
+      nextTrack();
+    });
+  }
   if (_scratchOff) mediaLog('ac:muted');   // звук скретча выключен, контекст жив
   mediaLog('ms:register');
 }
