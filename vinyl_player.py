@@ -4209,7 +4209,14 @@ html.perf-radiostatic .radio-halo.on { animation: none; }
 }
 /* Профиль перерос окно: журнал и переключатели не помещаются, а .meta-modal
    ограничен 80vh без прокрутки — нижние кнопки просто срезало. */
-#profileOverlay .meta-modal { overflow-y: auto; -webkit-overflow-scrolling: touch; }
+#profileOverlay .meta-modal {
+  overflow-y: auto; -webkit-overflow-scrolling: touch;
+  max-width: calc(100vw - 24px);
+}
+/* Кнопки журнала стоят в ряд по трое: без min-width:0 флекс не даёт им
+   сжаться уже собственного текста (у .folder-btn стоит nowrap). */
+#mediaLogBox .folder-btn { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+#markOverlay .folder-btn { white-space: normal; text-align: left; }
 .meta-overlay.show { background: rgba(0,0,0,0.7); pointer-events: auto; }
 .meta-overlay.show .meta-modal { transform: scale(1); opacity: 1; }
 .meta-modal {
@@ -5188,8 +5195,10 @@ html.ui-idle .radio-halo.on { animation-play-state: paused; }
         <div style="display:flex;gap:8px;margin-top:6px">
           <button class="folder-btn folder-btn-secondary" style="flex:1;font-size:12px" onclick="renderMediaLog()">Обновить</button>
           <button class="folder-btn folder-btn-secondary" style="flex:1;font-size:12px" onclick="copyMediaLog()">Копировать</button>
+          <button class="folder-btn folder-btn-secondary" style="flex:1;font-size:12px" onclick="markMediaLog()">Метка</button>
           <button class="folder-btn folder-btn-secondary" style="flex:1;font-size:12px;color:#e94560" onclick="clearMediaLog()">Очистить</button>
         </div>
+        <button id="logOnBtn" class="folder-btn folder-btn-secondary" style="width:100%;font-size:12px;margin-top:6px" onclick="toggleLogOn()">Сбор журнала: вкл</button>
         <button id="scratchCtxBtn" class="folder-btn folder-btn-secondary" style="width:100%;font-size:12px;margin-top:6px" onclick="toggleScratchCtx()">Звук скретча: вкл</button>
         <button id="recoverBtn" class="folder-btn folder-btn-secondary" style="width:100%;font-size:12px;margin-top:6px" onclick="toggleRecover()">Пересборка при застревании: выкл</button>
       </div>
@@ -5198,6 +5207,20 @@ html.ui-idle .radio-halo.on { animation-play-state: paused; }
       <button class="folder-btn folder-btn-secondary" style="flex:1" onclick="doLogout()">Выйти</button>
       <button class="folder-btn folder-btn-secondary" style="flex:1" onclick="document.getElementById('profileOverlay').classList.remove('show')">Закрыть</button>
     </div>
+  </div>
+</div>
+
+<div class="meta-overlay" id="markOverlay" onmousedown="this._mdt=event.target" onclick="if(event.target===this&&this._mdt===this)this.classList.remove('show')">
+  <div class="meta-modal" style="width:340px">
+    <h3>Что с виджетом?</h3>
+    <div style="display:flex;flex-direction:column;gap:8px;margin-top:14px">
+      <button class="folder-btn folder-btn-secondary" onclick="markPick('перемотка +-15, полоса есть')">Перемотка &plusmn;15 сек, полоса прокрутки есть</button>
+      <button class="folder-btn folder-btn-secondary" onclick="markPick('стрелки, полосы нет')">Стрелки треков, полосы прокрутки нет</button>
+      <button class="folder-btn folder-btn-secondary" onclick="markPick('кнопка плей-пауза врёт')">Кнопка плей/пауза показывает не то</button>
+      <button class="folder-btn folder-btn-secondary" onclick="markPick('кнопки не нажимаются')">Кнопки не нажимаются</button>
+      <button class="folder-btn folder-btn-secondary" onclick="markPick('другое')">Другое</button>
+    </div>
+    <button class="folder-btn folder-btn-secondary" style="width:100%;margin-top:14px" onclick="document.getElementById('markOverlay').classList.remove('show')">Отмена</button>
   </div>
 </div>
 
@@ -5588,13 +5611,48 @@ var scratchNoise = null;
 var scratchFilter = null;
 var isScratchPlaying = false;
 
+var AC_IDLE_MS = 120000;
+var _acIdleTimer = null;
+
+function acIdleCancel() {
+  if (_acIdleTimer) { clearTimeout(_acIdleTimer); _acIdleTimer = null; }
+}
+
+function acIdleArm() {
+  acIdleCancel();
+  if (!audioCtx || !audio.paused) return;
+  _acIdleTimer = setTimeout(function() {
+    _acIdleTimer = null;
+    if (!audioCtx || !audio.paused || audioCtx.state !== 'running') return;
+    if (previewOwnsTransport()) return;    // отрывок звучит, тракт нужен
+    try { audioCtx.suspend(); } catch (e) {}
+    mediaLog('ac:idle>suspend');
+  }, AC_IDLE_MS);
+}
+
+var _acCallAt = 0;
+
 function acRevive(where) {
   if (!audioCtx || audioCtx.state === 'running') return;
+  // Слот Now Playing система забирает в момент старта трека. Пока ничего не
+  // играет, поднимать контекст нельзя — иначе виджет привяжется к нему.
+  // Исключение: обработчики виджета, где контекст и нужен.
+  if (audio.paused && where !== 'ms:play' && where !== 'ms:pause' && where !== 'scratch') {
+    mediaLog('ac:resume>hold', where);
+    return;
+  }
+  var now = Date.now();
+  if (now - _acCallAt < 50) { mediaLog('ac:resume>dup', where); return; }
+  _acCallAt = now;
+  var ctx = audioCtx;
   var p = null;
-  try { p = audioCtx.resume(); }
+  try { p = ctx.resume(); }
   catch (e) { mediaLog('ac:resume>throw', where + ' ' + ((e && e.name) || '?')); return; }
+  // Промис resume() резолвится не сразу, поэтому снимок пишем и синхронно:
+  // иначе хронология в журнале врёт на секунды.
+  mediaLog('ac:resume>call', where + ' ' + ctx.state);
   if (p && p.then) {
-    p.then(function() { mediaLog('ac:resume>ok', where + ' ' + audioCtx.state); },
+    p.then(function() { mediaLog('ac:resume>ok', where + ' ' + ctx.state); },
            function(e) { mediaLog('ac:resume>rej', where + ' ' + ((e && e.name) || '?')); });
   }
 }
@@ -5608,15 +5666,12 @@ function scratchCtxRelease() {
 }
 
 function initScratchSound() {
-  if (_scratchOff) return;
   if (audioCtx) {
-    // iOS requires resume after user gesture
-    if (audioCtx.state === 'suspended') audioCtx.resume();
+    acRevive('init');
     return;
   }
   audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-  // iOS: resume on first interaction
-  if (audioCtx.state === 'suspended') audioCtx.resume();
+  acRevive('create');
   var bufSize = audioCtx.sampleRate * 2;
   var buf = audioCtx.createBuffer(1, bufSize, audioCtx.sampleRate);
   var data = buf.getChannelData(0);
@@ -5643,10 +5698,8 @@ function initScratchSound() {
 
 function startScratch(speed) {
   if (!audioCtx) initScratchSound();
-  // iOS PWA: context may be suspended/interrupted after backgrounding
-  if (audioCtx && audioCtx.state !== 'running') {
-    try { audioCtx.resume(); } catch(e) {}
-  }
+  acRevive('scratch');
+  if (_scratchOff) return;          // глушим звук, но контекст оставляем жить
   if (!scratchGain || !scratchFilter) return;
   var vol = Math.min(Math.abs(speed) * 0.15, 0.35);
   scratchFilter.frequency.value = 600 + Math.abs(speed) * 200;
@@ -5654,16 +5707,20 @@ function startScratch(speed) {
   isScratchPlaying = true;
 }
 
-// Pre-init AudioContext on first user gesture so scratch sound works offline
-// (iOS PWA requires a gesture to unlock audio; touchmove alone is not enough)
+// Поднимаем AudioContext на любом касании, а не однократно. Замерено: контекст
+// рождается suspended, и resume() в том же тике, что и конструктор, его не
+// запускает — он оставался suspended с act=0.0 до настоящего скретча. А
+// рендерящий контекст — это то, что держит аудиосессию живой и позволяет
+// возобновить воспроизведение с экрана блокировки.
 (function() {
   function unlock() {
-    if (_scratchOff) return;
     if (!audioCtx) initScratchSound();
     acRevive('touch');
   }
-  document.addEventListener('touchstart', unlock, true);
-  document.addEventListener('mousedown', unlock, true);
+  // Именно touchend и click WebKit считает жестом; touchstart — нет, и
+  // resume() с него висел «пустышкой» до ближайшей смены видимости.
+  document.addEventListener('touchend', unlock, true);
+  document.addEventListener('click', unlock, true);
 })();
 
 function stopScratch() {
@@ -6523,7 +6580,7 @@ function prepareNearbyBlobs() {
 
 function selectTrack(i, autoplay) {
   if (i < 0 || i >= tracks.length) return;
-  exitPreviewPlayerUI();   // включили трек из библиотеки — интерфейс DROPS уходит
+  exitPreviewPlayerUI(true);   // включили трек из библиотеки — интерфейс DROPS уходит
   // Безусловно, а не только внутри exitPreviewPlayerUI: тот выходит сразу, если
   // флаг уже сброшен, и панели остались бы спрятанными. Вызов идемпотентный.
   syncPreviewChrome();
@@ -6557,6 +6614,8 @@ function selectTrack(i, autoplay) {
   // Reset lock screen position immediately so iOS doesn't show stale time
   if ('mediaSession' in navigator) {
     try { navigator.mediaSession.setPositionState(); } catch(e) {}
+    _posCleared = true;
+    if (typeof mediaLog === 'function') mediaLog('ms:pos>clear');
   }
   var streamUrl = '/api/stream/' + encodeURIComponent(t.file);
   var genAtLoad = _trackSrcGen;
@@ -6731,6 +6790,16 @@ function selectTrack(i, autoplay) {
 // Превью ведёт плеер, только пока у него действительно есть что играть.
 // Одного флага мало: если элемент уже отпущен, кнопки обязаны вернуться
 // основному плееру — иначе нажатие с локскрина уходит в пустоту.
+// Соседний отрывок того же релиза. Возвращает false, если ходить некуда, —
+// тогда команда достаётся обычной очереди.
+function previewSkip(step) {
+  if (!previewOwnsTransport() || !_previewTracks) return false;
+  var n = _previewTrack + step;
+  if (n < 0 || n >= _previewTracks.length || !_previewTracks[n]) return false;
+  playPreview(n);
+  return true;
+}
+
 function previewOwnsTransport() {
   return _previewMode && !!(previewAudio.currentSrc || previewAudio.src);
 }
@@ -7959,23 +8028,37 @@ function esc(s) {
 
 // ── Media Session API (lock screen controls) ──
 var _mediaSessionArtUrl = null;
-function updateMediaSession(t) {
+var _msGen = 0;
+var _msFile = null;
+
+function updateMediaSession(t, force) {
   _widgetTrack = {title: t.title || '', artist: t.artist || '', album: t.album || '', file: t.file || ''};
   widgetPublish();
   if (!('mediaSession' in navigator)) return;
+  // Повторная публикация того же трека ничего не меняет, зато заставляет
+  // систему пересобирать виджет и заново тянуть обложку.
+  if (!force && _msFile === (t.file || '')) return;
+  _msFile = t.file || '';
+  var gen = ++_msGen;
   function apply(artwork) {
+    if (gen !== _msGen) return;   // ответ для трека, который уже сменили
+    mediaLog('ms:meta', (t.title || '').slice(0, 24));
     navigator.mediaSession.metadata = new MediaMetadata({
       title: t.title || '',
       artist: t.artist || '',
       album: t.album || '',
       artwork: artwork
     });
+    // Строго после публикации: смена метаданных сбрасывает вид кнопки, и
+    // выставленное до неё состояние терялось.
+    syncPlaybackState();
   }
   if (_mediaSessionArtUrl) { URL.revokeObjectURL(_mediaSessionArtUrl); _mediaSessionArtUrl = null; }
   if (!t.has_cover) { apply([]); return; }
   var netUrl = '/api/cover/' + encodeURIComponent(t.file);
   if (isTrackCached(t.file)) {
     getCachedCover(t.file, function(buf) {
+      if (gen !== _msGen) return;   // до создания blob-URL, иначе он утечёт
       if (buf) {
         _mediaSessionArtUrl = URL.createObjectURL(new Blob([buf], {type:'image/jpeg'}));
         apply([{src:_mediaSessionArtUrl, sizes:'512x512', type:'image/jpeg'}]);
@@ -8013,6 +8096,16 @@ function setAudioSrc(url) {
   _swappingSrc = true;
   audio.src = url;
   setTimeout(function() { _swappingSrc = false; }, 2000);
+}
+
+// Единая точка: состояние зависит от того, чей сейчас транспорт — основного
+// элемента или отрывка из DROPS.
+function syncPlaybackState() {
+  if (previewOwnsTransport()) {
+    setMediaPlaybackState(previewAudio.paused ? 'paused' : 'playing');
+    return;
+  }
+  setMediaPlaybackState(audio.paused ? 'paused' : 'playing');
 }
 
 function setMediaPlaybackState(state) {
@@ -8096,11 +8189,11 @@ function restorePlaybackContext() {
 // whenever we come back to the foreground: after another app took audio focus
 // this is the only lever a web page has to reclaim the entry.
 function refreshNowPlaying() {
+  if (previewOwnsTransport()) return;   // виджет сейчас про отрывок из DROPS
   if (currentIdx < 0 || currentIdx >= tracks.length) return;
-  initMediaSession();   // перевесить обработчики: набор команд система читает при захвате слота
-  updateMediaSession(tracks[currentIdx]);
+  updateMediaSession(tracks[currentIdx], true);
   onTimeUpdate();
-  setMediaPlaybackState(audio.paused ? 'paused' : 'playing');
+  syncPlaybackState();
 }
 
 function initPlaybackContext() {
@@ -8113,6 +8206,9 @@ function initPlaybackContext() {
     _wasInterrupted = false;
     _ctxPlayed = true;
     _ctxRestoring = false;
+    acIdleCancel();
+    acRevive('playing');   // слот уже забран элементом — контекст можно будить
+    syncPlaybackState();
     applyPendingSeek();   // preload may have stalled; the seek lands now
     if (!isPlaying) setPlayState(true);
     setMediaPlaybackState('playing');
@@ -8130,6 +8226,11 @@ function initPlaybackContext() {
       _wasInterrupted = true;
       setPlayState(false);
     }
+    // Транспорт у отрывка из DROPS — эта пауза относится к нему, а не к нам:
+    // иначе отложенное событие перепишет состояние виджета на «пауза», пока
+    // отрывок звучит.
+    if (previewOwnsTransport()) return;
+    acIdleArm();
     // 'paused' rather than leaving it at 'none': it keeps the page registered as
     // a media session, which is what lets the lock screen resume us later.
     setMediaPlaybackState('paused');
@@ -8195,6 +8296,33 @@ function recoverReload(t0) {
   try { audio.load(); } catch (e) { mediaLog('rec:load>throw', e.name || '?'); }
 }
 
+var _markNo = 0;
+
+function markMediaLog() {
+  document.getElementById('markOverlay').classList.add('show');
+}
+
+function markPick(what) {
+  _markNo++;
+  mediaLogWrite('user:mark ' + _markNo, what + ' | ' + mediaLogState());
+  document.getElementById('markOverlay').classList.remove('show');
+  renderMediaLog();
+  showToast('Метка ' + _markNo);
+}
+
+function renderLogOnBtn() {
+  var b = document.getElementById('logOnBtn');
+  if (b) b.textContent = 'Сбор журнала: ' + (_logOn ? 'вкл' : 'выкл');
+}
+
+function toggleLogOn() {
+  _logOn = !_logOn;
+  lsSet('_vc_medialogon', _logOn ? '1' : '0');
+  mediaLogWrite('log:' + (_logOn ? 'on' : 'off'));
+  renderLogOnBtn();
+  renderMediaLog();
+}
+
 function renderScratchBtn() {
   var b = document.getElementById('scratchCtxBtn');
   if (b) b.textContent = 'Звук скретча: ' + (_scratchOff ? 'выкл' : 'вкл');
@@ -8203,8 +8331,8 @@ function renderScratchBtn() {
 function toggleScratchCtx() {
   _scratchOff = !_scratchOff;
   lsSet('_vc_noctx', _scratchOff ? '1' : '0');
-  mediaLog('ac:' + (_scratchOff ? 'disabled' : 'enabled'));
-  if (_scratchOff) scratchCtxRelease();
+  mediaLog('ac:' + (_scratchOff ? 'muted' : 'unmuted'));
+  if (!_scratchOff) { initScratchSound(); acRevive('toggle'); }
   renderScratchBtn();
 }
 
@@ -8227,8 +8355,12 @@ function toggleRecover() {
 // идёт всегда: сам факт «часы стоят» нужно видеть в журнале в любом случае.
 function resumeWatch() {
   var t0 = audio.currentTime;
+  var gen = _trackSrcGen;
   setTimeout(function() {
     if (audio.paused) return;
+    // Трек сменили — сверять с прежней позицией бессмысленно: новая начинается
+    // с нуля, и проверка всегда рапортовала бы «часы стоят».
+    if (_trackSrcGen !== gen) { mediaLog('resume:switched'); return; }
     if (audio.currentTime > t0 + 0.05) { _stuckAt = -1; mediaLog('resume:ok', mediaLogState()); return; }
     mediaLog('resume:stuck', mediaLogState());
     if (!_recoverOn) return;
@@ -8256,7 +8388,15 @@ function mediaLogAll() {
   return _mediaLog;
 }
 
+var _logOn = true;
+try { _logOn = localStorage.getItem('_vc_medialogon') !== '0'; } catch (e) {}
+
 function mediaLog(tag, extra) {
+  if (!_logOn) return;
+  mediaLogWrite(tag, extra);
+}
+
+function mediaLogWrite(tag, extra) {
   var log = mediaLogAll();
   var rec = {t: Date.now(), e: tag};
   if (extra) rec.x = extra;
@@ -8268,10 +8408,17 @@ function mediaLog(tag, extra) {
 // Снимок, по которому потом разбирают запись. hidden отличает блокировку
 // и сворачивание от простой потери фокуса.
 var _ourPlayAt = 0;
+var _posCleared = true;
 
 function ourAudioPlay() {
   _ourPlayAt = Date.now();
-  return audio.play();
+  var p = audio.play();
+  if (p && p.then) {
+    p.then(null, function(err) {
+      mediaLog('play>rej', ((err && err.name) || '?') + ' ' + mediaLogState());
+    });
+  }
+  return p;
 }
 
 function mediaLogState() {
@@ -8286,7 +8433,11 @@ function mediaLogState() {
     + ' t=' + (audio.currentTime || 0).toFixed(1)
     + ' v=' + audio.volume + (audio.muted ? ' MUTED' : '')
     + ' ac=' + (audioCtx ? audioCtx.state : '-')
-    + ' act=' + (audioCtx ? audioCtx.currentTime.toFixed(1) : '-');
+    + ' act=' + (audioCtx ? audioCtx.currentTime.toFixed(1) : '-')
+    + (typeof previewAudio !== 'undefined' && previewAudio && !previewAudio.paused
+        ? ' PREVIEW t=' + (previewAudio.currentTime || 0).toFixed(1) : '')
+    + ' pos=' + (_posCleared ? 'clear' : 'set')
+    + ' dur=' + (isFinite(audio.duration) ? 1 : 0);
 }
 
 // Часы элемента при заблокированном экране. Если звука нет, а t растёт —
@@ -8300,6 +8451,7 @@ function initMediaLogging() {
   for (var i = 0; i < evs.length; i++) {
     (function(name) {
       audio.addEventListener(name, function() {
+        if (!_logOn) return;
         var extra = mediaLogState();
         if (name === 'error' && audio.error) extra = 'code=' + audio.error.code + ' ' + extra;
         var tag = 'audio:' + name;
@@ -8307,6 +8459,17 @@ function initMediaLogging() {
         mediaLog(tag, extra);
       });
     })(evs[i]);
+  }
+  if (typeof previewAudio !== 'undefined' && previewAudio) {
+    var pevs = ['play', 'pause', 'ended', 'error'];
+    for (var k = 0; k < pevs.length; k++) {
+      (function(name) {
+        previewAudio.addEventListener(name, function() {
+          if (_logOn) mediaLog('prev:' + name, mediaLogState());
+          syncPlaybackState();
+        });
+      })(pevs[k]);
+    }
   }
   document.addEventListener('visibilitychange', function() {
     mediaLog(document.hidden ? 'page:hidden' : 'page:visible', mediaLogState());
@@ -8331,6 +8494,7 @@ function initMediaLogging() {
 function reloadCurrentKeepingPos() {
   if (currentIdx < 0) return;
   var pos = audio.currentTime || 0;
+  if (pos > 1) _ctxRestoring = true;   // иначе сохранится позиция 0 до перемотки
   selectTrack(currentIdx, true);
   if (pos > 1) _pendingSeek = pos;
 }
@@ -8347,9 +8511,18 @@ function setMediaAction(name, fn) {
 
 function initMediaSession() {
   if (!('mediaSession' in navigator)) return;
-  navigator.mediaSession.setActionHandler('play', function() {
+  setMediaAction('play', function() {
     mediaLog('ms:play', mediaLogState());
     acRevive('ms:play');
+    if (previewOwnsTransport()) {
+      mediaLog('ms:play>preview');
+      var pp = previewAudio.play();
+      if (pp && pp.catch) pp.catch(function() {});
+      setPlayState(true);
+      setMediaPlaybackState('playing');
+      paintPreviewState();
+      return;
+    }
     if (currentIdx < 0 && tracks.length > 0) { mediaLog('ms:play>first'); selectTrack(0, true); return; }
     if (currentIdx < 0) { mediaLog('ms:play>noidx'); return; }
     // A restored track may have lost its src (iOS unloads media in suspended
@@ -8365,26 +8538,43 @@ function initMediaSession() {
     }
     setPlayState(true);
   });
-  navigator.mediaSession.setActionHandler('pause', function() {
+  setMediaAction('pause', function() {
     mediaLog('ms:pause', mediaLogState());
     acRevive('ms:pause');
     _stuckAt = -1;
+    if (previewOwnsTransport()) {
+      mediaLog('ms:pause>preview');
+      previewAudio.pause();
+      setPlayState(false);
+      setMediaPlaybackState('paused');
+      paintPreviewState();
+      return;
+    }
     audio.pause(); setPlayState(false);
     mediaLog('ms:pause>after', mediaLogState());
   });
-  setMediaAction('previoustrack', function() { mediaLog('ms:prev', mediaLogState()); prevTrack(); });
-  setMediaAction('nexttrack', function() { mediaLog('ms:next', mediaLogState()); nextTrack(); });
   setMediaAction('seekto', function(d) {
+    mediaLog('ms:seekto', (d && d.seekTime !== undefined ? d.seekTime.toFixed(1) : '?'));
     if (d.seekTime !== undefined && audio.duration) audio.currentTime = d.seekTime;
   });
   // iOS: override seek buttons to act as prev/next
-  setMediaAction('seekbackward', function() { mediaLog('ms:seekback'); prevTrack(); });
-  setMediaAction('seekforward', function() { mediaLog('ms:seekfwd'); nextTrack(); });
+  setMediaAction('seekbackward', function() {
+    mediaLog('ms:seekback');
+    if (previewSkip(-1)) return;
+    prevTrack();
+  });
+  setMediaAction('seekforward', function() {
+    mediaLog('ms:seekfwd');
+    if (previewSkip(1)) return;
+    nextTrack();
+  });
+  if (_scratchOff) mediaLog('ac:muted');   // звук скретча выключен, контекст жив
+  mediaLog('ms:register');
 }
 
 // Update position state for lock screen progress bar
 function onTimeUpdate() {
-  if (!audio.paused && Date.now() - _mediaTickAt > 5000) {
+  if (_logOn && !audio.paused && Date.now() - _mediaTickAt > 5000) {
     _mediaTickAt = Date.now();
     mediaLog('tick', mediaLogState());
   }
@@ -8393,6 +8583,7 @@ function onTimeUpdate() {
   if (!audio.paused) savePlaybackContext();
   if ('mediaSession' in navigator && audio.duration && !isNaN(audio.duration)) {
     try {
+      if (_posCleared) { _posCleared = false; mediaLog('ms:pos>set'); }
       navigator.mediaSession.setPositionState({
         duration: audio.duration,
         playbackRate: audio.playbackRate,
@@ -10279,7 +10470,7 @@ function toggleMediaLog() {
   if (!box) return;
   var open = box.style.display === 'none';
   box.style.display = open ? 'block' : 'none';
-  if (open) { renderMediaLog(); renderScratchBtn(); renderRecoverBtn(); }
+  if (open) { renderMediaLog(); renderLogOnBtn(); renderScratchBtn(); renderRecoverBtn(); }
 }
 
 function copyMediaLog() {
@@ -11506,6 +11697,7 @@ var _previewTracks = [];
 function stopPreview() {
   try { previewAudio.pause(); } catch (e) {}
   previewAudio.removeAttribute('src');
+  try { previewAudio.load(); } catch (e) {}   // без load() currentSrc не очистится
   _previewTrack = -1;
   paintPreviewState();
 }
@@ -11624,6 +11816,19 @@ function enterPreviewPlayerUI(rel, tr) {
   artistEl.textContent = rel.artist || '';
   titleEl.style.opacity = '1'; artistEl.style.opacity = '1';
   titleEl.removeAttribute('data-idle');
+  if ('mediaSession' in navigator) {
+    try {
+      navigator.mediaSession.metadata = new MediaMetadata({
+        title: (tr && tr.title) || rel.title || '',
+        artist: rel.artist || '',
+        album: rel.title || '',
+        artwork: rel.art ? [{src: rel.art, sizes: '512x512', type: 'image/jpeg'}] : []
+      });
+    } catch (e) {}
+    _msFile = null;      // виджет держит релиз, а не трек из библиотеки
+    _msGen++;            // поздний ответ по обложке трека сюда не заедет
+    setMediaPlaybackState('playing');
+  }
   var badge = document.getElementById('trackTitleBadge');
   if (badge) {
     badge.textContent = 'DROPS';
@@ -11650,12 +11855,19 @@ function enterPreviewPlayerUI(rel, tr) {
   setPlayState(!previewAudio.paused);
 }
 
-function exitPreviewPlayerUI() {
+function exitPreviewPlayerUI(silent) {
   if (!_previewMode) return;
   _previewMode = false;
   try { previewAudio.pause(); } catch (e) {}
   previewAudio.removeAttribute('src');
+  try { previewAudio.load(); } catch (e) {}   // иначе транспорт остаётся за отрывком
   _previewTrack = -1;
+  // silent — нас позвали из selectTrack, и метаданные поставит он. Иначе
+  // сюда уехал бы прежний трек, а его асинхронная обложка затёрла бы новый.
+  if (!silent && currentIdx >= 0 && currentIdx < tracks.length) {
+    updateMediaSession(tracks[currentIdx], true);
+    setMediaPlaybackState(audio.paused ? 'paused' : 'playing');
+  }
   var badge = document.getElementById('trackTitleBadge');
   if (badge) badge.style.display = 'none';
   syncPreviewChrome();
@@ -14202,6 +14414,8 @@ initBgCanvas();
 if(_isIOS){var vw=document.querySelector('.volume-wrap input[type=range]');if(vw)vw.style.display='none';var vs=document.querySelector('.volume-wrap span');if(vs)vs.style.display='none';}
 initMediaSession();
 initMediaLogging();
+initScratchSound();   // контекст нужен живым с самого старта, а не с первого касания
+mediaLog('app:start', (window.navigator.standalone ? 'pwa' : 'browser') + ' ' + mediaLogState());
 initPlaybackContext();
 initWidgetBridge();
 
