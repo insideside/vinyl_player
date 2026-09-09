@@ -43,7 +43,7 @@ if sys.version_info < _PY_MIN or sys.version_info[:2] > _PY_MAX_TESTED:
 
 try:
     from mutagen.mp3 import MP3
-    from mutagen.id3 import ID3, TIT2, TPE1, TALB, TDRC, APIC, ID3NoHeaderError
+    from mutagen.id3 import ID3, TIT2, TPE1, TPE2, TALB, TCON, TRCK, TDRC, APIC, ID3NoHeaderError
     from mutagen.flac import FLAC, Picture
     from mutagen.mp4 import MP4, MP4Cover
     from mutagen.oggvorbis import OggVorbis
@@ -109,6 +109,12 @@ _widget_state = {
     "file": "", "position": 0, "duration": 0, "ts": 0,
 }
 _widget_command = None  # pending command for the browser to execute
+_widget_seen = 0.0      # когда виджет последний раз читал состояние
+# Виджет — это Übersicht, а он существует только под macOS. На Windows и Linux
+# опрашивать нечего, и браузеру об этом лучше сказать сразу, чем гонять запросы
+# в пустоту.
+WIDGET_POSSIBLE = (platform.system() == "Darwin")
+WIDGET_ALIVE_SEC = 30
 _widget_lock = threading.Lock()
 
 # Native file-picker results, keyed by username. The picker blocks until the
@@ -998,13 +1004,41 @@ def add_folder_to_config(folder):
     pass
 
 
+def _tag_year(value):
+    """Год из тега. Даты приезжают как «2016», «2016-04-11», «2016/04» — берём
+    первые четыре цифры и отсеиваем мусор вроде «0000»."""
+    m = re.search(r"(19|20)\d{2}", str(value or ""))
+    return int(m.group(0)) if m else 0
+
+
+def _tag_track_no(value):
+    """Номер трека: в тегах это «7», «7/12» или кортеж (7, 12)."""
+    if isinstance(value, (list, tuple)) and value:
+        value = value[0]
+    if isinstance(value, (list, tuple)) and value:
+        value = value[0]
+    m = re.match(r"\s*(\d+)", str(value or ""))
+    return int(m.group(1)) if m else 0
+
+
 def get_metadata(filepath):
-    """Извлекает метаданные трека: title, artist, album, cover (base64)."""
+    """Извлекает метаданные трека: title, artist, album, cover (base64).
+
+    Год, жанр, номер и длительность нужны сортировкам и умным плейлистам.
+    Длительность с битрейтом берутся из `audio.info`, который mutagen и так
+    разбирает при открытии файла, — лишнего чтения с диска это не добавляет.
+    """
     p = Path(filepath)
     meta = {
         "title": p.stem,
         "artist": "",
         "album": "",
+        "albumartist": "",
+        "genre": "",
+        "year": 0,
+        "track_no": 0,
+        "duration": 0,
+        "bitrate": 0,
         "cover": None,
         "cover_mime": None,
         "fmt": "",  # lossless format label (FLAC/ALAC/WAV/AIFF); "" for lossy
@@ -1016,6 +1050,7 @@ def get_metadata(filepath):
     if not HAS_MUTAGEN:
         return meta
 
+    audio = None
     try:
         ext = p.suffix.lower()
         if ext == '.mp3':
@@ -1025,6 +1060,11 @@ def get_metadata(filepath):
                 meta["title"] = str(tags.get("TIT2", p.stem))
                 meta["artist"] = str(tags.get("TPE1", ""))
                 meta["album"] = str(tags.get("TALB", ""))
+                meta["albumartist"] = str(tags.get("TPE2", ""))
+                meta["genre"] = str(tags.get("TCON", ""))
+                # TDRC — год в ID3v2.4, TYER — в 2.3; встречаются оба
+                meta["year"] = _tag_year(tags.get("TDRC") or tags.get("TYER") or tags.get("TDRL"))
+                meta["track_no"] = _tag_track_no(tags.get("TRCK"))
                 for key in tags:
                     if key.startswith("APIC"):
                         apic = tags[key]
@@ -1036,6 +1076,10 @@ def get_metadata(filepath):
             meta["title"] = audio.get("title", [p.stem])[0]
             meta["artist"] = audio.get("artist", [""])[0]
             meta["album"] = audio.get("album", [""])[0]
+            meta["albumartist"] = audio.get("albumartist", [""])[0]
+            meta["genre"] = audio.get("genre", [""])[0]
+            meta["year"] = _tag_year(audio.get("date", [""])[0] or audio.get("year", [""])[0])
+            meta["track_no"] = _tag_track_no(audio.get("tracknumber", [""])[0])
             if audio.pictures:
                 pic = audio.pictures[0]
                 meta["cover"] = base64.b64encode(pic.data).decode()
@@ -1046,6 +1090,10 @@ def get_metadata(filepath):
             meta["title"] = (tags.get("\xa9nam") or [p.stem])[0]
             meta["artist"] = (tags.get("\xa9ART") or [""])[0]
             meta["album"] = (tags.get("\xa9alb") or [""])[0]
+            meta["albumartist"] = (tags.get("aART") or [""])[0]
+            meta["genre"] = (tags.get("\xa9gen") or [""])[0]
+            meta["year"] = _tag_year((tags.get("\xa9day") or [""])[0])
+            meta["track_no"] = _tag_track_no(tags.get("trkn"))
             covr = tags.get("covr")
             if covr:
                 meta["cover"] = base64.b64encode(bytes(covr[0])).decode()
@@ -1059,6 +1107,21 @@ def get_metadata(filepath):
             meta["title"] = audio.get("title", [p.stem])[0]
             meta["artist"] = audio.get("artist", [""])[0]
             meta["album"] = audio.get("album", [""])[0]
+            meta["albumartist"] = audio.get("albumartist", [""])[0]
+            meta["genre"] = audio.get("genre", [""])[0]
+            meta["year"] = _tag_year(audio.get("date", [""])[0])
+            meta["track_no"] = _tag_track_no(audio.get("tracknumber", [""])[0])
+        info = getattr(audio, "info", None)
+        if info is not None:
+            meta["duration"] = int(getattr(info, "length", 0) or 0)
+            # У FLAC/WAV битрейта в info нет — считаем из размера и длительности
+            br = int(getattr(info, "bitrate", 0) or 0)
+            if not br and meta["duration"]:
+                try:
+                    br = int(p.stat().st_size * 8 / meta["duration"])
+                except Exception:
+                    br = 0
+            meta["bitrate"] = br // 1000
     except Exception:
         pass
     return meta
@@ -1079,7 +1142,7 @@ def scan_library(music_dir):
             break
         if f.suffix.lower() in SUPPORTED_FORMATS and f.is_file():
             meta = get_metadata(str(f))
-            tracks.append({
+            rec = {
                 "id": len(tracks),
                 "file": f.name,
                 "title": meta["title"],
@@ -1087,7 +1150,16 @@ def scan_library(music_dir):
                 "album": meta["album"],
                 "has_cover": meta["cover"] is not None,
                 "fmt": meta.get("fmt", ""),
-            })
+            }
+            # Короткие ключи и пропуск пустых значений — не косметика: каталог
+            # целиком лежит в localStorage (~1 МБ на 2500 треков при квоте 5 МБ),
+            # и шесть полных ключей с пустыми строками на трек её бы дожали.
+            for key, src in (("yr", "year"), ("gen", "genre"), ("trk", "track_no"),
+                             ("dur", "duration"), ("br", "bitrate"), ("aart", "albumartist")):
+                val = meta.get(src)
+                if val:
+                    rec[key] = val
+            tracks.append(rec)
     return tracks
 
 
@@ -1123,6 +1195,7 @@ RELEASES_TTL = 24 * 3600        # как часто перепроверять �
 RELEASES_SCHEMA = 2             # растёт, когда в записи релиза добавляются поля
 RELEASES_WINDOW_DAYS = 400      # что вообще считаем «новинкой»
 RELEASES_LIMIT = 300            # сколько дропов показываем: отбираются лучшие по релевантности
+FORYOU_LIMIT = 300              # столько же для 4YOU — остального каталога тех же артистов
 _releases_lock = threading.Lock()
 _releases_state = {"running": False, "done": 0, "total": 0, "started": 0}
 
@@ -1681,23 +1754,205 @@ def refresh_releases(user):
             _releases_state["running"] = False
 
 
-def build_releases_feed(user, limit=None):
-    """Лента для клиента. «Есть ли уже в библиотеке» считается здесь, а не в
-    кэше: библиотека меняется чаще, чем данные о релизах."""
+def _feed_library(user):
+    """Общая часть обеих лент: рейтинг артистов и карта «что уже есть».
+
+    Считается на каждый запрос, а не кэшируется вместе с релизами: библиотека
+    меняется чаще, чем данные о релизах.
+    """
     tracks = _collect_user_tracks_cached(user)
     stats = rank_library_artists(tracks)
-    data = _releases_load()
-    cache = data.get("artists", {})
-
     owned = {}   # artist key -> set нормализованных названий (альбомы и треки)
     for t in tracks:
         names = {_norm_title(t.get("album")), _norm_title(t.get("title"))}
         names.discard("")
         for a in split_artists(t.get("artist") or ""):
             owned.setdefault(a.lower(), set()).update(names)
+    return stats, owned
 
-    cutoff = datetime.now() - timedelta(days=RELEASES_WINDOW_DAYS)
-    cutoff_s = cutoff.strftime("%Y-%m-%d")
+
+def _release_key(rel):
+    """Устойчивый ключ релиза.
+
+    У записей из старого кэша `rid` нет (поле появилось вместе с превью), и
+    «itunes:None» совпадал у всех таких сразу — дедупликация схлопывала их в
+    одну карточку, а в 4YOU ключ ещё и пересекался с чужим релизом. Для
+    безридовых строим ключ из названия и даты; превью у них всё равно нет.
+    """
+    src = rel.get("source") or "itunes"
+    rid = rel.get("rid")
+    if rid in (None, ""):
+        return "{}:t:{}|{}".format(src, _norm_title(rel.get("title")), rel.get("date") or "")
+    return "{}:{}".format(src, rid)
+
+
+def _feed_cutoff():
+    """Граница между лентами: свежее неё — NEW, старее — 4YOU."""
+    return (datetime.now() - timedelta(days=RELEASES_WINDOW_DAYS)).strftime("%Y-%m-%d")
+
+
+def _feed_dedup(items):
+    """Схлопывает дубли, оставляя вариант ближайшего артиста.
+
+    Обязана идти ДО среза, иначе он теряет места на дубли: совместка приходит
+    от каждого участника, а iTunes порой отдаёт один и тот же релиз с разными
+    id под разными артистами — ловим и по ключу, и по паре «название + дата».
+    """
+    items.sort(key=lambda x: -x.get("artist_score", 0))
+    seen_keys, seen_titles, uniq = set(), set(), []
+    for it in items:
+        # Ключ может быть ещё не проставлен: 4YOU схлопывает дубли до отметок,
+        # а не после.
+        k = it.get("key") or _release_key(it)
+        tk = (_norm_title(it.get("title")), it.get("date"))
+        if k in seen_keys or tk in seen_titles:
+            continue
+        seen_keys.add(k)
+        seen_titles.add(tk)
+        uniq.append(it)
+    return uniq
+
+
+def _feed_add_starred(user, items, want):
+    """Проставляет отметки и возвращает в ленту закреплённое, что из неё выпало.
+
+    Хранилище отметок общее для обеих лент, поэтому чужие записи надо отсеять:
+    `want(snapshot)` решает, этой ли ленте принадлежит снимок. Само возвращение
+    нужно потому, что закреплённое не должно исчезать, когда релиз вышел из
+    окна дат или артист выпал из проверки.
+    """
+    starred = _starred_load().get(user, {})
+    seen = set()
+    for it in items:
+        k = _release_key(it)
+        it["key"] = k
+        it["starred"] = k in starred
+        seen.add(k)
+    for k, snap in starred.items():
+        if k in seen or not snap or not want(snap):
+            continue
+        rev = dict(snap)
+        rev["key"] = k
+        rev["starred"] = True
+        rev.setdefault("artist_score", 0)
+        rev.setdefault("in_library", False)
+        items.append(rev)
+    return items, len(starred)
+
+
+def _feed_envelope(items, found, stats, cache, data, extra=None):
+    """Общая обвязка ответа: прогресс проверки и состояние кэша."""
+    out = {
+        "items": items,
+        "found": found,          # сколько всего нашлось до среза
+        "updated_at": data.get("updated_at", 0),
+        "artists_total": len(stats),
+        "artists_checked": sum(1 for k in stats if k in cache),
+        "budget": _artist_budget(len(stats)),
+        # Отметка схемы хранится один раз на весь файл и снимается по завершении
+        # обновления. Если проверять её по каждому артисту, то записи, не попавшие
+        # в бюджет цикла, держали бы флаг поднятым вечно и обновление запускалось бы
+        # снова и снова.
+        "schema_stale": data.get("schema", 0) < RELEASES_SCHEMA,
+        "refreshing": _releases_state["running"],
+        "progress": {"done": _releases_state["done"], "total": _releases_state["total"]},
+    }
+    out.update(extra or {})
+    return out
+
+
+def build_foryou_feed(user, limit=None):
+    """4YOU: остальной каталог артистов библиотеки — не новинки.
+
+    Отдельных запросов к API не делает и своего кэша не заводит: iTunes отдаёт
+    по 25 последних релизов на артиста, а новинками из них считаются только
+    последние RELEASES_WINDOW_DAYS дней — всё остальное уже лежит в
+    ~/.vinyl_releases.json и просто нигде не показывалось.
+
+    Отбор: то, чего в библиотеке нет (в этом весь смысл раздела), ранжирование —
+    по близости артиста. Внутри артиста релизы идут от свежего к старому, а сами
+    артисты выдаются по кругу: при обычной сортировке по весу первые два десятка
+    карточек занимал бы один артист, у которого в кэше 25 записей.
+    """
+    stats, owned = _feed_library(user)
+    data = _releases_load()
+    cache = data.get("artists", {})
+    cutoff_s = _feed_cutoff()
+
+    by_artist = {}
+    for key, meta in stats.items():
+        entry = cache.get(key)
+        if not entry:
+            continue
+        have = owned.get(key, set())
+        bucket = []
+        for rel in entry.get("releases", []):
+            if rel.get("date", "") >= cutoff_s:
+                continue                      # это новинка, ей место в NEW
+            if _norm_title(rel.get("title")) in have:
+                continue                      # уже есть — показывать нечего
+            bucket.append({
+                "artist": meta["name"],
+                "rid": rel.get("rid"),
+                "artist_score": round(meta["score"], 3),
+                "artist_tracks": meta["count"],
+                "title": rel.get("title", ""),
+                "date": rel.get("date", ""),
+                "kind": rel.get("kind", "album"),
+                "tracks": rel.get("tracks", 0),
+                "art": rel.get("art", ""),
+                "url": rel.get("url", ""),
+                "source": rel.get("source", ""),
+                "in_library": False,
+            })
+        if bucket:
+            bucket.sort(key=lambda x: x["date"], reverse=True)
+            by_artist[key] = bucket
+
+    items = _feed_dedup([it for b in by_artist.values() for it in b])
+    # Дедупликация перетасовала списки — раскладываем обратно по артистам,
+    # сохраняя порядок «свежее сверху» внутри каждого.
+    buckets, order = {}, []
+    for it in items:
+        k = (it.get("artist") or "").lower()
+        if k not in buckets:
+            buckets[k] = []
+            order.append((it.get("artist_score", 0), k))
+        buckets[k].append(it)
+    order.sort(key=lambda x: -x[0])
+    ranked, row = [], 0
+    while True:
+        added = False
+        for _, k in order:
+            b = buckets[k]
+            if row < len(b):
+                b[row]["rank"] = round(b[row].get("artist_score", 0), 4)
+                ranked.append(b[row])
+                added = True
+        if not added:
+            break
+        row += 1
+
+    found = len(ranked)
+    ranked, starred_count = _feed_add_starred(user, ranked, lambda s: s.get("date", "") < cutoff_s)
+    # Закреплённое под срез не попадает: запись из снимка приходит без веса и
+    # уехала бы в самый хвост, то есть отмеченная карточка исчезала бы из ленты.
+    keep = [x for x in ranked if x.get("starred")]
+    rest = [x for x in ranked if not x.get("starred")]
+    room = max(0, (limit or FORYOU_LIMIT) - len(keep))
+    items = keep + rest[:room]
+    return _feed_envelope(items, found, stats, cache, data,
+                          {"starred_count": starred_count, "mode": "foryou"})
+
+
+def build_releases_feed(user, limit=None):
+    """Лента новинок. «Есть ли уже в библиотеке» считается здесь, а не в
+    кэше: библиотека меняется чаще, чем данные о релизах."""
+    stats, owned = _feed_library(user)
+    data = _releases_load()
+    cache = data.get("artists", {})
+
+    cutoff_s = _feed_cutoff()
     items = []
     for key, meta in stats.items():
         entry = cache.get(key)
@@ -1721,45 +1976,17 @@ def build_releases_feed(user, limit=None):
                 "source": rel.get("source", ""),
                 "in_library": _norm_title(rel.get("title")) in have,
             })
-    starred = _starred_load().get(user, {})
-    seen = set()
-    for it in items:
-        k = "{}:{}".format(it.get("source") or "itunes", it.get("rid"))
-        it["key"] = k
-        it["starred"] = k in starred
-        seen.add(k)
     # Отмеченное, которого в ленте уже нет (вышло из окна дат, артист выпал из
     # проверки), возвращаем из снимка: «жду выхода» не должно исчезать само.
-    for k, snap in starred.items():
-        if k in seen or not snap:
-            continue
-        rev = dict(snap)
-        rev["key"] = k
-        rev["starred"] = True
-        rev.setdefault("artist_score", 0)
-        rev.setdefault("in_library", False)
-        items.append(rev)
+    # Снимки старее окна принадлежат 4YOU — хранилище отметок общее.
+    items, starred_count = _feed_add_starred(user, items, lambda sn: sn.get("date", "") >= cutoff_s)
 
     # Список режется, поэтому важно, ЧТО попадёт в срез. Просто «самые свежие»
     # набивают его случайными синглами артистов, которых вы слушали пару раз.
     # Поэтому вес = близость артиста × свежесть релиза: анонсы и вышедшее на
     # днях идут с полным весом, дальше вес плавно падает (вдвое примерно за три
     # месяца), и артист с сотней треков обгоняет артиста с двумя.
-    # Дедупликация обязана идти до среза, иначе он теряет места на дубли.
-    # Совместка приходит от каждого участника, а iTunes порой отдаёт один и тот
-    # же релиз с разными id под разными артистами — ловим и по ключу, и по паре
-    # «название + дата», оставляя вариант ближайшего артиста.
-    items.sort(key=lambda x: -x.get("artist_score", 0))
-    seen_keys, seen_titles, uniq = set(), set(), []
-    for it in items:
-        k = it.get("key")
-        tk = (_norm_title(it.get("title")), it.get("date"))
-        if k in seen_keys or tk in seen_titles:
-            continue
-        seen_keys.add(k)
-        seen_titles.add(tk)
-        uniq.append(it)
-    items = uniq
+    items = _feed_dedup(items)
 
     today = datetime.now().strftime("%Y-%m-%d")
     def relevance(x):
@@ -1785,24 +2012,8 @@ def build_releases_feed(user, limit=None):
     items.sort(key=lambda x: (x["date"], x["rank"]), reverse=True)
     # Отмеченные — всегда наверху, порядок между ними прежний
     items.sort(key=lambda x: not x.get("starred"))
-    checked = sum(1 for k in stats if k in cache)
-    # Отметка схемы хранится один раз на весь файл и снимается по завершении
-    # обновления. Если проверять её по каждому артисту, то записи, не попавшие
-    # в бюджет цикла, держали бы флаг поднятым вечно и обновление запускалось бы
-    # снова и снова.
-    schema_stale = data.get("schema", 0) < RELEASES_SCHEMA
-    return {
-        "items": items,
-        "found": found,          # сколько всего нашлось до среза
-        "starred_count": len(starred),
-        "schema_stale": schema_stale,
-        "updated_at": data.get("updated_at", 0),
-        "artists_total": len(stats),
-        "artists_checked": checked,
-        "budget": _artist_budget(len(stats)),
-        "refreshing": _releases_state["running"],
-        "progress": {"done": _releases_state["done"], "total": _releases_state["total"]},
-    }
+    return _feed_envelope(items, found, stats, cache, data,
+                          {"starred_count": starred_count, "mode": "new"})
 
 
 # ──────────────────── Playlists ────────────────────
@@ -1874,6 +2085,111 @@ def repair_playlist_refs(folder, playlists=None):
     return playlists
 
 
+# ──────────────────── Периоды прослушивания («эры») ────────────────────
+# Каталог отсортирован по номеру, свежее — выше. Пользователь размечает пачки
+# номеров годами («1200–1400 = 2016»), и из этой разметки собираются плейлисты
+# «Слушал в 2016».
+#
+# Границы хранятся НЕ номерами, а якорями — обезномеренными именами файлов на
+# краях диапазона. Импорт перенумеровывает каталог целиком, и номер как граница
+# уже через одну загрузку указывал бы на другую музыку. С якорем всё сходится
+# само: номера сместились — граница уехала вместе с файлом; трек вклинился
+# внутрь диапазона — он между якорями, то есть промежуток «расширился» сам.
+#
+# Разрешение якорей в номера делает КЛИЕНТ по своему списку треков: тогда
+# разметка одинаково работает и с сервером, и офлайн из кэша каталога. Сервер —
+# хранилище и точка синхронизации между устройствами.
+
+
+def _eras_file(music_dir):
+    return Path(music_dir) / ".vinyl_eras.json"
+
+
+def load_eras(music_dir):
+    try:
+        d = json.loads(_eras_file(music_dir).read_text())
+        if isinstance(d, dict):
+            return {"enabled": bool(d.get("enabled")), "eras": d.get("eras") or []}
+    except Exception:
+        pass
+    return {"enabled": False, "eras": []}
+
+
+def save_eras(music_dir, data):
+    payload = {"enabled": bool(data.get("enabled")), "eras": data.get("eras") or []}
+    _eras_file(music_dir).write_text(json.dumps(payload, ensure_ascii=False, indent=2))
+    return payload
+
+
+# ──────────────────── История прослушиваний ────────────────────
+# Что вы слушаете, а не что добавили. До этого «свежесть» артиста выводилась из
+# позиции файла в нумерованном каталоге — то есть из даты добавления; здесь же
+# факты.
+#
+# Ключ записи — обезномеренное имя файла. Каталог перенумеровывается целиком
+# при каждом импорте, и полное имя как ключ означало бы, что вся история
+# обнуляется после добавления одного трека (той же болезнью болели плейлисты,
+# см. repair_playlist_refs).
+
+PLAYS_FILE = Path.home() / ".vinyl_plays.json"
+_plays_lock = threading.Lock()
+
+
+def _plays_load():
+    try:
+        return json.loads(PLAYS_FILE.read_text())
+    except Exception:
+        return {}
+
+
+def _plays_save(data):
+    try:
+        PLAYS_FILE.write_text(json.dumps(data, ensure_ascii=False))
+        os.chmod(str(PLAYS_FILE), 0o600)
+    except Exception:
+        pass
+
+
+def record_plays(user, folder, plays):
+    """Отмечает прослушивания пачкой.
+
+    Пачкой, потому что без сервера они копятся на клиенте и приезжают списком —
+    как отметки избранного в DROPS. Время берём присланное: у отложенной записи
+    оно относится к моменту прослушивания, а не отправки.
+    """
+    if not plays:
+        return 0
+    now = time.time()
+    added = 0
+    with _plays_lock:
+        data = _plays_load()
+        fold = data.setdefault(user, {}).setdefault(folder, {})
+        for item in plays:
+            if isinstance(item, dict):
+                name, at = item.get("file") or "", item.get("at") or now
+            else:
+                name, at = item, now
+            name = _denumber_name(name)
+            if not name:
+                continue
+            try:
+                at = float(at)
+            except (TypeError, ValueError):
+                at = now
+            e = fold.setdefault(name, {"n": 0, "first": at, "last": 0})
+            e["n"] = e.get("n", 0) + 1
+            e["last"] = max(e.get("last", 0), at)
+            e["first"] = min(e.get("first", at), at)
+            added += 1
+        _plays_save(data)
+    return added
+
+
+def get_plays(user, folder):
+    """Счётчики каталога: обезномеренное имя -> {n, first, last}."""
+    return _plays_load().get(user, {}).get(folder, {})
+
+
 # ──────────────────── Metadata lookup ────────────────────
 
 _meta_states = {}  # username -> state dict
@@ -1912,6 +2228,9 @@ def search_deezer(artist, title):
             'artist': item.get('artist', {}).get('name', artist),
             'album': album.get('title', ''),
             'year': '',
+            # id альбома нужен для добора: жанр и дата у Deezer лежат на альбоме,
+            # а не в ответе поиска (см. _deezer_album_info)
+            'album_id': album.get('id'),
             'cover_url': album.get('cover_big') or album.get('cover_medium') or album.get('cover'),
             'release_mbid': None,
         }
@@ -1991,6 +2310,12 @@ def search_itunes(artist, title):
             'artist': item.get('artistName', artist),
             'album': item.get('collectionName', ''),
             'year': year,
+            # Жанр, номер трека и album artist лежат в том же ответе — отдельных
+            # запросов не нужно. collectionArtistName приходит только у сборников,
+            # поэтому пустой оставляем пустым, а не подставляем исполнителя трека.
+            'genre': item.get('primaryGenreName', '') or '',
+            'track': item.get('trackNumber') or 0,
+            'album_artist': item.get('collectionArtistName', '') or '',
             'cover_url': cover,
             'release_mbid': None,
         }
@@ -2015,6 +2340,17 @@ def search_lastfm(artist, title):
             return None
         album_info = track_info.get('album', {})
         album_name = album_info.get('title', '') if isinstance(album_info, dict) else ''
+        # Метки Last.fm ставят руками, и для андерграунда это часто
+        # единственный источник жанра. Берём самую популярную.
+        lf_genre = ''
+        tags = (track_info.get('toptags') or {}).get('tag')
+        if isinstance(tags, dict):
+            tags = [tags]
+        if isinstance(tags, list):
+            for tg in tags:
+                if isinstance(tg, dict) and tg.get('name'):
+                    lf_genre = tg['name']
+                    break
         cover_url = ''
         if isinstance(album_info, dict):
             images = album_info.get('image', [])
@@ -2026,6 +2362,7 @@ def search_lastfm(artist, title):
             'title': track_info.get('name', title),
             'artist': track_info.get('artist', {}).get('name', artist) if isinstance(track_info.get('artist'), dict) else artist,
             'album': album_name,
+            'genre': lf_genre,
             'year': '',
             'cover_url': cover_url if cover_url and 'noimage' not in cover_url else None,
             'release_mbid': None,
@@ -2146,6 +2483,98 @@ def search_metadata(artist, title):
     return result or result_g or result2 or result4
 
 
+def _deezer_album_info(album_id):
+    """Жанр и дата выпуска у Deezer лежат на альбоме.
+
+    В ответе /search их нет — только id, title и обложка (проверено). Отдельный
+    запрос на альбом стоит того: без него треки, которых не знает iTunes,
+    оставались вообще без жанра и года, а это добрая половина русского
+    андерграунда в библиотеке.
+    """
+    if not album_id:
+        return {}
+    try:
+        with HttpClient(timeout=10) as client:
+            r = client.get("https://api.deezer.com/album/{}".format(album_id))
+        if r.status_code != 200:
+            return {}
+        j = r.json()
+        gens = (j.get("genres") or {}).get("data") or []
+        return {"genre": (gens[0].get("name") or "") if gens else "",
+                "year": (j.get("release_date") or "")[:4]}
+    except Exception:
+        return {}
+
+
+def enrich_new_tags(meta, artist, title):
+    """Дозаполняет жанр, год и номер трека из iTunes.
+
+    Нужно потому, что в search_metadata первым идёт Deezer, и для большинства
+    треков побеждает он — а у него в ответе поиска нет ни жанра, ни номера, ни
+    даты (проверено: только id/title/artist/album/cover). Отдельный запрос
+    делаем лишь когда полей действительно не хватает.
+
+    Трогает ТОЛЬКО новые поля: название, исполнитель, альбом и обложка остаются
+    теми, что нашёл основной источник.
+    """
+    if not meta:
+        return meta
+    if meta.get("genre") and meta.get("year") and meta.get("track"):
+        return meta
+    extra = search_itunes(artist or meta.get("artist", ""), title or meta.get("title", ""))
+    if not extra:
+        return _fill_missing_tags(meta, artist, title)
+
+    # Сверяемся по альбому: iTunes мог найти другую запись, и её номер трека с
+    # годом относились бы к чужому релизу. Издания при этом считаем одним
+    # альбомом — источники расходятся сплошь и рядом («From Zero» против
+    # «From Zero (Deluxe Edition)»), а музыка та же.
+    a, b = _norm_title(meta.get("album") or ""), _norm_title(extra.get("album") or "")
+    same_album = not a or not b or a == b or a.startswith(b) or b.startswith(a)
+
+    # Жанр — свойство трека и артиста, а не конкретного издания, поэтому его
+    # берём и при разных альбомах, лишь бы совпал исполнитель. Номер трека, год
+    # и album artist без совпадения альбома брать нельзя.
+    same_artist = _norm_title(meta.get("artist") or "") == _norm_title(extra.get("artist") or "")
+    keys = ("genre", "year", "track", "album_artist") if same_album else \
+           (("genre",) if same_artist else ())
+    for key in keys:
+        if not meta.get(key) and extra.get(key):
+            meta[key] = extra[key]
+    _fill_missing_tags(meta, artist, title)
+    return meta
+
+
+def _fill_missing_tags(meta, artist, title):
+    """Добирает жанр и год теми же источниками, что уже есть в приложении.
+
+    Порядок по цене и попаданию: альбом Deezer (один запрос, знает почти всё,
+    что знает его же поиск), метки Last.fm (жанр), MusicBrainz (год). Каждый
+    следующий шаг делается, только если чего-то до сих пор не хватает, — на
+    хорошо оттегированной библиотеке до них дело почти не доходит.
+    """
+    if meta.get("genre") and meta.get("year"):
+        return meta
+    a = artist or meta.get("artist", "")
+    t = title or meta.get("title", "")
+
+    info = _deezer_album_info(meta.get("album_id"))
+    for key in ("genre", "year"):
+        if not meta.get(key) and info.get(key):
+            meta[key] = info[key]
+
+    if not meta.get("genre"):
+        lf = search_lastfm(a, t)
+        if lf and lf.get("genre"):
+            meta["genre"] = lf["genre"]
+
+    if not meta.get("year"):
+        mb = search_musicbrainz(a, t)
+        if mb and mb.get("year"):
+            meta["year"] = mb["year"]
+    return meta
+
+
 def fetch_cover_art(meta):
     """Скачивает обложку: из Deezer URL или Cover Art Archive."""
     # Deezer cover
@@ -2206,7 +2635,12 @@ def _update_tags(filepath, title, artist):
 
 
 def write_metadata_to_file(filepath, meta, cover_data, overwrite=False):
-    """Записывает метаданные в файл. НЕ перезаписывает существующие поля (если overwrite=False)."""
+    """Записывает метаданные в файл. НЕ перезаписывает существующие поля (если overwrite=False).
+
+    Пишутся title, artist, album, year, genre, номер трека, album artist и
+    обложка. При overwrite=False каждое поле ставится, только если своего в
+    файле нет, — прогон дозаполняет, но ничего не теряет.
+    """
     if not HAS_MUTAGEN:
         return False
     p = Path(filepath)
@@ -2229,6 +2663,12 @@ def write_metadata_to_file(filepath, meta, cover_data, overwrite=False):
                 tags.setall('TALB', [TALB(encoding=3, text=meta['album'])])
             if meta.get('year') and (overwrite or not tags.get('TDRC')):
                 tags.setall('TDRC', [TDRC(encoding=3, text=meta['year'])])
+            if meta.get('genre') and (overwrite or not tags.get('TCON')):
+                tags.setall('TCON', [TCON(encoding=3, text=meta['genre'])])
+            if meta.get('track') and (overwrite or not tags.get('TRCK')):
+                tags.setall('TRCK', [TRCK(encoding=3, text=str(meta['track']))])
+            if meta.get('album_artist') and (overwrite or not tags.get('TPE2')):
+                tags.setall('TPE2', [TPE2(encoding=3, text=meta['album_artist'])])
             # Cover: only add if no existing cover
             has_cover = any(k.startswith('APIC') for k in tags)
             if cover_data and (overwrite or not has_cover):
@@ -2249,6 +2689,12 @@ def write_metadata_to_file(filepath, meta, cover_data, overwrite=False):
                 audio['album'] = meta['album']
             if meta.get('year') and (overwrite or not audio.get('date')):
                 audio['date'] = meta['year']
+            if meta.get('genre') and (overwrite or not audio.get('genre')):
+                audio['genre'] = meta['genre']
+            if meta.get('track') and (overwrite or not audio.get('tracknumber')):
+                audio['tracknumber'] = str(meta['track'])
+            if meta.get('album_artist') and (overwrite or not audio.get('albumartist')):
+                audio['albumartist'] = meta['album_artist']
             if cover_data and (overwrite or not audio.pictures):
                 pic = Picture()
                 pic.type = 3
@@ -2267,10 +2713,18 @@ def write_metadata_to_file(filepath, meta, cover_data, overwrite=False):
                 audio.tags['\xa9nam'] = [meta['title']]
             if meta.get('artist') and (overwrite or not audio.tags.get('\xa9ART')):
                 audio.tags['\xa9ART'] = [meta['artist']]
-            if meta.get('album'):
+            # Здесь не было проверки на затирание — единственное место, где
+            # «заполнение пустого» молча переписывало существующий альбом.
+            if meta.get('album') and (overwrite or not audio.tags.get('\xa9alb')):
                 audio.tags['\xa9alb'] = [meta['album']]
             if meta.get('year') and (overwrite or not audio.tags.get('\xa9day')):
                 audio.tags['\xa9day'] = [meta['year']]
+            if meta.get('genre') and (overwrite or not audio.tags.get('\xa9gen')):
+                audio.tags['\xa9gen'] = [meta['genre']]
+            if meta.get('track') and (overwrite or not audio.tags.get('trkn')):
+                audio.tags['trkn'] = [(int(meta['track']), 0)]
+            if meta.get('album_artist') and (overwrite or not audio.tags.get('aART')):
+                audio.tags['aART'] = [meta['album_artist']]
             if cover_data and (overwrite or not audio.tags.get('covr')):
                 audio.tags['covr'] = [MP4Cover(cover_data, imageformat=MP4Cover.FORMAT_JPEG)]
             audio.save()
@@ -2279,6 +2733,17 @@ def write_metadata_to_file(filepath, meta, cover_data, overwrite=False):
     except Exception:
         pass
     return False
+
+
+def meta_is_complete(existing):
+    """Файлу больше нечего дозаполнять.
+
+    Раньше проверялись только исполнитель, альбом и обложка — и файл с ними
+    пропускался навсегда, так что жанр, год и номер трека в него уже никогда не
+    попадали. Теперь в условие входят и они.
+    """
+    return bool(existing.get("artist") and existing.get("album") and existing.get("cover")
+                and existing.get("genre") and existing.get("year") and existing.get("track_no"))
 
 
 def _meta_done_path(music_dir):
@@ -2328,7 +2793,7 @@ def metadata_worker(music_dir, username=""):
             continue
 
         existing = get_metadata(str(f))
-        if existing.get("artist") and existing.get("album") and existing.get("cover"):
+        if meta_is_complete(existing):
             done_set.add(f.name)
             continue
 
@@ -2394,13 +2859,25 @@ def metadata_bulk_worker(music_dir, files, username=""):
             if not fp.is_file():
                 continue
             existing = get_metadata(str(fp))
-            if existing.get("artist") and existing.get("album") and existing.get("cover"):
+            if meta_is_complete(existing):
                 done_set.add(fname)
                 continue
-            artist, title = parse_track_name(fname)
+            # Запрос строим по тегам, если они есть, и только иначе по имени
+            # файла. Дозаполнение теперь доходит и до хорошо оттегированных
+            # файлов, а у них имя часто хуже тега («088. 01 - From Zero.flac»
+            # против «Linkin Park — From Zero»).
+            artist = existing.get("artist") or ""
+            title = existing.get("title") or ""
+            if not artist or not title:
+                fa, ft = parse_track_name(fname)
+                artist = artist or fa
+                title = title or ft
             found = search_metadata(artist, title)
             if found:
-                cover = fetch_cover_art(found)
+                found = enrich_new_tags(found, artist, title)
+                # Обложку тянем, только если своей нет: это самый тяжёлый запрос
+                # в проходе, а дозаполнение тегов её не требует.
+                cover = fetch_cover_art(found) if not existing.get("cover") else None
                 if write_metadata_to_file(str(fp), found, cover, overwrite=False):
                     written += 1
                     done_set.add(fname)
@@ -2439,6 +2916,7 @@ def metadata_apply(music_dir, proposals, username=""):
         found_meta = p.get("_meta", {})
         if not found_meta:
             continue
+        found_meta = enrich_new_tags(found_meta, p.get("old_artist", ""), p.get("old_title", ""))
         cover_data = fetch_cover_art(found_meta)
         if write_metadata_to_file(str(filepath), found_meta, cover_data):
             applied += 1
@@ -3062,6 +3540,15 @@ body {
 
 /* ── Vinyl Record ── */
 .vinyl-record {
+  /* Пластинку JS поворачивает каждый кадр, а заливка у неё дорогая: радиальный
+     градиент на четырнадцать переходов, круглое скругление и три тени, одна из
+     них внутренняя на 80px. Без этой подсказки браузер при каждом повороте
+     перерисовывает её целиком; с ней она растеризуется один раз и дальше только
+     поворачивается уже готовой — работа уходит с процессора на композитор.
+     Вид не меняется совсем.
+     Здесь это безопасно, в отличие от рамки радио: там слой лежит под CSS-маской,
+     и на iOS такой слой отрисовывался неполно. У пластинки маски нет. */
+  will-change: transform;
   width: 100%; height: 100%; border-radius: 50%;
   background: radial-gradient(circle,
     #1a1a1a 0%, #111 18%, #1a1a1a 19%, #0d0d0d 20%,
@@ -3225,6 +3712,207 @@ body {
 .playlist-tab.active { color: #e94560; border-bottom: 2px solid #e94560; }
 #tabNew { letter-spacing: 0.06em; font-weight: 600; position: relative; }
 
+/* У отрывка перемотки нет, поэтому полосу прячем — но местом она остаётся:
+   display:none сдвинул бы вверх регулятор громкости, и интерфейс дёргался бы
+   на каждом переключении между отрывком и обычным треком. */
+#progressWrap { transition: opacity 0.3s ease; }
+#progressWrap.no-seek { opacity: 0; pointer-events: none; }
+/* Отрывок играет в отдельном элементе, и ползунок им не управляет. Прячем так
+   же, как полосу перемотки: место остаётся, поэтому кнопка перемешивания рядом
+   не прыгает. */
+.volume-wrap > span, .volume-wrap > input[type=range] { transition: opacity 0.3s ease; }
+.volume-wrap.no-volume > span,
+.volume-wrap.no-volume > input[type=range] { opacity: 0; pointer-events: none; }
+
+.fmt-badge.fmt-drops {
+  background: rgba(233,69,96,0.18); color: #ff7a90; border-color: rgba(233,69,96,0.45);
+  letter-spacing: 0.06em;
+}
+
+.perf-row {
+  display: flex; gap: 9px; align-items: flex-start; margin-bottom: 9px; cursor: pointer;
+}
+.perf-row input { margin-top: 2px; flex-shrink: 0; }
+.perf-row b { display: block; font-size: 12.5px; font-weight: 600; color: rgba(255,255,255,0.8); }
+.perf-row i {
+  display: block; font-style: normal; font-size: 11px; line-height: 1.45;
+  color: rgba(255,255,255,0.35); margin-top: 2px;
+}
+/* Окно трека: сначала сведения, правка — по кнопке. Режимы переключаются
+   классом, а не пересборкой разметки: поля тогда не теряют фокус и значения. */
+.ti-modal { width: min(440px, 94vw); max-height: 88vh; overflow-y: auto; -webkit-overflow-scrolling: touch; }
+.ti-modal:not(.editing) .ti-edit { display: none !important; }
+.ti-modal.editing .ti-view { display: none !important; }
+
+.ti-head { display: flex; gap: 12px; align-items: flex-start; margin-bottom: 14px; }
+.ti-cover {
+  position: relative; width: 92px; height: 92px; flex-shrink: 0;
+  border-radius: 10px; overflow: hidden; background: #262628;
+}
+.ti-cover img { width: 100%; height: 100%; object-fit: cover; display: none; }
+.ti-cover-ph {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  color: rgba(255,255,255,0.2); font-size: 26px;
+}
+.ti-cover-pick {
+  position: absolute; left: 0; right: 0; bottom: 0; padding: 5px 0;
+  border: none; background: rgba(0,0,0,0.65); color: #fff; font-size: 10.5px; cursor: pointer;
+}
+.ti-head-txt { min-width: 0; flex: 1; }
+.ti-h-title { font-size: 15px; font-weight: 600; line-height: 1.25; word-break: break-word; }
+.ti-h-artist { font-size: 12.5px; color: rgba(255,255,255,0.5); margin-top: 3px; word-break: break-word; }
+.ti-h-file { font-size: 10.5px; color: rgba(255,255,255,0.25); margin-top: 6px; word-break: break-all; }
+
+.ti-rows { display: flex; flex-direction: column; }
+.ti-row {
+  display: flex; align-items: center; gap: 10px; min-height: 30px;
+  padding: 4px 0; border-bottom: 1px solid rgba(255,255,255,0.04);
+}
+.ti-k { flex: 0 0 42%; font-size: 11.5px; color: rgba(255,255,255,0.35); }
+.ti-v { flex: 1; min-width: 0; font-size: 12.5px; color: rgba(255,255,255,0.8); word-break: break-word; }
+.ti-i {
+  flex: 1; min-width: 0; padding: 5px 8px; border-radius: 7px;
+  border: 1px solid rgba(255,255,255,0.12); background: rgba(255,255,255,0.05);
+  color: #eee; font-size: 12.5px;
+}
+.ti-actions { display: flex; gap: 6px; margin-top: 14px; }
+
+@media (max-width: 560px) {
+  /* Подпись над значением: в две колонки на узком экране всё сжимается в кашу. */
+  .ti-row { flex-direction: column; align-items: stretch; gap: 2px; padding: 7px 0; }
+  .ti-k { flex: none; }
+  .ti-i { font-size: 16px; }          /* мельче — iOS зумит страницу */
+  .ti-cover { width: 76px; height: 76px; }
+}
+
+.perf-toggle {
+  display: flex; align-items: center; gap: 8px; width: 100%; margin-bottom: 4px;
+  padding: 0; border: none; background: none; cursor: pointer;
+  font-size: 12px; color: rgba(255,255,255,0.4);
+  transition: color 0.15s;
+}
+.perf-toggle:hover { color: rgba(255,255,255,0.65); }
+.perf-toggle > span:first-child { flex: 1; text-align: left; }
+.perf-chev { font-size: 10px; transition: transform 0.2s ease; }
+.perf-toggle.open .perf-chev { transform: rotate(180deg); }
+.perf-toggle.open { margin-bottom: 10px; }
+
+/* Матовое стекло панели пересчитывается каждый раз, когда меняется картинка за
+   ним, — а за ним анимированный фон. Выключение снимает эту работу целиком,
+   поэтому фон панели делаем плотнее: иначе она станет просто прозрачной. */
+html.perf-noblur .playlist-side {
+  backdrop-filter: none; -webkit-backdrop-filter: none;
+  background: rgba(14,14,16,0.94);
+}
+.tonearm { will-change: transform; }
+
+html.perf-radiostatic .radio-glow.on > i,
+html.perf-radiostatic .radio-halo.on { animation: none; }
+
+.pl-cover-ph {
+  width: 100%; height: 100%; background: #333; display: flex;
+  align-items: center; justify-content: center;
+  color: rgba(255,255,255,0.2); font-size: 20px;
+}
+
+.radio-card { cursor: pointer; }
+.radio-card.on { border-color: rgba(233,69,96,0.45); background: rgba(233,69,96,0.06); }
+
+@media (max-width: 560px) {
+  /* На телефоне окно занимает почти весь экран и прокручивается: критериев
+     много, и в 88vh они перестают помещаться. */
+  #radioOverlay .meta-modal, #erasOverlay .meta-modal {
+    width: 96vw; max-height: 92vh; padding: 16px 14px;
+    overflow-y: auto; -webkit-overflow-scrolling: touch;
+  }
+  /* Список выбора прокручивается сам, поэтому окну прокрутка не нужна — иначе
+     скроллов было бы два вложенных. */
+  #eraPickOverlay .meta-modal { width: 96vw; max-height: 90vh; padding: 14px 12px; }
+  #eraPickSearch { font-size: 16px; }        /* мельче — iOS зумит страницу */
+  .era-pick-row { padding: 10px 8px; font-size: 13px; }
+  .era-pick-no { width: 52px; }
+  .era-pick-link { font-size: 11.5px; padding: 7px 9px; }
+  .radio-chip { padding: 6px 11px; font-size: 12px; }   /* палец, не курсор */
+  .era-row input { font-size: 16px; }                   /* iOS зумит поля мельче 16px */
+}
+
+.radio-group { margin-bottom: 13px; }
+.radio-group-title {
+  font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase;
+  color: rgba(255,255,255,0.32); margin-bottom: 7px;
+}
+.radio-chips { display: flex; flex-wrap: wrap; gap: 5px; }
+.radio-chip {
+  padding: 5px 10px; border: 1px solid rgba(255,255,255,0.1); border-radius: 999px;
+  background: none; color: rgba(255,255,255,0.5); font-size: 11px; cursor: pointer;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+.radio-chip .n { opacity: 0.45; margin-left: 4px; }
+.radio-chip.on { color: #e94560; border-color: rgba(233,69,96,0.5); background: rgba(233,69,96,0.1); }
+.radio-count {
+  margin-top: 12px; padding-top: 11px; border-top: 1px solid rgba(255,255,255,0.07);
+  font-size: 12px; color: rgba(255,255,255,0.5);
+}
+.radio-count b { color: #eee; font-weight: 600; }
+.radio-count.empty b { color: #e94560; }
+.radio-years { display: flex; align-items: center; gap: 6px; }
+.radio-years select {
+  padding: 6px 8px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.12);
+  background: rgba(255,255,255,0.05); color: #eee; font-size: 12px;
+}
+.radio-years { flex-wrap: wrap; }
+
+.pl-section { display: flex; align-items: center; gap: 8px; padding: 15px 12px 7px; }
+.pl-section-title {
+  flex: 1; min-width: 0; font-size: 11px; font-weight: 600; letter-spacing: 0.08em;
+  text-transform: uppercase; color: rgba(255,255,255,0.28);
+}
+.pl-section button { flex-shrink: 0; font-size: 11px; padding: 5px 11px; }
+.pl-section:first-child { padding-top: 8px; }
+
+.era-row { display: flex; gap: 6px; align-items: center; margin-bottom: 6px; }
+.era-row input {
+  padding: 7px 8px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.12);
+  background: rgba(255,255,255,0.05); color: #eee; font-size: 13px; min-width: 0;
+}
+.era-row .era-sep { color: rgba(255,255,255,0.25); font-size: 12px; flex-shrink: 0; }
+/* Границы периода — не просто подпись, а кнопки: искать номер трека руками в
+   библиотеке невыносимо, поэтому по клику открывается список. */
+.era-bound { display: flex; gap: 6px; margin: -2px 0 9px 0; }
+.era-pick-link {
+  flex: 1; min-width: 0; padding: 5px 8px; border-radius: 7px; cursor: pointer;
+  border: 1px dashed rgba(255,255,255,0.14); background: rgba(255,255,255,0.03);
+  color: rgba(255,255,255,0.42); font-size: 10.5px; text-align: left;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  transition: color 0.15s, border-color 0.15s;
+}
+.era-pick-link:hover { color: rgba(255,255,255,0.75); border-color: rgba(255,255,255,0.3); }
+/* Открывается ИЗ окна периодов, значит обязано лежать выше него. У всех
+   .meta-overlay z-index одинаковый, и порядок решала разметка: окно выбора
+   стоит в ней раньше, поэтому периоды закрывали его собой и список был виден,
+   но не нажимался. */
+#eraPickOverlay { z-index: 120; }
+.era-pick-list { flex: 1; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; }
+.era-pick-row {
+  display: flex; gap: 9px; align-items: center; padding: 7px 8px; border-radius: 7px;
+  cursor: pointer; font-size: 12px;
+}
+.era-pick-row:hover { background: rgba(255,255,255,0.06); }
+.era-pick-no { flex-shrink: 0; width: 46px; color: rgba(255,255,255,0.3); font-size: 11px; }
+.era-pick-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Подвкладки внутри DROPS — в строке с количеством, а не отдельным рядом:
+   ряд вкладок над ней уже есть, второй такой же читался бы как вложенность. */
+.rel-subtab {
+  flex-shrink: 0; padding: 4px 9px; border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 999px; background: none; color: rgba(255,255,255,0.4);
+  font-size: 10px; font-weight: 600; letter-spacing: 0.06em; cursor: pointer;
+  transition: color 0.2s, border-color 0.2s, background 0.2s;
+}
+.rel-subtab.active {
+  color: #e94560; border-color: rgba(233,69,96,0.5); background: rgba(233,69,96,0.1);
+}
+
 .rel-group-title {
   font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase;
   color: rgba(255,255,255,0.28); padding: 16px 14px 7px;
@@ -3313,6 +4001,9 @@ body {
 }
 .rel-tracks.missing { border-color: rgba(233,69,96,0.35); background: rgba(233,69,96,0.045); }
 .rel-tracks.owned { border-color: rgba(255,255,255,0.055); opacity: 0.75; }
+/* Карточка избранного обведена своим цветом — раскрытый список должен читаться
+   с ней как одна рамка, иначе низ у неё вдруг становился обычным. */
+.rel-tracks.starred { border-color: rgba(233,165,69,0.4); background: rgba(233,165,69,0.05); }
 .rel-track {
   display: flex; align-items: center; gap: 9px; padding: 7px 12px;
   cursor: pointer; position: relative; transition: background 0.12s;
@@ -3516,6 +4207,9 @@ body {
 .meta-overlay .meta-modal {
   transform: scale(0.95); opacity: 0; transition: transform 0.25s ease, opacity 0.25s ease;
 }
+/* Профиль перерос окно: журнал и переключатели не помещаются, а .meta-modal
+   ограничен 80vh без прокрутки — нижние кнопки просто срезало. */
+#profileOverlay .meta-modal { overflow-y: auto; -webkit-overflow-scrolling: touch; }
 .meta-overlay.show { background: rgba(0,0,0,0.7); pointer-events: auto; }
 .meta-overlay.show .meta-modal { transform: scale(1); opacity: 1; }
 .meta-modal {
@@ -3776,6 +4470,88 @@ body { overflow: hidden; touch-action: none; position: fixed; width: 100%; heigh
   background: rgba(233,165,69,0.16); color: #e9a545;
   font-size: 9px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase;
 }
+/* Рамка радиостанции: кольцо из вращающегося конического градиента.
+   Маской вырезаем середину — остаётся только полоса по краю. Появление и
+   исчезновение — через opacity на родителе, чтобы плавность не конфликтовала с
+   бесконечной анимацией дыхания на внутреннем слое. */
+.radio-glow, .radio-halo {
+  /* 6px, а не больше: переключатель вида плеера стоит на top/right 12px, и
+     рамка с отступом 16px проходила прямо по нему.
+     Безопасные зоны учитываем ЗДЕСЬ, а не полагаемся на padding родителя:
+     абсолютное позиционирование считается от padding-box, то есть padding
+     .vinyl-side рамку не сдвигает — сверху она уходила под строку состояния и
+     выглядела обрезанной. Снизу отступ минимальный: линия должна пройти под
+     кнопками, а не поверх них. */
+  position: absolute; left: 6px; right: 6px;
+  top: calc(6px + env(safe-area-inset-top, 0px));
+  /* Половина безопасной зоны: линия должна пройти ПОД кнопками, но не залезть
+     на индикатор home. Полная зона поднимала её слишком высоко. */
+  bottom: calc(2px + env(safe-area-inset-bottom, 0px) / 2);
+  border-radius: 18px; z-index: 8;
+  pointer-events: none; opacity: 0;
+  transition: opacity 1.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.radio-glow { padding: 2px; overflow: hidden;
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  mask-composite: exclude;
+}
+.radio-glow > i {
+  /* Квадрат со стороной заведомо больше диагонали экрана: при вращении слой
+     обязан накрывать рамку в любом положении.
+     Проценты здесь не годятся — они считаются от сторон родителя по
+     отдельности. 150% на узком телефоне давало слой 585×1200 при экране
+     390×800, и при повороте на 90° ширина слоя (585) переставала доставать до
+     высоты рамки (800): кольцо разрывалось сверху и снизу, а на части оборота
+     пропадало целиком. vmax берёт большую сторону экрана, 150vmax перекрывает
+     диагональ (√2 ≈ 1.42) при любом соотношении сторон.
+     will-change / translateZ здесь НЕ ставим: композитный слой под маской на
+     iOS отрисовывался частично. */
+  position: absolute; left: 50%; top: 50%;
+  width: 150vmax; height: 150vmax;
+  margin: -75vmax 0 0 -75vmax; display: block;
+  background: conic-gradient(from 0deg,
+    var(--rg1, #e94560), var(--rg2, #7a5cff), var(--rg3, #35d0c0),
+    var(--rg2, #7a5cff), var(--rg1, #e94560));
+}
+/* Мягкое свечение внутрь — отдельным слоем: box-shadow на кольце срезался бы маской. */
+.radio-halo { box-shadow: inset 0 0 70px -26px var(--rg2, #7a5cff); }
+
+/* Слегка размытая копия кольца под чёткой: линия в 2px сама по себе читалась
+   слишком технично. Размытие намеренно небольшое — у панели со списком стоит
+   backdrop-filter: blur(20px), она подмешивает то, что лежит вплотную к её
+   краю, и сильное свечение проступало сквозь неё на список треков. */
+.radio-bloom { padding: 3px; filter: blur(4px); }
+.radio-bloom > i { animation-duration: 11s, 5s; }
+
+.radio-glow.on, .radio-halo.on { opacity: 1; }
+.radio-bloom.on { opacity: 0.7; }
+/* Вращение и дыхание запускаем только когда рамка видна: незачем крутить
+   анимацию под скрытым элементом. */
+.radio-glow.on > i { animation: radioSpin 11s linear infinite, radioBreath 5s ease-in-out infinite; }
+.radio-halo.on { animation: radioBreath 5s ease-in-out infinite; }
+@keyframes radioSpin { to { transform: rotate(360deg); } }
+@keyframes radioBreath { 0%, 100% { opacity: 0.45; } 50% { opacity: 1; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .radio-glow.on > i, .radio-halo.on { animation: none; }
+}
+
+/* Окно свёрнуто или ушло в фон — вращение и дыхание рамки останавливаются.
+   Именно останавливаются, а не прячутся: animation-play-state снимает работу с
+   композитора, но кадр остаётся на экране, поэтому при возврате картинка не
+   прыгает. */
+html.ui-idle .radio-glow.on > i,
+html.ui-idle .radio-halo.on { animation-play-state: paused; }
+
+/* На телефоне экран скруглён сильнее — увеличиваем радиус, чтобы линия шла
+   вдоль угла, а не срезалась им. Отступы при этом те же: их задаёт безопасная
+   зона, и добавлять сверху ещё константу значит поднять рамку над кнопками. */
+@media (max-width: 900px) {
+  .radio-glow, .radio-halo { border-radius: 26px; }
+}
+
 .loading-spinner { width:28px;height:28px;border:3px solid rgba(255,255,255,0.1);border-top-color:#e94560;border-radius:50%;animation:lspin .7s linear infinite; }
 @keyframes lspin { to { transform:rotate(360deg); } }
 </style>
@@ -3785,6 +4561,12 @@ body { overflow: hidden; touch-action: none; position: fixed; width: 100%; heigh
 <div class="app">
   <!-- Left: Vinyl -->
   <div class="vinyl-side">
+    <!-- Рамка радиостанции. Лежит внутри .vinyl-side, а та кончается там, где
+         начинается столбец со списком (right: 360px), поэтому рамка не может на
+         него заехать — и сама едет при сворачивании панели. -->
+    <div class="radio-glow radio-bloom" id="radioBloom"><i></i></div>
+    <div class="radio-glow" id="radioGlow"><i></i></div>
+    <div class="radio-halo" id="radioHalo"></div>
     <button onclick="showAppInfo()" style="position:absolute;top:16px;left:16px;z-index:5;width:36px;height:36px;border:none;border-radius:50%;background:rgba(255,255,255,0.06);color:rgba(255,255,255,0.2);cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:18px;font-style:italic;font-weight:700;transition:color 0.15s" onmouseover="this.style.color='rgba(255,255,255,0.5)'" onmouseout="this.style.color='rgba(255,255,255,0.2)'">i</button>
     <div class="player-mode-toggle">
       <button class="player-mode-btn active" id="modeVinyl" onclick="setPlayerMode('vinyl')" data-tip="Пластинка"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="1.5"/><circle cx="12" cy="12" r="3" fill="currentColor"/></svg></button>
@@ -3890,6 +4672,7 @@ body { overflow: hidden; touch-action: none; position: fixed; width: 100%; heigh
       <button class="ctrl-btn" onclick="prevTrack()"><svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h2v12H6zm12 0v12l-8.5-6z"/></svg></button>
       <button class="ctrl-btn play-btn" id="playBtn" onclick="togglePlay()"><svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor" id="playIcon"><path d="M8 5v14l11-7z"/></svg></button>
       <button class="ctrl-btn" onclick="nextTrack()"><svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M16 6h2v12h-2zM6 18l8.5-6L6 6z"/></svg></button>
+      <button class="ctrl-btn" id="radioBtn" onclick="openRadioModal()" data-tip="Критерии радиостанции" style="display:none;color:#e94560"><svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2a1 1 0 0 1 .45 1.9L8.2 6h11.3A2.5 2.5 0 0 1 22 8.5v10A2.5 2.5 0 0 1 19.5 21h-15A2.5 2.5 0 0 1 2 18.5v-10a2.5 2.5 0 0 1 1.6-2.33l8-3.98A1 1 0 0 1 12 2zm5 7a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7zm0 2a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3zM5 10h6v2H5v-2zm0 4h6v2H5v-2z"/></svg></button>
     </div>
 
     <div class="progress-wrap" id="progressWrap">
@@ -3976,6 +4759,10 @@ body { overflow: hidden; touch-action: none; position: fixed; width: 100%; heigh
       <button class="shuffle-btn" id="cacheBtn" onclick="startCacheAll()" data-tip="Кэшировать для офлайн"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg></button>
       <button class="shuffle-btn" id="cachedOnlyBtn" onclick="toggleCachedOnly()" data-tip="Только кэш"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg></button>
       <span id="playlistHeader" style="flex:1;cursor:pointer" onclick="scrollTracklistTop()">0 треков</span>
+      <div id="relSubTabs" style="display:none;gap:4px">
+        <button class="rel-subtab active" id="relTabNew" onclick="showRelTab('new')">NEW</button>
+        <button class="rel-subtab" id="relTabFy" onclick="showRelTab('foryou')">4YOU</button>
+      </div>
       <button class="shuffle-btn" id="shuffleListBtn" onclick="toggleShuffleFromList()" data-tip="Перемешать"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M10.59 9.17L5.41 4 4 5.41l5.17 5.17 1.42-1.41zM14.5 4l2.04 2.04L4 18.59 5.41 20 17.96 7.46 20 9.5V4h-5.5zm.33 9.41l-1.41 1.41 3.13 3.13L14.5 20H20v-5.5l-2.04 2.04-3.13-3.13z"/></svg></button>
       <button class="shuffle-btn" id="editBtn" onclick="startEdit()" data-tip="Редактировать порядок" style="display:none"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 000-1.41l-2.34-2.34a1 1 0 00-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg></button>
       <div id="editControls" style="display:none;gap:4px">
@@ -4273,29 +5060,66 @@ body { overflow: hidden; touch-action: none; position: fixed; width: 100%; heigh
 
 <!-- Track edit modal -->
 <div class="meta-overlay" id="trackEditOverlay" onmousedown="this._mdt=event.target" onclick="if(event.target===this&&this._mdt===this)this.classList.remove('show')">
-  <div class="meta-modal" style="width:min(400px,90vw)">
-    <h3>Редактирование трека</h3>
-    <div style="font-size:11px;color:rgba(255,255,255,0.3);margin-bottom:10px" id="trackEditFile"></div>
-    <label style="font-size:12px;color:rgba(255,255,255,0.4);display:block;margin-bottom:4px">Название</label>
-    <input type="text" id="trackEditTitle" class="folder-path-input" style="margin-bottom:8px">
-    <label style="font-size:12px;color:rgba(255,255,255,0.4);display:block;margin-bottom:4px">Артист</label>
-    <input type="text" id="trackEditArtist" class="folder-path-input" style="margin-bottom:8px">
-    <div id="trackEditOrderRow" style="margin-bottom:8px">
-      <label style="font-size:12px;color:rgba(255,255,255,0.4);display:block;margin-bottom:4px">Позиция в каталоге <span id="trackEditOrderHint" style="color:rgba(255,255,255,0.2)"></span></label>
-      <input type="number" id="trackEditOrder" class="folder-path-input" min="1" style="width:120px" placeholder="—">
+  <div class="meta-modal ti-modal" id="tiModal">
+    <div class="ti-head">
+      <div class="ti-cover">
+        <img id="tiCover" alt="">
+        <div id="tiCoverPh" class="ti-cover-ph">&#9835;</div>
+        <button class="ti-cover-pick ti-edit" onclick="tiPickCover()">Заменить</button>
+      </div>
+      <div class="ti-head-txt">
+        <div class="ti-h-title" id="tiHeadTitle"></div>
+        <div class="ti-h-artist" id="tiHeadArtist"></div>
+        <div class="ti-h-file" id="trackEditFile"></div>
+      </div>
     </div>
-    <label style="display:flex;align-items:center;gap:6px;color:rgba(255,255,255,0.5);cursor:pointer;font-size:12px;margin-bottom:12px">
-      <input type="checkbox" id="trackEditMeta" style="accent-color:#e94560"> Найти Meta-данные после сохранения
+    <input type="file" id="tiCoverInput" accept="image/*" style="display:none" onchange="tiCoverChosen(this)">
+
+    <div class="ti-rows">
+      <div class="ti-row"><span class="ti-k">Название</span>
+        <span class="ti-v ti-view" id="tiValTitle"></span>
+        <input class="ti-i ti-edit" type="text" id="trackEditTitle"></div>
+      <div class="ti-row"><span class="ti-k">Исполнитель</span>
+        <span class="ti-v ti-view" id="tiValArtist"></span>
+        <input class="ti-i ti-edit" type="text" id="trackEditArtist"></div>
+      <div class="ti-row"><span class="ti-k">Альбом</span>
+        <span class="ti-v ti-view" id="tiValAlbum"></span>
+        <input class="ti-i ti-edit" type="text" id="tiAlbum"></div>
+      <div class="ti-row"><span class="ti-k">Исполнитель альбома</span>
+        <span class="ti-v ti-view" id="tiValAart"></span>
+        <input class="ti-i ti-edit" type="text" id="tiAart"></div>
+      <div class="ti-row"><span class="ti-k">Год</span>
+        <span class="ti-v ti-view" id="tiValYear"></span>
+        <input class="ti-i ti-edit" type="number" id="tiYear" placeholder="—"></div>
+      <div class="ti-row"><span class="ti-k">Жанр</span>
+        <span class="ti-v ti-view" id="tiValGenre"></span>
+        <input class="ti-i ti-edit" type="text" id="tiGenre"></div>
+      <div class="ti-row"><span class="ti-k">Номер в альбоме</span>
+        <span class="ti-v ti-view" id="tiValTrk"></span>
+        <input class="ti-i ti-edit" type="number" id="tiTrk" min="1" placeholder="—"></div>
+      <div class="ti-row" id="trackEditOrderRow"><span class="ti-k">Позиция в каталоге <span id="trackEditOrderHint"></span></span>
+        <span class="ti-v ti-view" id="tiValOrder"></span>
+        <input class="ti-i ti-edit" type="number" id="trackEditOrder" min="1" placeholder="—"></div>
+      <div class="ti-row"><span class="ti-k">Длительность</span><span class="ti-v" id="tiValDur"></span></div>
+      <div class="ti-row"><span class="ti-k">Качество</span><span class="ti-v" id="tiValQuality"></span></div>
+    </div>
+
+    <label class="ti-edit" style="display:flex;align-items:center;gap:6px;color:rgba(255,255,255,0.5);cursor:pointer;font-size:12px;margin:10px 0 4px">
+      <input type="checkbox" id="trackEditMeta" style="accent-color:#e94560"> Найти метаданные после сохранения
     </label>
-    <div id="trackEditCacheRow" style="display:none;align-items:center;gap:8px;margin-bottom:12px;padding:8px 10px;background:rgba(255,255,255,0.04);border-radius:8px">
+
+    <div id="trackEditCacheRow" style="display:none;align-items:center;gap:8px;margin-top:10px;padding:8px 10px;background:rgba(255,255,255,0.04);border-radius:8px">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="#52b788"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>
-      <span style="font-size:12px;color:rgba(255,255,255,0.5);flex:1">Закэшировано</span>
-      <button class="folder-btn folder-btn-secondary" style="padding:4px 10px;font-size:11px" onclick="uncacheEditTrack()">Удалить из кэша</button>
+      <span style="font-size:12px;color:rgba(255,255,255,0.5);flex:1">Закэширован</span>
+      <button class="folder-btn folder-btn-secondary" style="padding:4px 10px;font-size:11px" onclick="uncacheEditTrack()">Убрать из кэша</button>
     </div>
-    <div style="display:flex;gap:6px">
-      <button class="folder-btn folder-btn-primary" style="flex:1" onclick="saveTrackEdit()">Сохранить</button>
-      <button class="folder-btn folder-btn-secondary" style="flex:1" onclick="document.getElementById('trackEditOverlay').classList.remove('show')">Отмена</button>
-      <button class="folder-btn folder-btn-secondary" style="color:#e94560;flex-shrink:0;padding:8px 12px" onclick="deleteEditTrack()" data-tip="Удалить трек">&#10005;</button>
+
+    <div class="ti-actions">
+      <button class="folder-btn folder-btn-primary ti-view" style="flex:1" onclick="tiSetEdit(true)">Изменить</button>
+      <button class="folder-btn folder-btn-secondary ti-view" style="flex:1" onclick="document.getElementById('trackEditOverlay').classList.remove('show')">Закрыть</button>
+      <button class="folder-btn folder-btn-primary ti-edit" style="flex:1" onclick="saveTrackEdit()">Сохранить</button>
+      <button class="folder-btn folder-btn-secondary ti-edit" style="flex:1" onclick="tiSetEdit(false)">Отмена</button>
+      <button class="folder-btn folder-btn-secondary ti-edit" style="color:#e94560;flex-shrink:0;padding:8px 12px" onclick="deleteEditTrack()" data-tip="Удалить трек">&#10005;</button>
     </div>
   </div>
 </div>
@@ -4328,6 +5152,26 @@ body { overflow: hidden; touch-action: none; position: fixed; width: 100%; heigh
       <button class="folder-btn folder-btn-primary" style="width:100%;margin-top:8px" onclick="changeMyPassword()">Сохранить</button>
     </div>
     <div style="margin-top:16px;padding-top:12px;border-top:1px solid rgba(255,255,255,0.06)">
+      <button class="perf-toggle" id="perfToggle" onclick="perfToggleOpen()">
+        <span>Графика</span><span class="perf-chev">&#9662;</span>
+      </button>
+      <div id="perfBody" style="display:none">
+      <label class="perf-row"><input type="checkbox" id="perfPauseBlur" onchange="perfSet('pauseBlur',this.checked)">
+        <span><b>Замирать без фокуса</b>
+        <i>Анимации останавливаются, когда окно неактивно. Звук продолжает играть.</i></span></label>
+      <label class="perf-row"><input type="checkbox" id="perfNoBlur" onchange="perfSet('noBlur',this.checked)">
+        <span><b>Панель без размытия</b>
+        <i>Список треков станет плотным вместо матового стекла. Размытие пересчитывается на каждом кадре фона — для видеоядра это самое дорогое здесь.</i></span></label>
+      <label class="perf-row"><input type="checkbox" id="perfBgStatic" onchange="perfSet('bgStatic',this.checked)">
+        <span><b>Неподвижный фон</b>
+        <i>Цветные пятна перестанут плыть. Останется градиент под цвет обложки, он всё так же меняется со сменой трека.</i></span></label>
+      <label class="perf-row"><input type="checkbox" id="perfRadioStatic" onchange="perfSet('radioStatic',this.checked)">
+        <span><b>Неподвижная рамка радио</b>
+        <i>Свечение вокруг плеера перестанет вращаться и пульсировать. Цвет останется.</i></span></label>
+      </div>
+    </div>
+
+    <div style="margin-top:16px;padding-top:12px;border-top:1px solid rgba(255,255,255,0.06)">
       <div style="font-size:12px;color:rgba(255,255,255,0.4);margin-bottom:8px">Офлайн-кэш</div>
       <div style="display:flex;align-items:center;gap:8px">
         <span style="font-size:12px;color:rgba(255,255,255,0.5);flex:1" id="profileCacheInfo"></span>
@@ -4338,6 +5182,16 @@ body { overflow: hidden; touch-action: none; position: fixed; width: 100%; heigh
         <button class="folder-btn folder-btn-secondary" style="flex:1;font-size:12px" onclick="location.href='/reset'">Обновить приложение</button>
       </div>
       <div id="buildInfo" style="font-size:11px;color:rgba(255,255,255,0.3);margin-top:8px;line-height:1.5"></div>
+      <button class="folder-btn folder-btn-secondary" style="width:100%;font-size:12px;margin-top:8px" onclick="toggleMediaLog()">Журнал медиа-событий</button>
+      <div id="mediaLogBox" style="display:none;margin-top:8px">
+        <pre id="mediaLogText" style="font-size:10px;line-height:1.45;color:rgba(255,255,255,0.45);background:rgba(0,0,0,0.25);border-radius:8px;padding:8px;max-height:240px;overflow:auto;white-space:pre-wrap;margin:0"></pre>
+        <div style="display:flex;gap:8px;margin-top:6px">
+          <button class="folder-btn folder-btn-secondary" style="flex:1;font-size:12px" onclick="renderMediaLog()">Обновить</button>
+          <button class="folder-btn folder-btn-secondary" style="flex:1;font-size:12px" onclick="copyMediaLog()">Копировать</button>
+          <button class="folder-btn folder-btn-secondary" style="flex:1;font-size:12px;color:#e94560" onclick="clearMediaLog()">Очистить</button>
+        </div>
+        <button id="recoverBtn" class="folder-btn folder-btn-secondary" style="width:100%;font-size:12px;margin-top:6px" onclick="toggleRecover()">Пересборка при застревании: выкл</button>
+      </div>
     </div>
     <div style="display:flex;gap:8px;margin-top:16px;padding-top:12px;border-top:1px solid rgba(255,255,255,0.06)">
       <button class="folder-btn folder-btn-secondary" style="flex:1" onclick="doLogout()">Выйти</button>
@@ -4435,6 +5289,54 @@ body { overflow: hidden; touch-action: none; position: fixed; width: 100%; heigh
 </div>
 
 <!-- Confirm dialog -->
+<div class="meta-overlay" id="radioOverlay">
+  <div class="meta-modal" style="width:460px;max-width:94vw;text-align:left;max-height:88vh;overflow:auto">
+    <div style="font-size:15px;font-weight:600;margin-bottom:6px">Радиостанция</div>
+    <div style="font-size:12px;color:rgba(255,255,255,0.45);line-height:1.5;margin-bottom:14px">
+      Бесконечный поток из вашей библиотеки. Критерии можно менять на ходу – играющий трек не прервётся.
+    </div>
+    <div id="radioBody"></div>
+    <div id="radioCount" class="radio-count"></div>
+    <div style="display:flex;gap:8px;margin-top:14px;flex-wrap:wrap">
+      <button class="folder-btn folder-btn-primary" style="flex:1 1 130px" id="radioGo" onclick="radioApply()">Включить</button>
+      <button class="folder-btn folder-btn-secondary" style="flex:1 1 110px" onclick="radioRandomize()" data-tip="Подобрать критерии случайно">Случайно</button>
+      <button class="folder-btn folder-btn-secondary" style="flex:1 1 90px" onclick="closeRadioModal()">Отмена</button>
+    </div>
+  </div>
+</div>
+
+<div class="meta-overlay" id="eraPickOverlay">
+  <div class="meta-modal" style="width:520px;max-width:96vw;text-align:left;display:flex;flex-direction:column;max-height:88vh">
+    <div style="font-size:14px;font-weight:600;margin-bottom:8px" id="eraPickTitle">Граница периода</div>
+    <input type="text" id="eraPickSearch" class="folder-path-input" placeholder="Поиск по исполнителю или названию"
+           autocapitalize="off" autocorrect="off" spellcheck="false" oninput="renderEraPick(this.value)" style="width:100%;margin-bottom:8px">
+    <div id="eraPickList" class="era-pick-list"></div>
+    <div id="eraPickNote" style="font-size:11px;color:rgba(255,255,255,0.3);margin-top:8px"></div>
+    <button class="folder-btn folder-btn-secondary" style="width:100%;margin-top:10px" onclick="closeEraPick()">Отмена</button>
+  </div>
+</div>
+
+<div class="meta-overlay" id="erasOverlay">
+  <div class="meta-modal" style="width:440px;max-width:94vw;text-align:left">
+    <div style="font-size:15px;font-weight:600;margin-bottom:6px">Периоды прослушивания</div>
+    <div style="font-size:12px;color:rgba(255,255,255,0.45);line-height:1.55;margin-bottom:14px">
+      Каталог идёт от свежих треков к старым. Разметьте пачки номеров годами – из них соберутся плейлисты «Слушал в&nbsp;…».
+      Границы привязываются к самим трекам, поэтому переживают перенумерацию: добавили музыку – периоды поехали вместе с ней,
+      трек вклинился внутрь – попал в свой год. Период, начинающийся с №1, растёт вверх сам.
+    </div>
+    <label style="display:flex;align-items:center;gap:8px;font-size:13px;margin-bottom:12px;cursor:pointer">
+      <input type="checkbox" id="erasEnabled"> Собирать плейлисты по периодам
+    </label>
+    <div id="erasRows"></div>
+    <button class="folder-btn folder-btn-secondary" style="width:100%;font-size:12px;margin-top:8px" onclick="addEraRow()">+ Добавить период</button>
+    <div id="erasHint" style="font-size:11px;color:rgba(255,255,255,0.3);margin-top:10px"></div>
+    <div style="display:flex;gap:8px;margin-top:16px">
+      <button class="folder-btn folder-btn-primary" style="flex:1" onclick="applyEras()">Сохранить</button>
+      <button class="folder-btn folder-btn-secondary" style="flex:1" onclick="closeErasModal()">Отмена</button>
+    </div>
+  </div>
+</div>
+
 <div class="meta-overlay" id="confirmOverlay">
   <div class="meta-modal" style="width:360px;text-align:center">
     <div id="confirmText" style="font-size:15px;margin:12px 0 20px"></div>
@@ -4768,9 +5670,57 @@ audio.volume = 0.8;
 
 // ── Animation loop ──
 var lastTime = 0;
+var _lastBarPct = -1, _lastTimeText = '';
+
+// Окно свёрнуто, вкладка ушла в фон или экран заблокирован — анимации
+// замирают. Просто потеря фокуса не в счёт: окно видно, и застывшая на глазах
+// картинка выглядит поломкой, а стоит она недорого.
+//
+// Ровно это и различает document.hidden: свёрнутое окно, чужая вкладка и
+// локскрин дают true, а «видно, но не в фокусе» — false. Отдельно проверять
+// hasFocus не нужно и вредно.
+//
+// Звук от этого не зависит вовсе: рисование к воспроизведению отношения не
+// имеет, а на батарее сказывается сильнее всего.
+var _uiActive = true;
+
+function syncUiActive() {
+  var was = _uiActive;
+  // Потеря фокуса гасит анимации только если это включено в настройках:
+  // окно ведь видно, и застывшая картинка выглядит поломкой.
+  _uiActive = !document.hidden && (!perfCfg.pauseBlur || document.hasFocus());
+  if (_uiActive && !was) {
+    // Вернулись — стрелка и полоса могли уехать далеко, пока мы стояли.
+    _armAtRest = false;
+    _lastBarPct = -1; _lastTimeText = '';
+  }
+  document.documentElement.classList.toggle('ui-idle', !_uiActive);
+}
+
+document.addEventListener('visibilitychange', syncUiActive);
+
 function animationLoop(ts) {
   var dt = lastTime ? (ts - lastTime) / 1000 : 0;
   lastTime = ts;
+
+  // Цикл крутился 60 раз в секунду всегда — и на паузе тоже, переписывая в DOM
+  // те же самые значения: пластинка стоит, стрелка на месте, время не идёт, а
+  // кадры считаются. Это была самая большая постоянная нагрузка на процессор.
+  // Вид не меняется — пропускаются только кадры, в которых нечего менять.
+  if (!_uiActive) { requestAnimationFrame(animationLoop); return; }
+
+  // Цель тонарма считаем ДО решения о простое: она зависит от позиции в треке,
+  // и если решать раньше, стрелка замирала бы, не доехав до места.
+  var targetArm = ARM_REST;
+  if (isPlaying && (!audio.duration || isNaN(audio.duration))) {
+    targetArm = ARM_START;
+  } else if (audio.duration && !isNaN(audio.duration) && (isPlaying || audio.currentTime > 0)) {
+    targetArm = ARM_START + (ARM_END - ARM_START) * (audio.currentTime / audio.duration);
+  }
+  _armAtRest = Math.abs(targetArm - currentArmAngle) < 0.05;
+
+  var moving = isPlaying || isDragging || inertiaActive || Math.abs(vinylSpeed) > 0.01;
+  if (!moving && _armAtRest) { requestAnimationFrame(animationLoop); return; }
 
   if (isPlaying && !isDragging) {
     // Smooth spin-up
@@ -4784,15 +5734,6 @@ function animationLoop(ts) {
 
   vinylRec.style.transform = 'rotate(' + (vinylAngle % 360) + 'deg)';
 
-  // Tonearm follows track progress with smooth lerp
-  var targetArm = ARM_REST;
-  if (isPlaying && (!audio.duration || isNaN(audio.duration))) {
-    // Track started but duration not loaded yet — move to start position
-    targetArm = ARM_START;
-  } else if (audio.duration && !isNaN(audio.duration) && (isPlaying || audio.currentTime > 0)) {
-    var pct = audio.currentTime / audio.duration;
-    targetArm = ARM_START + (ARM_END - ARM_START) * pct;
-  }
   if (!isDragging) {
     currentArmAngle += (targetArm - currentArmAngle) * 0.12;
     tonearmEl.style.transform = 'rotate(' + currentArmAngle + 'deg)';
@@ -4835,15 +5776,25 @@ function animationLoop(ts) {
   }
 
   // Progress bar & time
+  // Полоса и время меняются раз в секунду, а не 60: сравниваем с уже
+  // нарисованным и трогаем DOM, только когда значение действительно другое.
+  // Запись textContent тянет за собой пересчёт разметки, и делать её впустую
+  // шестьдесят раз в секунду дороже всего остального в этом цикле.
   if (audio.duration && !isDragging) {
     var pctBar = audio.currentTime / audio.duration * 100;
-    document.getElementById('progressFill').style.width = pctBar + '%';
-    document.getElementById('timeCurrent').textContent = formatTime(audio.currentTime);
-    // iPod progress sync
-    if (_playerMode === 'ipod') {
-      document.getElementById('ipodProgress').style.width = pctBar + '%';
-      document.getElementById('ipodTimeCur').textContent = formatTime(audio.currentTime);
-      document.getElementById('ipodTimeDur').textContent = formatTime(audio.duration);
+    var timeText = formatTime(audio.currentTime);
+    if (Math.abs(pctBar - _lastBarPct) > 0.05) {
+      _lastBarPct = pctBar;
+      document.getElementById('progressFill').style.width = pctBar + '%';
+      if (_playerMode === 'ipod') document.getElementById('ipodProgress').style.width = pctBar + '%';
+    }
+    if (timeText !== _lastTimeText) {
+      _lastTimeText = timeText;
+      document.getElementById('timeCurrent').textContent = timeText;
+      if (_playerMode === 'ipod') {
+        document.getElementById('ipodTimeCur').textContent = timeText;
+        document.getElementById('ipodTimeDur').textContent = formatTime(audio.duration);
+      }
     }
   }
 
@@ -5313,7 +6264,7 @@ function renderTracks() {
         + (isTrackCached(t.file)
           ? '<span style="width:6px;height:6px;border-radius:50%;background:#52b788;flex-shrink:0" data-tip="В кэше"></span>'
           : (!offDisabled ? '<button class="track-edit-btn" onclick="event.stopPropagation();cacheTrack(\'' + esc(t.file).replace(/'/g,"\\'") + '\',function(ok){if(ok)renderTracks()})" data-tip="Кэшировать"><svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg></button>' : ''))
-        + (!offDisabled && userRole !== 'demo' ? '<button class="track-edit-btn" onclick="event.stopPropagation();openTrackEdit(' + i + ')" data-tip="Редактировать"><svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 000-1.41l-2.34-2.34a1 1 0 00-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg></button>' : '')
+        + (!offDisabled && userRole !== 'demo' ? '<button class="track-edit-btn" onclick="event.stopPropagation();openTrackEdit(' + i + ')" data-tip="Сведения о треке"><svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z"/></svg></button>' : '')
         + '</div>';
     }
   }
@@ -5424,6 +6375,16 @@ function toggleAlbum(i) {
   }
 }
 
+// Кнопка «Скачать ZIP-архив» относится к каталогу треков, а не к строке
+// заголовка вообще: на DROPS, альбомах и плейлистах скачивать нечего, а она
+// там показывалась. Условие живёт в одном месте — её дёргают из showTab,
+// applyConfig и выхода из режима выделения.
+function syncDownloadBtn() {
+  var el = document.getElementById('downloadCatalogBtn');
+  if (!el) return;
+  el.style.display = (isAdmin && !_isOffline && activeTab === 'tracks' && !selectionMode) ? '' : 'none';
+}
+
 function showTab(tab) {
   activeTab = tab;
   var tabs = ['tracks', 'albums', 'playlists', 'new'];
@@ -5440,7 +6401,14 @@ function showTab(tab) {
   var showCache = tab === 'tracks';
   document.getElementById('cacheBtn').style.display = showCache ? '' : 'none';
   document.getElementById('cachedOnlyBtn').style.display = showCache ? '' : 'none';
-  if (tab !== 'new' && typeof stopPreview === 'function') stopPreview();
+  syncDownloadBtn();                       // ZIP каталога — тоже только там
+  // «Перемешать» относится к списку треков: на альбомах, плейлистах и DROPS
+  // перемешивать нечего, а кнопка там висела.
+  document.getElementById('shuffleListBtn').style.display = showCache ? '' : 'none';
+  document.getElementById('relSubTabs').style.display = (tab === 'new') ? 'flex' : 'none';
+  // Уход со вкладки отрывок не обрывает: он ведёт плеер, и музыка не должна
+  // замолкать оттого, что пошли смотреть треки. Останавливает его только явный
+  // выбор другой музыки.
   if (tab === 'albums') {
     document.getElementById('playlistHeader').textContent = (filteredAlbums ? filteredAlbums.length + ' / ' : '') + albums.length + ' альбомов';
     document.getElementById('editBtn').style.display = 'none';
@@ -5448,17 +6416,15 @@ function showTab(tab) {
   } else if (tab === 'new') {
     document.getElementById('editBtn').style.display = 'none';
     if (isEditMode) cancelEdit();
-    document.getElementById('playlistHeader').textContent = releasesData
-      ? (releasesData.items.length + ' ' + relPlural(releasesData.items.length, 'дроп', 'дропа', 'дропов'))
-      : 'Дропы';
-    if (!releasesData) loadReleases();
+    syncRelHeader();
+    if (!relF().data) loadReleases();
     else renderReleases();
   } else if (tab === 'playlists') {
     // Set the count from what's already loaded: loadUserPlaylists() refreshes
     // from the server asynchronously, so leaving the header to it kept the
     // previous tab's text («xxx альбомов») on screen until the reply arrived —
     // and forever if it never did.
-    document.getElementById('playlistHeader').textContent = userPlaylists.length + ' плейлистов';
+    document.getElementById('playlistHeader').textContent = plHeaderText();
     document.getElementById('editBtn').style.display = 'none';
     if (isEditMode) cancelEdit();
     loadUserPlaylists();
@@ -5529,8 +6495,25 @@ function prepareNearbyBlobs() {
 
 function selectTrack(i, autoplay) {
   if (i < 0 || i >= tracks.length) return;
+  exitPreviewPlayerUI();   // включили трек из библиотеки — интерфейс DROPS уходит
+  // Безусловно, а не только внутри exitPreviewPlayerUI: тот выходит сразу, если
+  // флаг уже сброшен, и панели остались бы спрятанными. Вызов идемпотентный.
+  syncPreviewChrome();
+  // Любая недоигранная рампа отменяется здесь: ручное переключение посреди
+  // затухания иначе оставило бы новый трек тихим.
+  fadeCancel(false);
+  // Прогретый хвост оставляем: startCrossfade поднимает именно его. Гасим
+  // только звучащий — то есть при ручном переключении.
+  if (tailAudio && !tailAudio.paused) tailStop();
+  // Рампу поднимаем прямо здесь, а не по событию play: оно может не прийти
+  // вовсе (браузер отклонил запуск, трек не догрузился), и трек остался бы
+  // беззвучным. Рампа считается по времени, поэтому к концу громкость будет
+  // на месте в любом случае.
+  if (fadeOn()) fadeRamp(0, _userVolume, FADE_MS);
+  else { try { audio.volume = _userVolume; } catch (e) {} }
   currentIdx = i;
   _trackSrcGen++;
+  resetPlayMeter();
   var t = tracks[i];
 
   vinylAngle = 0;
@@ -5717,7 +6700,26 @@ function selectTrack(i, autoplay) {
   setTimeout(prefetchNext, 500);
 }
 
+// Превью ведёт плеер, только пока у него действительно есть что играть.
+// Одного флага мало: если элемент уже отпущен, кнопки обязаны вернуться
+// основному плееру — иначе нажатие с локскрина уходит в пустоту.
+function previewOwnsTransport() {
+  return _previewMode && !!(previewAudio.currentSrc || previewAudio.src);
+}
+
 function togglePlay() {
+  if (previewOwnsTransport()) {
+    if (previewAudio.paused) {
+      var pp = previewAudio.play();
+      if (pp && pp.catch) pp.catch(function(){});
+      setPlayState(true);
+    } else {
+      previewAudio.pause();
+      setPlayState(false);
+    }
+    paintPreviewState();
+    return;
+  }
   if (currentIdx < 0 && tracks.length > 0) {
     playFromList(0);
     return;
@@ -5756,6 +6758,7 @@ function showMobileControls() {
 var isShuffled = false;
 
 function buildDefaultQueue() {
+  stopRadio();          // сменили каталог, поиск или сортировку — станция не о том
   playQueue = getVisibleIndices();
   playQueuePos = -1;
   if (isShuffled) shuffleArray(playQueue);
@@ -5823,6 +6826,7 @@ function syncShuffleUI() {
 }
 
 function playFromList(trackIdx) {
+  stopRadio();          // выбрали трек руками — станция больше не ведёт
   // Build queue from current visible list respecting cachedOnly filter
   var indices = getVisibleIndices();
   playQueue = indices.slice();
@@ -5832,6 +6836,7 @@ function playFromList(trackIdx) {
 }
 
 function playFromAlbum(albumIdx, trackIdx) {
+  stopRadio();
   // Build queue from album tracks
   var alb = albums[albumIdx];
   if (!alb) return;
@@ -5852,6 +6857,7 @@ function _syncQueuePos() {
 }
 
 function prevTrack() {
+  if (previewOwnsTransport()) { stepPreview(-1); return; }
   if (audio.currentTime > 3) { audio.currentTime = 0; return; }
   if (playQueue.length > 0) {
     _syncQueuePos();
@@ -5862,6 +6868,7 @@ function prevTrack() {
 }
 
 function nextTrack() {
+  if (previewOwnsTransport()) { stepPreview(1); return; }
   var forced = forcedNextIndex();
   if (forced >= 0) {
     _forceNextFile = null;
@@ -5875,9 +6882,733 @@ function nextTrack() {
   if (playQueue.length > 0) {
     _syncQueuePos();
     playQueuePos++;
+    // Радио досыпает заранее: добор ровно в момент окончания дал бы паузу
+    // между треками на время отбора.
+    if (radioOn && playQueuePos >= playQueue.length - 5) {
+      var ahead = radioBatch();
+      if (ahead.length) playQueue = playQueue.concat(ahead);
+    }
+    if (playQueuePos >= playQueue.length) {
+      // Очередь кончилась — не заворачиваемся на первый трек каталога, а
+      // продолжаем подбором. Раньше здесь был playQueuePos = 0, и после
+      // альбома или плейлиста начиналась музыка «сначала списка».
+      var more = radioOn ? radioBatch() : buildContinuation();
+      if (more.length) playQueue = playQueue.concat(more);
+      else playQueuePos = 0;
+    }
     if (playQueuePos >= playQueue.length) playQueuePos = 0;
     selectTrack(playQueue[playQueuePos], isPlaying);
   }
+}
+
+// ── Радиостанция ──
+// Бесконечный поток по критериям. Всё считается локально: в сеть радио не
+// ходит ни разу, поэтому работает и офлайн (там пул сам сужается до кэша).
+var radioOn = false;
+var radioCfg = null;
+
+function radioDefaults() {
+  return {eras: [], genres: [], yearFrom: 0, yearTo: 0,
+          activity: 'any',        // any | often | rare | never | forgotten
+          lossless: false, cachedOnly: false, skipShort: true,
+          fade: false,            // плавные переходы между треками
+          groupByArtist: false,   // подряд несколько треков одного артиста
+          variety: 'balanced'};   // familiar | balanced | surprise
+}
+
+// ── Плавные переходы между треками ──
+//
+// Только на десктопе и только через audio.volume. Web Audio дал бы затухание и
+// на iOS, но createMediaElementSource — дорога в один конец: после неё звук
+// элемента идёт исключительно через AudioContext, а усыплённый в фоне контекст
+// означал бы тишину при работающем на вид плеере. Ради украшения ломать
+// фоновое воспроизведение нельзя, поэтому на iOS опции просто нет — там же, где
+// уже спрятан ползунок громкости, по той же причине.
+var _volumeWorks = (function() {
+  if (_isIOS) return false;
+  try {
+    var probe = document.createElement('audio');
+    probe.volume = 0.5;
+    return probe.volume === 0.5;   // на iOS остаётся 1
+  } catch (e) { return false; }
+})();
+
+var FADE_MS = 4000;
+var _userVolume = 0.8;        // куда возвращаться: положение ползунка
+var _fadeTimer = null;
+var _tailTimer = null;
+var _fading = false;
+var _tailArmed = '';          // источник, под который хвост уже прогрет
+
+// Вспомогательный элемент для кроссфейда создаётся ЛЕНИВО и только на
+// десктопе. Это не оптимизация, а откат поломки: постоянно висящий в разметке
+// третий <audio> ломал на iPhone возобновление с локскрина — система
+// привязывает аудио-сессию и Now Playing к конкретному элементу, лишний её
+// путает, и после паузы трек «играл» с идущим временем, но беззвучно.
+// Кроссфейд там всё равно недоступен: он держится на audio.volume, а на iOS
+// громкость аппаратная.
+var tailAudio = null;
+
+function tailEl() {
+  if (tailAudio) return tailAudio;
+  if (!_volumeWorks) return null;      // на iOS не создаём вовсе
+  tailAudio = document.createElement('audio');
+  tailAudio.preload = 'none';
+  document.body.appendChild(tailAudio);
+  return tailAudio;
+}
+
+function fadeOn() { return _volumeWorks && radioOn && radioCfg && radioCfg.fade; }
+
+// Любой выход из затухания обязан вернуть громкость: оборванная рампа иначе
+// оставила бы музыку тихой до перезапуска.
+function fadeCancel(restore) {
+  if (_fadeTimer) { clearInterval(_fadeTimer); _fadeTimer = null; }
+  _fading = false;
+  if (restore !== false) { try { audio.volume = _userVolume; } catch (e) {} }
+}
+
+function tailStop() {
+  if (_tailTimer) { clearInterval(_tailTimer); _tailTimer = null; }
+  _tailArmed = '';
+  if (!tailAudio) return;
+  try { tailAudio.pause(); tailAudio.removeAttribute('src'); } catch (e) {}
+}
+
+// Хвост прогреваем заранее. Раньше он начинал грузиться в момент перехода, и
+// пока шла загрузка, уходящий трек был уже заглушён, а приходящий ещё не
+// зазвучал — вместо перехода получался провал в тишину.
+function tailArm() {
+  var el = tailEl();
+  if (!el || _tailArmed === audio.src || !audio.src) return;
+  _tailArmed = audio.src;
+  try {
+    el.preload = 'auto';
+    el.src = audio.src;
+    el.volume = 0;             // греем молча
+    el.load();
+  } catch (e) { _tailArmed = ''; }
+}
+
+// Считаем по реальному времени, а не по числу шагов: в неактивной вкладке
+// setInterval зажимается до секунды, и пошаговая рампа растягивалась бы на
+// минуты, а трек не переключался бы вовсе. По времени она доходит до конца
+// при любой частоте тиков — просто грубее.
+function rampEl(el, from, to, ms, done) {
+  var t0 = Date.now();
+  try { el.volume = from; } catch (e) {}
+  return setInterval(function() {
+    var k = Math.min(1, (Date.now() - t0) / ms);
+    try { el.volume = Math.max(0, Math.min(1, from + (to - from) * k)); } catch (e) {}
+    if (k >= 1 && done) done();
+  }, 50);
+}
+
+function fadeRamp(from, to, ms, done) {
+  if (_fadeTimer) clearInterval(_fadeTimer);
+  _fadeTimer = rampEl(audio, from, to, ms, function() {
+    clearInterval(_fadeTimer); _fadeTimer = null;
+    if (done) done();
+  });
+}
+
+// Гасим на исходе трека и сразу переходим к следующему: если ждать штатного
+// ended, последние секунды были бы просто тишиной.
+var TAIL_ARM_LEAD = 6;        // за сколько секунд до перехода греть хвост
+
+function fadeCheck() {
+  if (_fading || !fadeOn() || audio.paused) return;
+  var d = audio.duration;
+  if (!isFinite(d) || d <= 0) return;
+  var left = d - audio.currentTime;
+  if (left <= FADE_MS / 1000 + TAIL_ARM_LEAD) tailArm();
+  if (left > FADE_MS / 1000) return;
+  _fading = true;
+  startCrossfade();
+}
+
+// Настоящий кроссфейд: уходящий трек доигрывает во вспомогательном элементе,
+// затухая, а основной в это же время уже поднимает следующий с нуля. Роли
+// элементов не меняются — вся обвязка (MediaSession, виджет, контекст
+// воспроизведения) остаётся на основном, и он с первой секунды показывает
+// новый трек, как и положено.
+function startCrossfade() {
+  var src = audio.src, pos = audio.currentTime, vol = audio.volume;
+  var armed = _tailArmed;
+  _fading = false;
+  // tailStop() здесь звать нельзя: он сбросил бы прогретый хвост, ради
+  // которого всё и затевалось. Достаточно погасить прошлую рампу.
+  if (_tailTimer) { clearInterval(_tailTimer); _tailTimer = null; }
+  nextTrack();          // основной уходит на следующий трек и всплывает с нуля
+  // Хвост поднимаем ПОСЛЕ переключения: selectTrack сбрасывает рампы, и
+  // запущенный раньше хвост он бы тут же погасил.
+  if (!src || armed !== src || !tailAudio) return;   // не прогрет — лучше без перехода, чем с дырой
+  try {
+    // Перемотка и запуск мгновенны: элемент уже загружен tailArm().
+    try { tailAudio.currentTime = pos; } catch (e) {}
+    _tailTimer = rampEl(tailAudio, vol, 0, FADE_MS, tailStop);
+    var tp = tailAudio.play();
+    if (tp && tp.catch) tp.catch(function(){ tailStop(); });
+  } catch (e) { tailStop(); }
+}
+
+
+
+function radioKey() { return '_vc_radio_' + _curFolder; }
+
+function loadRadioCfg() {
+  var d = radioDefaults();
+  try {
+    var saved = JSON.parse(localStorage.getItem(radioKey()) || 'null');
+    if (saved) for (var k in d) if (saved[k] !== undefined) d[k] = saved[k];
+  } catch (e) {}
+  radioCfg = d;
+  return d;
+}
+
+function saveRadioCfg() { lsSet(radioKey(), JSON.stringify(radioCfg)); }
+
+// Жанры в тегах раздроблены на синонимы: «Alternative», «Alt. Rock»,
+// «Alternative & Indie», «Alternative/Experiment» — это одно и то же, и выбор
+// из трёх десятков таких пунктов был бы бесполезен. Схлопываем по корню.
+// Пары «корень -> во что сложить», в порядке приоритета.
+//
+// Корни намеренно короткие и обрезанные: в тегах одно и то же пишут как
+// «Alternative», «Alt. Rock», «Alternative & Indie», «alternetive» с опечаткой,
+// «альтернатива», «альтернативный рок». Полные слова ловили только часть из
+// них, префикс «altern» / «альтернат» ловит все. Русские и английские
+// написания ведут в одну корзину: библиотека смешанная.
+//
+// Порядок значим: «альтернативный рок» должен попасть в alternative, а не в
+// rock, поэтому более узкие корни идут раньше «поп» и «рок».
+var RADIO_GENRE_ROOTS = [
+  ['хип', 'hip-hop'], ['hip', 'hip-hop'], ['рэп', 'hip-hop'], ['рап', 'hip-hop'], ['rap', 'hip-hop'],
+  ['альтернат', 'alternative'], ['altern', 'alternative'], ['alt.', 'alternative'],
+  ['панк', 'punk'], ['punk', 'punk'],
+  ['метал', 'metal'], ['metal', 'metal'],
+  ['индастр', 'industrial'], ['industr', 'industrial'],
+  ['инди', 'indie'], ['indie', 'indie'],
+  ['электро', 'electronic'], ['electro', 'electronic'],
+  ['танц', 'dance'], ['dance', 'dance'], ['house', 'house'], ['techno', 'techno'], ['trance', 'trance'],
+  ['джаз', 'jazz'], ['jazz', 'jazz'],
+  ['класси', 'classical'], ['classic', 'classical'],
+  ['фолк', 'folk'], ['folk', 'folk'],
+  ['блюз', 'blues'], ['blues', 'blues'],
+  ['регги', 'reggae'], ['reggae', 'reggae'],
+  ['кантри', 'country'], ['country', 'country'],
+  ['шансон', 'chanson'], ['chanson', 'chanson'],
+  ['soul', 'soul'], ['r&b', 'r&b'], ['rnb', 'r&b'],
+  ['саундтр', 'soundtrack'], ['soundtrack', 'soundtrack'],
+  ['поп', 'pop'], ['pop', 'pop'],
+  ['рок', 'rock'], ['rock', 'rock']
+];
+
+function radioGenreKey(g) {
+  g = (g || '').toLowerCase().replace(/\s+/g, ' ').trim();
+  if (!g) return '';
+  for (var i = 0; i < RADIO_GENRE_ROOTS.length; i++) {
+    if (g.indexOf(RADIO_GENRE_ROOTS[i][0]) >= 0) return RADIO_GENRE_ROOTS[i][1];
+  }
+  return g;
+}
+
+function radioGenreBuckets() {
+  var by = {};
+  for (var i = 0; i < tracks.length; i++) {
+    var k = radioGenreKey(tracks[i].gen);
+    if (!k) continue;
+    if (!by[k]) by[k] = {key: k, label: tracks[i].gen, n: 0};
+    by[k].n++;
+  }
+  var out = [];
+  for (var k2 in by) out.push(by[k2]);
+  out.sort(function(a, b){ return b.n - a.n; });
+  return out;
+}
+
+// «Часто» и «редко» — это ДОЛЯ, а не порог по числу прослушиваний.
+//
+// Порог вырождается: если послушать все треки поровну, скажем по четыре раза,
+// то и верхний квартиль, и нижний равны четырём — условие «не меньше четырёх»
+// выполняется для всей библиотеки, и «часто слушаю» перестаёт что-либо
+// отбирать. С «редко» ровно та же беда с другой стороны.
+//
+// Поэтому берём верхнюю и нижнюю четверть рейтинга прослушанного. Это всегда
+// относительно активности самого пользователя: «часто» означает «чаще, чем
+// остальное у вас», а не «больше N раз».
+var RADIO_ACTIVITY_SHARE = 0.25;
+
+function radioActivityRank() {
+  var played = [];
+  for (var i = 0; i < tracks.length; i++) {
+    var n = playCountOf(tracks[i].file);
+    if (n) played.push({i: i, n: n, last: lastPlayedOf(tracks[i].file)});
+  }
+  // При равном числе прослушиваний «более частым» считаем то, что слушали
+  // недавнее, — иначе на ровном распределении порядок был бы случайным.
+  played.sort(function(a, b){ return (b.n - a.n) || (b.last - a.last); });
+  var k = Math.max(1, Math.round(played.length * RADIO_ACTIVITY_SHARE));
+  var top = {}, bottom = {};
+  for (var t = 0; t < k && t < played.length; t++) top[played[t].i] = true;
+  for (var b = 0; b < k && b < played.length; b++) {
+    var idx = played[played.length - 1 - b].i;
+    // На совсем короткой истории четверти сверху и снизу пересекаются —
+    // один и тот же трек не должен быть одновременно частым и редким.
+    if (!top[idx]) bottom[idx] = true;
+  }
+  return {top: top, bottom: bottom, played: played.length, share: k};
+}
+
+var RADIO_FORGOTTEN_DAYS = 90;
+
+function radioCandidates(cfg) {
+  cfg = cfg || radioCfg || radioDefaults();
+  var eras = eraIndexMap(), rank = radioActivityRank();
+  var cutoff = Date.now() / 1000 - RADIO_FORGOTTEN_DAYS * 86400;
+  var useEras = cfg.eras && cfg.eras.length;
+  var useGenres = cfg.genres && cfg.genres.length;
+  var out = [];
+  for (var i = 0; i < tracks.length; i++) {
+    var t = tracks[i];
+    if (cfg.cachedOnly || _isOffline) { if (!isTrackCached(t.file)) continue; }
+    if (cfg.lossless && !t.fmt) continue;
+    if (cfg.skipShort && t.dur && t.dur < 60) continue;
+    if (useEras && cfg.eras.indexOf(eras[i]) < 0) continue;
+    if (useGenres && cfg.genres.indexOf(radioGenreKey(t.gen)) < 0) continue;
+    // Год есть не у всех треков, поэтому фильтр по нему отсекает и безгодовые:
+    // иначе «музыка 2010-х» тихо притаскивала бы половину библиотеки без года.
+    if (cfg.yearFrom && (!t.yr || t.yr < cfg.yearFrom)) continue;
+    if (cfg.yearTo && (!t.yr || t.yr > cfg.yearTo)) continue;
+    var n = playCountOf(t.file);
+    if (cfg.activity === 'often' && !rank.top[i]) continue;
+    if (cfg.activity === 'rare' && !rank.bottom[i]) continue;
+    if (cfg.activity === 'never' && n !== 0) continue;
+    if (cfg.activity === 'forgotten' && (n === 0 || lastPlayedOf(t.file) > cutoff)) continue;
+    out.push(i);
+  }
+  return out;
+}
+
+// Затравка — не случайный трек каталога: станция должна начинаться с чего-то
+// своего. Берём взвешенно среди прослушанного внутри отбора, а если истории по
+// этим критериям нет — случайный из отбора.
+var _lastSeedArtist = '';
+
+function radioSeed(pool) {
+  // Половину запусков берём чистый случай. Только по истории станция всегда
+  // начинала с самого слушаемого артиста, и включение «рок» раз за разом
+  // открывалось одним и тем же именем.
+  var from;
+  if (Math.random() < 0.5) {
+    from = pool;
+  } else {
+    var weighted = [];
+    for (var i = 0; i < pool.length; i++) {
+      var n = playCountOf(tracks[pool[i]].file);
+      for (var r = 0; r < Math.min(4, n); r++) weighted.push(pool[i]);
+    }
+    from = weighted.length ? weighted : pool;
+  }
+  // Пара попыток не начать тем же артистом, что и в прошлый раз.
+  var pick = from[Math.floor(Math.random() * from.length)];
+  for (var tries = 0; tries < 6; tries++) {
+    var a = contNorm(tracks[pick] && tracks[pick].artist);
+    if (!a || a !== _lastSeedArtist) break;
+    pick = from[Math.floor(Math.random() * from.length)];
+  }
+  _lastSeedArtist = contNorm(tracks[pick] && tracks[pick].artist);
+  return pick;
+}
+
+function radioBatch() {
+  var pool = radioCandidates();
+  if (!pool.length) return [];
+  _artistSalt = {};        // каждая порция — своя перетасовка артистов
+  var list = buildContinuation(pool, radioCfg && radioCfg.variety);
+  list = (radioCfg && radioCfg.groupByArtist) ? groupTracksByArtist(list)
+                                              : spreadTracksByArtist(list);
+  return list;
+}
+
+// Разводит треки одного артиста, сохраняя порядок по релевантности.
+//
+// Ранжирование само по себе их слипает, и это не случайность: затравка даёт
+// своему артисту +3, перетасовка artistSalt постоянна внутри порции — то есть
+// поднимает разом ВСЕ треки удачливого артиста, — а квота пускает в порцию до
+// четырёх штук. Вместе получалось «три-четыре песни одного, потом столько же
+// другого», хотя группировка выключена.
+//
+// Идём по списку в порядке счёта и берём первый трек, чей артист не звучал
+// последние SPREAD_GAP позиций. Если подходящих нет, берём лучший из
+// оставшихся: иначе на библиотеке из пары артистов цикл не завершился бы.
+var SPREAD_GAP = 3;
+
+function spreadTracksByArtist(list) {
+  var out = [], pending = list.slice(), lastAt = {};
+  while (pending.length) {
+    var picked = -1;
+    for (var i = 0; i < pending.length; i++) {
+      var k = contNorm(tracks[pending[i]].artist) || '?';
+      var la = lastAt[k];
+      if (la === undefined || out.length - la >= SPREAD_GAP) { picked = i; break; }
+    }
+    if (picked < 0) picked = 0;
+    var idx = pending.splice(picked, 1)[0];
+    lastAt[contNorm(tracks[idx].artist) || '?'] = out.length;
+    out.push(idx);
+  }
+  return out;
+}
+
+// Порция блоками: подряд идут треки одного артиста, потом следующий. Порядок
+// артистов берём из уже посоленного списка, поэтому он каждый раз свой.
+function groupTracksByArtist(list) {
+  var byArtist = {}, order = [], i;
+  for (i = 0; i < list.length; i++) {
+    var k = contNorm(tracks[list[i]].artist) || '?';
+    if (!byArtist[k]) { byArtist[k] = []; order.push(k); }
+    byArtist[k].push(list[i]);
+  }
+  var out = [];
+  for (i = 0; i < order.length; i++) out = out.concat(byArtist[order[i]]);
+  return out;
+}
+
+function startRadio() {
+  if (!tracks.length) return;
+  var pool = radioCandidates();
+  if (!pool.length) { showToast('Под эти критерии ничего не нашлось'); return; }
+  radioOn = true;
+  var seed = radioSeed(pool);
+  playQueue = [seed];
+  playQueuePos = 0;
+  playQueue = playQueue.concat(buildContinuation(pool, radioCfg.variety));
+  syncRadioBtn();
+  selectTrack(seed, true);
+  showToast('Радиостанция: ' + radioSummary());
+}
+
+function stopRadio() {
+  if (!radioOn) return;
+  radioOn = false;
+  fadeCancel(true);        // станция выключена — громкость обратно на место
+  tailStop();
+  syncRadioBtn();
+}
+
+// Правка критериев на ходу: сыгранное и текущий трек не трогаем, пересобираем
+// только хвост — иначе изменение настроек обрывало бы играющую песню.
+function applyRadioChanges() {
+  saveRadioCfg();
+  if (!radioOn) { startRadio(); return; }
+  var pool = radioCandidates();
+  if (!pool.length) { showToast('Под эти критерии ничего не нашлось'); return; }
+  playQueue = playQueue.slice(0, playQueuePos + 1).concat(buildContinuation(pool, radioCfg.variety));
+  showToast('Радиостанция: ' + radioSummary());
+}
+
+function radioSummary() {
+  var c = radioCfg || radioDefaults(), parts = [];
+  if (c.eras && c.eras.length) parts.push(c.eras.slice().sort().reverse().join(', '));
+  if (c.genres && c.genres.length) parts.push(c.genres.join(', '));
+  if (c.yearFrom || c.yearTo) parts.push((c.yearFrom || '…') + '–' + (c.yearTo || '…'));
+  var act = {often: 'часто слушаю', rare: 'редко слушаю', never: 'ещё не слушал',
+             forgotten: 'давно не слушал'}[c.activity];
+  if (act) parts.push(act);
+  if (c.lossless) parts.push('lossless');
+  return parts.length ? parts.join(' · ') : 'вся библиотека';
+}
+
+function syncRadioBtn() {
+  var b = document.getElementById('radioBtn');
+  if (b) b.style.display = radioOn ? '' : 'none';
+  syncRadioGlow();
+  if (activeTab === 'playlists') renderPlaylists();
+}
+
+// ── Окно критериев ──
+// Живой счётчик подходящих треков обязателен: жанр есть далеко не у всех
+// файлов, и без него пользователь не понимал бы, почему станция вдруг стала
+// крутить полтора альбома.
+function openRadioModal() {
+  if (!tracks.length) { showToast('Сначала откройте каталог'); return; }
+  if (!radioCfg) loadRadioCfg();
+  renderRadioBody();
+  document.getElementById('radioGo').textContent = radioOn ? 'Обновить' : 'Включить';
+  document.getElementById('radioOverlay').classList.add('show');
+}
+
+function closeRadioModal() { document.getElementById('radioOverlay').classList.remove('show'); }
+
+function radioChip(on, label, n, onclick) {
+  return '<button class="radio-chip' + (on ? ' on' : '') + '" onclick="' + onclick + '">'
+    + esc(label) + (n !== null && n !== undefined ? '<span class="n">' + n + '</span>' : '') + '</button>';
+}
+
+function renderRadioBody() {
+  var c = radioCfg, html = '', i;
+
+  // Периоды показываем только когда они размечены — иначе это пустой раздел.
+  if (eraConfig.enabled && eraConfig.eras && eraConfig.eras.length) {
+    var years = eraConfig.eras.map(function(e){ return e.year; }).sort().reverse();
+    html += '<div class="radio-group"><div class="radio-group-title">Периоды прослушивания</div><div class="radio-chips">';
+    for (i = 0; i < years.length; i++) {
+      html += radioChip(c.eras.indexOf(years[i]) >= 0, String(years[i]),
+                        eraTrackFiles(eraConfig.eras.filter(function(e){ return e.year === years[i]; })[0]).length,
+                        'radioToggle(\'eras\',' + years[i] + ')');
+    }
+    html += '</div></div>';
+  }
+
+  // Потолка по числу жанров нет намеренно: они выводятся из тегов при каждой
+  // отрисовке, и новые — в том числе дозаполненные прогоном метаданных —
+  // должны появляться здесь сами, а не упираться в «первые N». Зато редкие
+  // прячем за отдельным чипом: жанров с одной-двумя песнями много, и в общем
+  // ряду они только мешают выбрать нужное.
+  var buckets = radioGenreBuckets();
+  if (buckets.length) {
+    html += '<div class="radio-group"><div class="radio-group-title">Жанры</div><div class="radio-chips">';
+    var small = 0;
+    for (i = 0; i < buckets.length; i++) {
+      var b = buckets[i];
+      var picked = c.genres.indexOf(b.key) >= 0;
+      // Выбранный жанр показываем всегда, даже если он редкий: иначе снять
+      // такой фильтр было бы нечем — чипа на экране просто нет.
+      if (!picked && b.n < RADIO_GENRE_MIN) {
+        small++;
+        if (!_radioGenresOpen) continue;
+      }
+      html += radioChip(picked, b.key, b.n,
+                        'radioToggle(\'genres\',\'' + b.key.replace(/'/g, "\\'") + '\')');
+    }
+    // Кнопка — такой же чип и всегда последняя, в обоих состояниях списка.
+    if (small) {
+      html += radioChip(false, _radioGenresOpen ? 'скрыть' : 'ещё ' + small, null, 'radioMoreGenres()');
+    }
+    html += '</div></div>';
+  }
+
+  html += '<div class="radio-group"><div class="radio-group-title">Что играть</div><div class="radio-chips">';
+  var acts = [['any', 'любые'], ['often', 'часто слушаю'], ['rare', 'редко слушаю'],
+              ['never', 'ещё не слушал'], ['forgotten', 'давно не слушал']];
+  for (i = 0; i < acts.length; i++) {
+    html += radioChip(c.activity === acts[i][0], acts[i][1], null, 'radioSet(\'activity\',\'' + acts[i][0] + '\')');
+  }
+  html += '</div></div>';
+
+  html += '<div class="radio-group"><div class="radio-group-title">Характер подбора</div><div class="radio-chips">';
+  var vars_ = [['familiar', 'чаще любимое'], ['balanced', 'вперемешку'], ['surprise', 'больше нового']];
+  for (i = 0; i < vars_.length; i++) {
+    html += radioChip(c.variety === vars_[i][0], vars_[i][1], null, 'radioSet(\'variety\',\'' + vars_[i][0] + '\')');
+  }
+  html += '</div></div>';
+
+  html += '<div class="radio-group"><div class="radio-group-title">Год выпуска</div><div class="radio-years">'
+    + '<select id="radioYearFrom" onchange="radioYears()">' + radioYearOptions(c.yearFrom) + '</select>'
+    + '<span style="color:rgba(255,255,255,0.25)">–</span>'
+    + '<select id="radioYearTo" onchange="radioYears()">' + radioYearOptions(c.yearTo) + '</select>'
+    + '</div></div>';
+
+  html += '<div class="radio-group"><div class="radio-group-title">Дополнительно</div><div class="radio-chips">'
+    + radioChip(c.lossless, 'только lossless', null, 'radioFlip(\'lossless\')')
+    + radioChip(c.cachedOnly, 'только из кэша', null, 'radioFlip(\'cachedOnly\')')
+    + radioChip(c.groupByArtist, 'блоками по артистам', null, 'radioFlip(\'groupByArtist\')')
+    // На iOS audio.volume не действует, поэтому там опции нет вовсе — обещать
+    // то, чего не будет, хуже, чем не предлагать.
+    + (_volumeWorks ? radioChip(c.fade, 'плавные переходы', null, 'radioFlip(\'fade\')') : '')
+    + '</div></div>';
+
+  document.getElementById('radioBody').innerHTML = html;
+  radioCountUpdate();
+}
+
+// Годы берём из библиотеки, а не диапазоном «от 1900»: вводить руками год,
+// которого в каталоге нет, бессмысленно.
+function radioYearOptions(selected) {
+  var seen = {}, years = [], i;
+  for (i = 0; i < tracks.length; i++) if (tracks[i].yr) seen[tracks[i].yr] = 1;
+  for (var y in seen) years.push(parseInt(y, 10));
+  years.sort(function(a, b){ return b - a; });
+  var h = '<option value="0">любой</option>';
+  for (i = 0; i < years.length; i++) {
+    h += '<option value="' + years[i] + '"' + (selected === years[i] ? ' selected' : '') + '>' + years[i] + '</option>';
+  }
+  return h;
+}
+
+// Случайные критерии: система решает сама. Наугад легко получить «джаз +
+// lossless + 2003 год» и три трека, поэтому перебираем варианты и берём первый,
+// под который набирается достойный пул; если ни один не набрал — самый широкий
+// из опробованных.
+var RADIO_RANDOM_MIN = 40;
+
+function radioRandomize() {
+  var buckets = radioGenreBuckets();
+  var eraYears = (eraConfig.enabled && eraConfig.eras)
+    ? eraConfig.eras.map(function(e){ return e.year; }) : [];
+  var acts = ['any', 'any', 'often', 'rare', 'never', 'forgotten'];
+  var vars_ = ['familiar', 'balanced', 'surprise'];
+  var best = null, bestN = -1;
+  for (var attempt = 0; attempt < 40; attempt++) {
+    var c = radioDefaults();
+    c.variety = vars_[Math.floor(Math.random() * vars_.length)];
+    var roll = Math.random();
+    if (buckets.length && roll < 0.45) {
+      c.genres = [buckets[Math.floor(Math.random() * Math.min(buckets.length, 6))].key];
+    } else if (eraYears.length && roll < 0.75) {
+      var pick = eraYears[Math.floor(Math.random() * eraYears.length)];
+      c.eras = [pick];
+      // Иногда два соседних периода — так подборка выходит шире и живее.
+      if (eraYears.length > 1 && Math.random() < 0.4) {
+        var pick2 = eraYears[Math.floor(Math.random() * eraYears.length)];
+        if (pick2 !== pick) c.eras.push(pick2);
+      }
+    } else {
+      c.activity = acts[Math.floor(Math.random() * acts.length)];
+    }
+    var n = radioCandidates(c).length;
+    if (n >= RADIO_RANDOM_MIN) { best = c; bestN = n; break; }
+    if (n > bestN) { best = c; bestN = n; }
+  }
+  if (!best) return;
+  radioCfg = best;
+  renderRadioBody();
+  showToast('Случайные критерии: ' + radioSummary());
+}
+
+function radioCountUpdate() {
+  var n = radioCandidates().length;
+  var el = document.getElementById('radioCount');
+  el.className = 'radio-count' + (n ? '' : ' empty');
+  el.innerHTML = n
+    ? 'Подходит <b>' + n + '</b> ' + relPlural(n, 'трек', 'трека', 'треков') + ' из ' + tracks.length
+    : '<b>Ни одного трека</b> – критерии слишком узкие';
+  document.getElementById('radioGo').disabled = !n;
+}
+
+function radioToggle(field, value) {
+  var arr = radioCfg[field], i = arr.indexOf(value);
+  if (i >= 0) arr.splice(i, 1); else arr.push(value);
+  renderRadioBody();
+}
+
+function radioSet(field, value) { radioCfg[field] = value; renderRadioBody(); }
+
+function radioMoreGenres() { _radioGenresOpen = !_radioGenresOpen; renderRadioBody(); }
+function radioFlip(field) { radioCfg[field] = !radioCfg[field]; renderRadioBody(); }
+
+function radioYears() {
+  radioCfg.yearFrom = parseInt(document.getElementById('radioYearFrom').value, 10) || 0;
+  radioCfg.yearTo = parseInt(document.getElementById('radioYearTo').value, 10) || 0;
+  radioCountUpdate();
+}
+
+function radioApply() {
+  closeRadioModal();
+  applyRadioChanges();
+}
+
+// Перемотки у отрывка нет — он и так тридцатисекундный, поэтому ⏮/⏭ ходят по
+// трекам релиза по кругу.
+function stepPreview(dir) {
+  if (!_previewTracks.length) return;
+  var n = _previewTrack < 0 ? 0 : _previewTrack + dir;
+  if (n < 0) n = _previewTracks.length - 1;
+  if (n >= _previewTracks.length) n = 0;
+  _previewTrack = -1;          // иначе playPreview посчитает это повторным нажатием и остановит
+  playPreview(n);
+}
+
+// ── Автопродолжение очереди ──
+// Считается целиком по локальной библиотеке: ни одного запроса в сеть, поэтому
+// работает и офлайн. Всё, что нужно, уже есть — артист, жанр, год, разметка
+// периодов и история прослушиваний.
+var CONT_BATCH = 25;
+var CONT_PER_ARTIST = 4;     // иначе продолжение вырождается в дискографию одного артиста
+var CONT_PER_ARTIST_GROUPED = 7;  // при группировке блоки должны быть заметными
+var _eraByIndex = null;      // индекс трека -> год периода; строится по разметке
+
+function eraIndexMap() {
+  if (_eraByIndex) return _eraByIndex;
+  _eraByIndex = {};
+  if (eraConfig.enabled && eraConfig.eras) {
+    for (var e = 0; e < eraConfig.eras.length; e++) {
+      var r = resolveEra(eraConfig.eras[e]);
+      for (var i = r.from; i <= r.to && i < tracks.length; i++) _eraByIndex[i] = eraConfig.eras[e].year;
+    }
+  }
+  return _eraByIndex;
+}
+
+function contNorm(v) { return (v || '').toString().toLowerCase().trim(); }
+
+// Случайный вес артиста, постоянный внутри одной порции и новый в следующей.
+// Без него порядок диктовался только близостью и историей, и станция раз за
+// разом открывалась одним и тем же именем — «будто по шаблону».
+var _artistSalt = {};
+
+function artistSalt(key) {
+  if (_artistSalt[key] === undefined) _artistSalt[key] = Math.random();
+  return _artistSalt[key];
+}
+
+// pool — индексы, из которых разрешено выбирать (радиостанция передаёт свой
+// отбор по критериям). Без него берём всю библиотеку.
+function buildContinuation(pool, variety) {
+  if (!tracks.length) return [];
+  var seedIdx = playQueue.length ? playQueue[playQueue.length - 1] : currentIdx;
+  var seed = tracks[seedIdx];
+  if (!seed) return [];
+  // Недавно игравшее исключаем, иначе продолжение крутит один и тот же круг.
+  var recent = {};
+  for (var q = Math.max(0, playQueue.length - 150); q < playQueue.length; q++) recent[playQueue[q]] = true;
+  var eras = eraIndexMap();
+  // Жанр сводим к тому же корню, что и в критериях радио: сырыми строками
+  // «Alternative» и «Alt. Rock» считались разными жанрами и вес не давали.
+  var seedArtist = contNorm(seed.artist), seedGenre = radioGenreKey(seed.gen);
+  var seedEra = eras[seedIdx], seedYear = seed.yr || 0;
+  // «Знакомое» усиливает вес истории, «сюрприз» — случайности. По умолчанию
+  // поровну, как было до появления радио.
+  var rnd = variety === 'surprise' ? 3.5 : (variety === 'familiar' ? 0.5 : 1.2);
+  var histW = variety === 'familiar' ? 3 : (variety === 'surprise' ? 0.5 : 1.5);
+  var scored = [];
+  var list = pool || null;
+  var total = list ? list.length : tracks.length;
+  for (var k0 = 0; k0 < total; k0++) {
+    var i = list ? list[k0] : k0;
+    if (recent[i]) continue;
+    var t = tracks[i];
+    if (_isOffline && !isTrackCached(t.file)) continue;   // офлайн играем только кэш
+    var sc = Math.random() * rnd;                          // без этого продолжение всегда одинаковое
+    if (seedArtist && contNorm(t.artist) === seedArtist) sc += 3;
+    if (seedEra && eras[i] === seedEra) sc += 1.5;
+    if (seedGenre && radioGenreKey(t.gen) === seedGenre) sc += 1;
+    if (seedYear && t.yr && Math.abs(t.yr - seedYear) <= 2) sc += 0.5;
+    var n = playCountOf(t.file);
+    sc += n ? Math.min(histW, Math.log(1 + n) / Math.LN2 / 2 * (histW / 1.5)) : 0.3;
+    // Соль только для радио: обычному продолжению очереди перетасовка артистов
+    // ни к чему, там важна близость к текущему треку.
+    if (list) sc += (artistSalt(contNorm(t.artist) || '?') - 0.5) * 2.2;
+    scored.push({i: i, sc: sc});
+  }
+  scored.sort(function(a, b){ return b.sc - a.sc; });
+  // Квота на артиста: без неё вес «тот же артист» перевешивал всё остальное, и
+  // после трека Oxxxymiron продолжение целиком состояло из Oxxxymiron. Радио
+  // так себя не ведёт — родственное должно быть первым, но не единственным.
+  var out = [], perArtist = {};
+  for (var pass = 0; pass < 2 && out.length < CONT_BATCH; pass++) {
+    for (var k = 0; k < scored.length && out.length < CONT_BATCH; k++) {
+      var idx = scored[k].i;
+      if (out.indexOf(idx) >= 0) continue;
+      var a = contNorm(tracks[idx].artist) || '?';
+      // Второй проход добирает остаток, если квоты не дали набрать порцию.
+      var quota = (radioOn && radioCfg && radioCfg.groupByArtist) ? CONT_PER_ARTIST_GROUPED : CONT_PER_ARTIST;
+      if (pass === 0 && (perArtist[a] || 0) >= quota) continue;
+      perArtist[a] = (perArtist[a] || 0) + 1;
+      out.push(idx);
+    }
+  }
+  return out;
 }
 
 // ── Timeline scrub (tap + drag, mouse & touch) ──
@@ -5928,7 +7659,12 @@ function nextTrack() {
   wrap.addEventListener('pointercancel', end);
 })();
 
-function setVolume(v) { audio.volume = v; }
+function setVolume(v) {
+  _userVolume = parseFloat(v);
+  // Двинули ползунок посреди затухания — слушаем человека, а не рампу.
+  if (_fadeTimer) fadeCancel(false);
+  audio.volume = _userVolume;
+}
 
 function updateActiveHighlight() {
   // Remove old active
@@ -5961,6 +7697,83 @@ function scrollToActive() {
   }
 }
 
+// ── Цвет рамки радиостанции ──
+// Три оттенка из одного среднего цвета обложки: базовый и два сдвига по кругу.
+// Через HSL, а не сложением к RGB, — иначе тёмная или блёклая обложка давала бы
+// грязно-серую рамку вместо переливов.
+function rgbToHsl(r, g, b) {
+  r /= 255; g /= 255; b /= 255;
+  var mx = Math.max(r, g, b), mn = Math.min(r, g, b), d = mx - mn;
+  var h = 0, l = (mx + mn) / 2, sat = 0;
+  if (d) {
+    sat = l > 0.5 ? d / (2 - mx - mn) : d / (mx + mn);
+    if (mx === r) h = ((g - b) / d + (g < b ? 6 : 0));
+    else if (mx === g) h = (b - r) / d + 2;
+    else h = (r - g) / d + 4;
+    h *= 60;
+  }
+  return [h, sat, l];
+}
+
+function hslCss(h, sat, l) {
+  h = ((h % 360) + 360) % 360;
+  return 'hsl(' + Math.round(h) + ',' + Math.round(Math.min(1, Math.max(0, sat)) * 100)
+       + '%,' + Math.round(Math.min(1, Math.max(0, l)) * 100) + '%)';
+}
+
+var ACCENT_MS = 1600;
+var _accentCur = null;        // [h, s, l], откуда ведём переход
+var _accentTimer = null;
+
+function applyAccent(h, sat, lig) {
+  var root = document.documentElement.style;
+  root.setProperty('--rg1', hslCss(h, sat, lig));
+  root.setProperty('--rg2', hslCss(h + 55, sat, lig + 0.04));
+  root.setProperty('--rg3', hslCss(h - 45, sat, lig - 0.03));
+}
+
+function setRadioAccent(r, g, b) {
+  var hsl = rgbToHsl(r, g, b);
+  // Обложки часто малонасыщенные, а рамка должна читаться — поднимаем
+  // насыщенность и держим светлоту в узком коридоре.
+  var target = [hsl[0],
+                Math.max(0.55, Math.min(0.9, hsl[1] + 0.3)),
+                Math.max(0.5, Math.min(0.68, hsl[2] + 0.18))];
+  if (!_accentCur) {                       // первый трек — ставим сразу
+    _accentCur = target.slice();
+    applyAccent(target[0], target[1], target[2]);
+    return;
+  }
+  // Цвет переводим плавно: смена трека с другой обложкой иначе била по глазам
+  // резким скачком оттенка. Пользовательские свойства сами не анимируются
+  // (для transition им нужен @property), поэтому считаем переход вручную.
+  var from = _accentCur.slice(), t0 = Date.now();
+  // По короткой дуге круга: из 350° в 10° прямая интерполяция прокрутила бы
+  // весь спектр в обратную сторону.
+  var dh = ((target[0] - from[0] + 540) % 360) - 180;
+  if (_accentTimer) clearInterval(_accentTimer);
+  _accentTimer = setInterval(function() {
+    var k = Math.min(1, (Date.now() - t0) / ACCENT_MS);
+    var h = from[0] + dh * k;
+    var sv = from[1] + (target[1] - from[1]) * k;
+    var lv = from[2] + (target[2] - from[2]) * k;
+    applyAccent(h, sv, lv);
+    _accentCur = [h, sv, lv];
+    if (k >= 1) {
+      clearInterval(_accentTimer); _accentTimer = null;
+      _accentCur = target.slice();
+    }
+  }, 40);
+}
+
+function syncRadioGlow() {
+  var ids = ['radioGlow', 'radioBloom', 'radioHalo'];
+  for (var i = 0; i < ids.length; i++) {
+    var el = document.getElementById(ids[i]);
+    if (el) el.classList.toggle('on', radioOn);
+  }
+}
+
 function extractColor(img) {
   try {
     var canvas = document.createElement('canvas');
@@ -5975,6 +7788,9 @@ function extractColor(img) {
       for (var i = 0; i < data.length; i += 16) {
         r += data[i]; g += data[i+1]; b += data[i+2]; count++;
       }
+      // Рамке радио нужен неприглушённый цвет, поэтому берём среднее до
+      // затемнения: фону оно идёт с коэффициентом 0.45, а свечению — как есть.
+      setRadioAccent(r / count, g / count, b / count);
       r = Math.floor(r / count * 0.45);
       g = Math.floor(g / count * 0.45);
       b = Math.floor(b / count * 0.45);
@@ -6020,26 +7836,47 @@ function initBgCanvas() {
 
 function resizeBgCanvas() {
   if (!bgCvs) return;
-  bgCvs.width = Math.floor(window.innerWidth / 2);
-  bgCvs.height = Math.floor(window.innerHeight / 2);
+  // Треть, а не половина: на холсте только размытые градиенты, разглядеть
+  // разницу невозможно, а пикселей становится вдвое с лишним меньше. Каждый
+  // кадр — пять заливок во весь холст, поэтому цена прямо пропорциональна
+  // площади: при окне 1512×950 это падение с 54 до 24 млн операций в секунду.
+  bgCvs.width = Math.floor(window.innerWidth / 3);
+  bgCvs.height = Math.floor(window.innerHeight / 3);
 }
 
 var _bgLastFrame = 0;
+var _bgColorSettling = false;   // пока цвет фона доезжает — рисуем чаще
+var _bgForceDraw = true;        // перерисовать один кадр даже в статичном режиме
+var _armAtRest = false;
 
 function drawBg(t) {
   requestAnimationFrame(drawBg);
   if (!bgCtx) return;
-  // Throttle to ~30fps (33ms) and skip when page is hidden
-  if (t - _bgLastFrame < 33 || document.hidden) return;
+  // Движение пятен привязано ко времени (s = t * 0.0002), а не к номеру кадра,
+  // поэтому частоту можно снижать без изменения картинки — меняется только
+  // плавность. На паузе хватает ~12 кадров в секунду: пятна дрейфуют медленно,
+  // разницы не видно, а четыре радиальных градиента на кадр — постоянная
+  // работа для видеоядра.
+  // Статичный фон: пятна замирают там, где были, но градиент под цвет обложки
+  // продолжает жить — при смене трека цвет доезжает и кадр перерисовывается.
+  if (perfCfg.bgStatic && !_bgColorSettling && !_bgForceDraw) return;
+  _bgForceDraw = false;
+  var need = (isPlaying || _bgColorSettling) ? 33 : 80;
+  if (t - _bgLastFrame < need || !_uiActive) return;
+  var elapsed = _bgLastFrame ? (t - _bgLastFrame) : need;
   _bgLastFrame = t;
 
   var w = bgCvs.width, h = bgCvs.height;
   var s = t * 0.0002;
 
-  // Lerp base color
-  bgBaseR += (bgTargetR - bgBaseR) * 0.04;
-  bgBaseG += (bgTargetG - bgBaseG) * 0.04;
-  bgBaseB += (bgTargetB - bgBaseB) * 0.04;
+  // Переход цвета считаем по прошедшему времени, иначе на редких кадрах он
+  // растянулся бы: раньше шаг был фиксированный, «на кадр».
+  var k = Math.min(1, 0.04 * (elapsed / 33));
+  bgBaseR += (bgTargetR - bgBaseR) * k;
+  bgBaseG += (bgTargetG - bgBaseG) * k;
+  bgBaseB += (bgTargetB - bgBaseB) * k;
+  _bgColorSettling = Math.abs(bgTargetR - bgBaseR) + Math.abs(bgTargetG - bgBaseG)
+                   + Math.abs(bgTargetB - bgBaseB) > 1.5;
 
   bgCtx.fillStyle = 'rgb('+Math.round(bgBaseR)+','+Math.round(bgBaseG)+','+Math.round(bgBaseB)+')';
   bgCtx.fillRect(0, 0, w, h);
@@ -6062,6 +7899,7 @@ function drawBg(t) {
 
 function setBgPlaying(r, g, b) {
   bgTargetR = r; bgTargetG = g; bgTargetB = b;
+  _bgForceDraw = true;
   // Contrasting orbs: shifted hues, brighter, more opaque
   if (bgOrbs.length >= 4) {
     // Warm highlight (shifted toward yellow/pink)
@@ -6278,33 +8116,223 @@ function initPlaybackContext() {
   window.addEventListener('pagehide', function() { savePlaybackContext(true); });
 }
 
+// ── Опыт: восстановление застрявшего конвейера ──
+// Замер: после плея с локскрина элемент отдаёт play и playing, play()
+// разрешается, readyState=4 — а currentTime стоит намертво и не оживает даже
+// при возврате на передний план. Перемотка не помогла, удержание сессии
+// сделало хуже (play() повисал без ответа). Остаётся пересборка.
+// Шаг 1 — цикл pause/play, самый дешёвый. Шаг 2 — load(), который поднимает
+// конвейер заново. src не трогаем ни на одном шаге: именно подмена src
+// однажды увела Пункт управления другому приложению.
+// По умолчанию включено: без пересборки трек остаётся замороженным даже
+// после разблокировки, с ней — доигрывает с того же места.
+var _recoverOn = true;
+try { _recoverOn = localStorage.getItem('_vc_recover') !== '0'; } catch (e) {}
+var _stuckAt = -1;   // позиция, на которой застряло возобновление; -1 — всё в порядке
+
+function recoverCycle(t0) {
+  try { audio.pause(); } catch (e) {}
+  var p = audio.play();
+  mediaLog('rec:cycle', mediaLogState());
+  if (p && p.then) {
+    p.then(function() { mediaLog('rec:cycle>ok'); },
+           function(err) { mediaLog('rec:cycle>rej', (err && err.name) || '?'); });
+  }
+  setTimeout(function() {
+    if (audio.currentTime > t0 + 0.05) { mediaLog('rec:cycle>moving', mediaLogState()); return; }
+    recoverReload(t0);
+  }, 800);
+}
+
+function recoverReload(t0) {
+  mediaLog('rec:load', mediaLogState());
+  var fired = false;
+  function onMeta() {
+    audio.removeEventListener('loadedmetadata', onMeta);
+    if (fired) return;
+    fired = true;
+    try { audio.currentTime = t0; } catch (e) {}
+    var p = audio.play();
+    mediaLog('rec:load>play', mediaLogState());
+    if (p && p.then) {
+      p.then(function() { mediaLog('rec:load>ok'); },
+             function(err) { mediaLog('rec:load>rej', (err && err.name) || '?'); });
+    }
+    setTimeout(function() {
+      mediaLog(audio.currentTime > t0 + 0.05 ? 'rec:load>moving' : 'rec:load>frozen', mediaLogState());
+    }, 900);
+  }
+  audio.addEventListener('loadedmetadata', onMeta);
+  try { audio.load(); } catch (e) { mediaLog('rec:load>throw', e.name || '?'); }
+}
+
+function renderRecoverBtn() {
+  var b = document.getElementById('recoverBtn');
+  if (b) b.textContent = 'Пересборка при застревании: ' + (_recoverOn ? 'вкл' : 'выкл');
+}
+
+function toggleRecover() {
+  _recoverOn = !_recoverOn;
+  lsSet('_vc_recover', _recoverOn ? '1' : '0');
+  if (!_recoverOn) _stuckAt = -1;
+  mediaLog('rec:' + (_recoverOn ? 'enabled' : 'disabled'));
+  renderRecoverBtn();
+}
+
+// ── Проверка возобновления ──
+// Замер показал: после плея с локскрина элемент отдаёт play и playing,
+// play() разрешается, readyState=4 — а currentTime стоит намертво. Проверка
+// идёт всегда: сам факт «часы стоят» нужно видеть в журнале в любом случае.
+function resumeWatch() {
+  var t0 = audio.currentTime;
+  setTimeout(function() {
+    if (audio.paused) return;
+    if (audio.currentTime > t0 + 0.05) { _stuckAt = -1; mediaLog('resume:ok', mediaLogState()); return; }
+    mediaLog('resume:stuck', mediaLogState());
+    if (!_recoverOn) return;
+    // В фоне пересобирать нечего: load() там встаёт на readyState=1 и висит
+    // до разблокировки. Запоминаем позицию и чиним, когда экран вернётся.
+    if (document.hidden) { _stuckAt = t0; mediaLog('rec:deferred'); return; }
+    recoverCycle(t0);
+  }, 700);
+}
+
+// ── Журнал медиа-событий ──
+// iOS вправе заморозить standalone-приложение, у которого не осталось
+// играющего звука. Регистрация в Пункте управления при этом живёт, кнопки
+// нажимаются, но исполнять команду уже некому. Отличить это от «обработчик
+// отработал, а play() отклонили» без внешнего отладчика нельзя, поэтому
+// события пишутся на самом устройстве и читаются после разблокировки.
+var MEDIA_LOG_MAX = 80;
+var _mediaLog = null;
+
+function mediaLogAll() {
+  if (_mediaLog) return _mediaLog;
+  try { _mediaLog = JSON.parse(localStorage.getItem('_vc_medialog') || '[]'); }
+  catch (e) { _mediaLog = []; }
+  if (!_mediaLog || !_mediaLog.length) _mediaLog = _mediaLog || [];
+  return _mediaLog;
+}
+
+function mediaLog(tag, extra) {
+  var log = mediaLogAll();
+  var rec = {t: Date.now(), e: tag};
+  if (extra) rec.x = extra;
+  log.push(rec);
+  while (log.length > MEDIA_LOG_MAX) log.shift();
+  lsSet('_vc_medialog', JSON.stringify(log));
+}
+
+// Снимок, по которому потом разбирают запись. hidden отличает блокировку
+// и сворачивание от простой потери фокуса.
+function mediaLogState() {
+  var u = audio.currentSrc || audio.src || '';
+  // Источник решает всё: из офлайн-кэша играем blob:, без кэша — поток с
+  // сервера. Пока это не различали, PWA и браузер сравнивались нечестно.
+  var kind = !u ? 'none' : (u.indexOf('blob:') === 0 ? 'blob' : 'http');
+  return (document.hidden ? 'hid' : 'vis')
+    + ' p=' + (audio.paused ? 1 : 0)
+    + ' rs=' + audio.readyState
+    + ' ' + kind
+    + ' t=' + (audio.currentTime || 0).toFixed(1)
+    + ' v=' + audio.volume + (audio.muted ? ' MUTED' : '');
+}
+
+// Часы элемента при заблокированном экране. Если звука нет, а t растёт —
+// элемент играет «в никуда», и лечить надо маршрут звука, а не запуск.
+var _mediaTickAt = 0;
+
+// События элемента и жизненного цикла страницы. Отдельным слушателем, а не
+// внутри существующих, чтобы диагностика не влияла на логику.
+function initMediaLogging() {
+  var evs = ['play', 'pause', 'playing', 'waiting', 'stalled', 'suspend', 'ended', 'error'];
+  for (var i = 0; i < evs.length; i++) {
+    (function(name) {
+      audio.addEventListener(name, function() {
+        var extra = mediaLogState();
+        if (name === 'error' && audio.error) extra = 'code=' + audio.error.code + ' ' + extra;
+        mediaLog('audio:' + name, extra);
+      });
+    })(evs[i]);
+  }
+  document.addEventListener('visibilitychange', function() {
+    mediaLog(document.hidden ? 'page:hidden' : 'page:visible', mediaLogState());
+    if (document.hidden || _stuckAt < 0) return;
+    var t0 = _stuckAt;
+    _stuckAt = -1;
+    if (audio.paused || audio.currentTime > t0 + 0.05) return;   // ожило само
+    mediaLog('rec:onvisible', mediaLogState());
+    recoverCycle(t0);
+  });
+  window.addEventListener('pagehide', function() { mediaLog('page:pagehide', mediaLogState()); });
+  // Page Lifecycle: в Safari может не поддерживаться, но если придёт - это
+  // прямое доказательство заморозки.
+  document.addEventListener('freeze', function() { mediaLog('page:freeze', mediaLogState()); });
+  document.addEventListener('resume', function() { mediaLog('page:resume', mediaLogState()); });
+}
+
+// Перезапуск текущего трека без потери места. Голый selectTrack начинает с
+// нуля: он обнуляет _pendingSeek, и отказ play() в фоне откатывал песню в
+// начало — в журналах это видно как t=0.0 сразу после AbortError.
+function reloadCurrentKeepingPos() {
+  if (currentIdx < 0) return;
+  var pos = audio.currentTime || 0;
+  selectTrack(currentIdx, true);
+  if (pos > 1) _pendingSeek = pos;
+}
+
+// Регистрация обработчиков виджета молчала в try/catch: отказ iOS выглядел бы
+// как отсутствие кнопок, и причину было бы не отличить от чего угодно ещё.
+function setMediaAction(name, fn) {
+  try {
+    navigator.mediaSession.setActionHandler(name, fn);
+  } catch (e) {
+    mediaLog('ms:reject', name + ' ' + ((e && e.name) || '?'));
+  }
+}
+
 function initMediaSession() {
   if (!('mediaSession' in navigator)) return;
   navigator.mediaSession.setActionHandler('play', function() {
-    if (currentIdx < 0 && tracks.length > 0) { selectTrack(0, true); return; }
-    if (currentIdx < 0) return;
+    mediaLog('ms:play', mediaLogState());
+    if (currentIdx < 0 && tracks.length > 0) { mediaLog('ms:play>first'); selectTrack(0, true); return; }
+    if (currentIdx < 0) { mediaLog('ms:play>noidx'); return; }
     // A restored track may have lost its src (iOS unloads media in suspended
     // pages), in which case play() would silently reject — reload it instead.
-    if (!audio.currentSrc && !audio.src) { selectTrack(currentIdx, true); return; }
+    if (!audio.currentSrc && !audio.src) { mediaLog('ms:play>reload'); reloadCurrentKeepingPos(); return; }
     var p = audio.play();
-    if (p && p.catch) p.catch(function() { selectTrack(currentIdx, true); });
+    if (p && p.then) {
+      p.then(function() { mediaLog('ms:play>ok', mediaLogState()); resumeWatch(); },
+             function(err) {
+               mediaLog('ms:play>reject', (err && err.name) || '?');
+               reloadCurrentKeepingPos();
+             });
+    }
     setPlayState(true);
   });
   navigator.mediaSession.setActionHandler('pause', function() {
+    mediaLog('ms:pause', mediaLogState());
+    _stuckAt = -1;
     audio.pause(); setPlayState(false);
   });
-  navigator.mediaSession.setActionHandler('previoustrack', function() { prevTrack(); });
-  navigator.mediaSession.setActionHandler('nexttrack', function() { nextTrack(); });
-  navigator.mediaSession.setActionHandler('seekto', function(d) {
+  setMediaAction('previoustrack', function() { mediaLog('ms:prev', mediaLogState()); prevTrack(); });
+  setMediaAction('nexttrack', function() { mediaLog('ms:next', mediaLogState()); nextTrack(); });
+  setMediaAction('seekto', function(d) {
     if (d.seekTime !== undefined && audio.duration) audio.currentTime = d.seekTime;
   });
   // iOS: override seek buttons to act as prev/next
-  try { navigator.mediaSession.setActionHandler('seekbackward', function() { prevTrack(); }); } catch(e) {}
-  try { navigator.mediaSession.setActionHandler('seekforward', function() { nextTrack(); }); } catch(e) {}
+  setMediaAction('seekbackward', function() { mediaLog('ms:seekback'); prevTrack(); });
+  setMediaAction('seekforward', function() { mediaLog('ms:seekfwd'); nextTrack(); });
 }
 
 // Update position state for lock screen progress bar
 function onTimeUpdate() {
+  if (!audio.paused && Date.now() - _mediaTickAt > 5000) {
+    _mediaTickAt = Date.now();
+    mediaLog('tick', mediaLogState());
+  }
+  playMeterTick();
+  fadeCheck();
   if (!audio.paused) savePlaybackContext();
   if ('mediaSession' in navigator && audio.duration && !isNaN(audio.duration)) {
     try {
@@ -6317,29 +8345,180 @@ function onTimeUpdate() {
   }
 }
 
+// ── История прослушиваний ──
+// Отметка ставится по факту прослушивания, а не по нажатию play: копим реально
+// проигранное время между тиками timeupdate. Считать по currentTime нельзя —
+// перемотка вперёд накрутила бы счётчик, а повтор трека не засчитался бы вовсе.
+//
+// Ключ — обезномеренное имя файла (cacheKey): каталог перенумеровывается при
+// каждом импорте, и по полному имени история обнулялась бы.
+var PLAY_MIN_SEC = 240;        // столько достаточно и для часовой записи
+var PLAY_MIN_RATIO = 0.5;
+var _playAcc = 0;              // накоплено секунд по текущему треку
+var _playTick = 0;             // отметка предыдущего тика
+var _playCounted = false;
+var _playCounts = {};          // ключ -> {n, first, last} для текущего каталога
+var _playsFolder = '';
+var _flushingPlays = false;
+
+function resetPlayMeter() { _playAcc = 0; _playTick = 0; _playCounted = false; }
+
+function playMeterTick() {
+  if (audio.paused) { _playTick = 0; return; }
+  var now = Date.now() / 1000;
+  if (_playTick) {
+    var d = now - _playTick;
+    // Промежуток больше пяти секунд — это не воспроизведение, а перемотка,
+    // сон устройства или заторможенная фоновая вкладка.
+    if (d > 0 && d < 5) _playAcc += d;
+  }
+  _playTick = now;
+  if (_playCounted) return;
+  var dur = audio.duration;
+  var need = (isFinite(dur) && dur > 0) ? Math.min(PLAY_MIN_SEC, dur * PLAY_MIN_RATIO) : PLAY_MIN_SEC;
+  if (_playAcc >= need) { _playCounted = true; countPlay(currentIdx); }
+}
+
+function countPlay(idx) {
+  var t = tracks[idx];
+  if (!t || !t.file || !_playsFolder) return;
+  var key = cacheKey(t.file), at = Date.now() / 1000;
+  var e = _playCounts[key];
+  if (!e) { e = _playCounts[key] = {n: 0, first: at, last: 0}; }
+  e.n++; e.last = at;
+  savePlaysMirror(_playsFolder);
+  refreshSmartPlaylists();       // «Недавно слушал» меняется прямо сейчас
+  sendPlays(_playsFolder, [{file: t.file, at: at}]);
+}
+
+function sendPlays(folder, list) {
+  fetch('/api/plays', {method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({action: 'record', folder: folder, plays: list})})
+    .then(function(r){ return r.json(); })
+    .then(function(d){ if (!d || !d.ok) throw new Error('offline'); })
+    .catch(function(){ queuePlays(folder, list); });
+}
+
+// Офлайн-записей в приложении нет, но история — исключение того же рода, что и
+// отметки в DROPS: терять факт прослушивания из-за отсутствия сети незачем.
+function queuePlays(folder, list) {
+  relDbGet('pendingPlays', function(p) {
+    p = p || {};
+    p[folder] = (p[folder] || []).concat(list).slice(-2000);
+    relDbSet('pendingPlays', p);
+  });
+}
+
+// Досылаем очередь по ВСЕМ каталогам, а не только по открытому: сервер —
+// единственный источник правды для аналитики и рекомендаций, и прослушивания,
+// сделанные в PWA без сети, обязаны туда доехать, даже если в этот каталог
+// больше не заходят. Вызывается при загрузке счётчиков, при возврате связи и
+// на старте.
+function flushPlays() {
+  if (_flushingPlays) return;
+  relDbGet('pendingPlays', function(p) {
+    var folders = p ? Object.keys(p) : [];
+    if (!folders.length) return;
+    _flushingPlays = true;
+    var i = 0;
+    (function next() {
+      if (i >= folders.length) {
+        _flushingPlays = false;
+        relDbSet('pendingPlays', p);
+        if (_playsFolder && !p[_playsFolder]) loadPlays(_playsFolder, true);
+        return;
+      }
+      var folder = folders[i++];
+      var list = p[folder] || [];
+      if (!list.length) { delete p[folder]; next(); return; }
+      fetch('/api/plays', {method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({action: 'record', folder: folder, plays: list})})
+        .then(function(r){ return r.json(); })
+        .then(function(d) { if (d && d.ok) delete p[folder]; next(); })
+        .catch(function(){ _flushingPlays = false; relDbSet('pendingPlays', p); });
+    })();
+  });
+}
+
+function savePlaysMirror(folder) { relDbSet('plays:' + folder, _playCounts); }
+
+// Зеркало нужно ради умных плейлистов: без сервера они считаются на клиенте, и
+// счётчики должны быть под рукой так же, как список треков в localStorage.
+function loadPlays(folder, silent) {
+  if (!folder) return;
+  _playsFolder = folder;
+  if (!silent) {
+    _playCounts = {};
+    relDbGet('plays:' + folder, function(m) {
+      if (m && !Object.keys(_playCounts).length) { _playCounts = m; refreshSmartPlaylists(); }
+    });
+  }
+  fetch('/api/plays', {method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({action: 'list', folder: folder})})
+    .then(function(r){ return r.json(); })
+    .then(function(d) {
+      if (!d || !d.ok || !d.plays) throw new Error('offline');
+      _playCounts = d.plays;
+      savePlaysMirror(folder);
+      refreshSmartPlaylists();
+      flushPlays();
+    })
+    .catch(function(){});             // офлайн — остаёмся на зеркале
+}
+
+function playCountOf(file) {
+  var e = _playCounts[cacheKey(file)];
+  return e ? (e.n || 0) : 0;
+}
+
+function lastPlayedOf(file) {
+  var e = _playCounts[cacheKey(file)];
+  return e ? (e.last || 0) : 0;
+}
+
 // ── Desktop widget bridge (Übersicht) ──
 // Publishes now-playing state to the server and polls for control commands
 // issued by the desktop widget. Localhost-only on the server side.
 var _widgetTrack = {title:'', artist:'', album:'', file:''};
+var _widgetLastState = '';
+
 function widgetPublish() {
+  // Виджет живёт только на Маке, и его ручки на сервере доступны лишь с
+  // localhost. На телефоне этот мост слал 30 запросов в минуту в никуда: они
+  // будили радиомодем и не давали ему уснуть — на батарее это заметнее любой
+  // анимации. Плюс каждый запрос занимал однопоточный сервер.
+  if (!isLocal || !widgetPossible) return;
   try {
     var dur = (audio && audio.duration && !isNaN(audio.duration)) ? audio.duration : 0;
     var pos = (audio && audio.currentTime) ? audio.currentTime : 0;
+    var payload = JSON.stringify({
+      playing: !!isPlaying,
+      title: _widgetTrack.title || '',
+      artist: _widgetTrack.artist || '',
+      album: _widgetTrack.album || '',
+      file: _widgetTrack.file || '',
+      position: Math.round(pos),
+      duration: Math.round(dur)
+    });
+    // На паузе состояние не меняется, а раньше оно отправлялось каждые две
+    // секунды одинаковым. Позиция округлена до секунды, поэтому во время
+    // воспроизведения отправка идёт раз в секунду, как и нужно виджету.
+    if (payload === _widgetLastState) return;
+    _widgetLastState = payload;
     fetch('/api/widget/state', {method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({
-        playing: !!isPlaying,
-        title: _widgetTrack.title || '',
-        artist: _widgetTrack.artist || '',
-        album: _widgetTrack.album || '',
-        file: _widgetTrack.file || '',
-        position: Math.round(pos),
-        duration: Math.round(dur)
-      })}).catch(function(){});
+      body: payload}).catch(function(){});
   } catch(e) {}
 }
 function widgetPoll() {
+  // Видимость здесь проверять НЕЛЬЗЯ: виджет для того и нужен, чтобы управлять
+  // плеером, когда браузер не на переднем плане. Гасить опрос по _uiActive
+  // значило бы сломать саму функцию. А вот там, где виджета не бывает —
+  // телефон, сервер не под macOS — опрашивать нечего.
+  if (!isLocal || !widgetPossible) { _widgetNextMs = WIDGET_IDLE_MS; return; }
   fetch('/api/widget/command', {cache:'no-store'}).then(function(r){return r.json();}).then(function(d){
-    if (!d || !d.cmd) return;
+    if (!d) return;
+    _widgetNextMs = d.widget ? WIDGET_FAST_MS : WIDGET_IDLE_MS;
+    if (!d.cmd) return;
     switch (d.cmd) {
       case 'play':   if (!isPlaying) togglePlay(); break;
       case 'pause':  if (isPlaying) togglePlay(); break;
@@ -6350,9 +8529,24 @@ function widgetPoll() {
   }).catch(function(){});
 }
 var _widgetPollTimer = null, _widgetPubTimer = null;
+var widgetPossible = true;      // до ответа конфига считаем, что возможен
+var WIDGET_FAST_MS = 1000;      // виджет запущен — команды нужны быстро
+var WIDGET_IDLE_MS = 10000;     // не запущен — просто проверяем, не появился ли
+var _widgetNextMs = WIDGET_IDLE_MS;
+
+// Опрос сам подстраивает частоту. Раньше он всегда шёл раз в секунду, даже
+// когда виджет не запущен, а это 60 запросов в минуту в пустоту — и к
+// однопоточному серверу, и к батарее. Теперь пока виджета нет, спрашиваем раз
+// в десять секунд; сервер отвечает флагом, запущен ли он, и опрос ускоряется
+// сам.
+function widgetTick() {
+  _widgetPollTimer = setTimeout(widgetTick, _widgetNextMs);
+  widgetPoll();
+}
+
 function initWidgetBridge() {
   if (_widgetPollTimer) return;
-  _widgetPollTimer = setInterval(widgetPoll, 1000);
+  widgetTick();
   _widgetPubTimer = setInterval(widgetPublish, 2000);
   widgetPublish();
 }
@@ -6374,15 +8568,24 @@ function applyConfig(cfg) {
   if (!_isOffline) syncNetworkState();
   var isDemo = userRole === 'demo';
   isLocal = cfg.is_local !== false; // true if server says client is local, default true for cached
+  // Виджет бывает только под macOS: сервер на Windows или Linux сообщает false,
+  // и опрос там не запускается вовсе.
+  widgetPossible = cfg.widget_possible !== false;
   document.getElementById('adminBtn').style.display = isAdmin ? '' : 'none';
   var showNetToggles = isAdmin && !_isOffline && isLocal;
   document.getElementById('networkToggles').style.display = showNetToggles ? 'flex' : 'none';
   document.getElementById('metaVkRow').classList.toggle('has-toggles', showNetToggles);
   document.getElementById('vkBtnIcon').classList.toggle('force-hidden', isDemo || _isOffline);
   // Зеркало решает, показывать ли вкладку без сервера.
-  relLoadMirror(function(){ syncNewTabVisibility(); });
+  relLoadMirror('new', function(){
+    relLoadMirror('foryou', function(){ syncNewTabVisibility(); });
+  });
+  relLoadArtSeen();
+  flushPlays();            // прослушивания без сети обязаны доехать на сервер
+  flushEras();             // разметка периодов
+  flushPlaylists();        // и плейлисты, собранные без связи
   syncNewTabVisibility();
-  document.getElementById('downloadCatalogBtn').style.display = (isAdmin && !_isOffline) ? '' : 'none';
+  syncDownloadBtn();
   document.getElementById('metaVkRow').style.display = (isDemo || _isOffline) ? 'none' : '';
   document.getElementById('addFolderBtn').style.display = (isDemo || _isOffline) ? 'none' : '';
   document.getElementById('removeFolderBtn').style.display = (isDemo || _isOffline) ? 'none' : '';
@@ -6393,10 +8596,20 @@ function showOfflineBanner(show) {
   if (!banner) {
     banner = document.createElement('div');
     banner.id = 'offlineBanner';
-    banner.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:9999;background:rgba(233,69,96,0.9);color:#fff;text-align:center;padding:6px 16px;padding-top:max(6px,env(safe-area-inset-top));font-size:12px;font-weight:500;cursor:pointer;transition:opacity .3s;backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);';
-    // Tappable: most often "offline" here means the server's LAN IP changed and
-    // this origin is dead, so give a one-tap way to point the app elsewhere.
-    banner.textContent = 'Офлайн-режим — нажмите, чтобы указать адрес сервера';
+    // Полосой во всю ширину он закрывал строку каталога и поиск — заметную
+    // часть и без того тесного экрана. Компактный бейдж в свободном нижнем
+    // углу сообщает ровно то же и ничего не перекрывает.
+    banner.style.cssText = 'position:fixed;z-index:9999;left:10px;'
+      + 'bottom:calc(10px + env(safe-area-inset-bottom, 0px));'
+      + 'background:rgba(233,69,96,0.92);color:#fff;padding:5px 11px;border-radius:999px;'
+      + 'font-size:11px;font-weight:600;letter-spacing:0.02em;cursor:pointer;'
+      + 'display:flex;align-items:center;gap:6px;'
+      + 'box-shadow:0 2px 12px rgba(0,0,0,0.4);transition:opacity .3s;'
+      + 'backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);';
+    // Нажимается: чаще всего «офлайн» здесь означает, что у сервера сменился
+    // адрес в сети, и это способ перевести приложение на новый в одно касание.
+    banner.innerHTML = '<span style="width:6px;height:6px;border-radius:50%;background:#fff;opacity:0.9"></span>офлайн';
+    banner.title = 'Нажмите, чтобы указать адрес сервера';
     banner.onclick = function() { openServerDialog(); };
     document.body.appendChild(banner);
   }
@@ -6813,11 +9026,28 @@ function applyFolderData(data) {
     var btn = document.getElementById('cachedOnlyBtn');
     if (btn) btn.classList.add('active');
   }
-  _forceNextFile = null;   // отметка относилась к прежнему каталогу
+  // Тот же каталог с тем же числом треков — это просто обновление, а не смена.
+  // Различать обязательно: loadFolder срабатывает при каждом возврате PWA из
+  // фона, и безусловный сброс молча выключал радиостанцию, подменяя её очередь
+  // обычным списком — дальше играл следующий трек по порядку.
+  var sameFolder = (_loadedFolder === _curFolder && _loadedCount === tracks.length);
+  _loadedFolder = _curFolder;
+  _loadedCount = tracks.length;
+
+  loadPlays(_curFolder);
+  loadEras(_curFolder);
+  loadRadioCfg();          // критерии свои у каждого каталога
   renderTracks();
   renderAlbums();
   checkIfNumbered();
-  buildDefaultQueue();
+  if (!sameFolder) {
+    _forceNextFile = null; // отметка относилась к прежнему каталогу
+    stopRadio();           // прежняя станция вела по трекам прошлого каталога
+    buildDefaultQueue();
+  } else if (!radioOn) {
+    // Каталог тот же, но станция не ведёт — очередь можно пересобрать штатно.
+    buildDefaultQueue();
+  }
   // Put the player back where it stopped (paused) before anything else touches
   // currentIdx — this is what keeps the context across an app restart.
   restorePlaybackContext();
@@ -6831,7 +9061,7 @@ function applyFolderData(data) {
       userPlaylists = cachedPl ? JSON.parse(cachedPl) : [];
     } catch(e){ userPlaylists = []; }
     renderPlaylists();
-    if (activeTab === 'playlists') document.getElementById('playlistHeader').textContent = userPlaylists.length + ' плейлистов';
+    if (activeTab === 'playlists') document.getElementById('playlistHeader').textContent = plHeaderText();
     if (!_isOffline) {
       fetch('/api/playlists', {method:'POST', headers:{'Content-Type':'application/json'},
         body: JSON.stringify({folder: folder, action: 'list'})})
@@ -6840,7 +9070,7 @@ function applyFolderData(data) {
         userPlaylists = d.playlists;
         lsSet('_vc_playlists_' + folder, JSON.stringify(userPlaylists));
         renderPlaylists();
-        if (activeTab === 'playlists') document.getElementById('playlistHeader').textContent = userPlaylists.length + ' плейлистов';
+        if (activeTab === 'playlists') document.getElementById('playlistHeader').textContent = plHeaderText();
       }).catch(function(){});
     }
   }
@@ -6863,8 +9093,17 @@ function loadFolderCacheFirst(path) {
   showLoadingIndicator();
 }
 
+var _loadedFolder = '';   // каталог, данные которого сейчас применены
+var _loadedCount = -1;    // и сколько в нём было треков
+
+// Путь открытого каталога. Раньше его брали из <select>, но значение там
+// выставляется отдельно от загрузки и на момент applyFolderData могло быть
+// пустым — история и периоды тогда цеплялись к пустому каталогу.
+var _curFolder = '';
+
 function _applyCachedFolder(path) {
   // Show a catalog from its cached state (track list saved on a previous scan).
+  _curFolder = path;
   try {
     var saved = localStorage.getItem('_vc_folder_' + path);
     if (saved) { applyFolderData(JSON.parse(saved)); return true; }
@@ -6874,6 +9113,7 @@ function _applyCachedFolder(path) {
 
 function loadFolder(path, retries) {
   if (!path) return;
+  _curFolder = path;
   if (_isOffline) { loadFolderOffline(path); return; }
   if (retries === undefined) retries = 2;
   // Cache-first: switch to the catalog's cached state instantly, then refresh
@@ -6903,6 +9143,7 @@ function loadFolder(path, retries) {
 }
 
 function loadFolderOffline(path) {
+  _curFolder = path;
   try {
     var saved = localStorage.getItem('_vc_folder_' + path);
     if (saved) {
@@ -7954,7 +10195,120 @@ function renderBuildInfo() {
   });
 }
 
+// Пауза между записями важнее самих меток: разрыв в минуты на месте нажатия
+// и есть доказательство того, что страницу заморозили.
+function mediaLogLine(rec, prev) {
+  function p2(n) { return (n < 10 ? '0' : '') + n; }
+  var d = new Date(rec.t);
+  var gap = prev ? ' +' + (Math.round((rec.t - prev.t) / 100) / 10) + 's' : '';
+  return p2(d.getHours()) + ':' + p2(d.getMinutes()) + ':' + p2(d.getSeconds())
+    + gap + '  ' + rec.e + (rec.x ? '  ' + rec.x : '');
+}
+
+function renderMediaLog() {
+  var el = document.getElementById('mediaLogText');
+  if (!el) return;
+  _mediaLog = null;
+  var log = mediaLogAll();
+  if (!log.length) { el.textContent = 'Пусто. Запустите трек, заблокируйте экран, нажмите паузу и плей — потом вернитесь сюда.'; return; }
+  var out = [];
+  for (var i = 0; i < log.length; i++) out.push(mediaLogLine(log[i], i ? log[i - 1] : null));
+  el.textContent = out.join('\n');
+  el.scrollTop = el.scrollHeight;
+}
+
+function toggleMediaLog() {
+  var box = document.getElementById('mediaLogBox');
+  if (!box) return;
+  var open = box.style.display === 'none';
+  box.style.display = open ? 'block' : 'none';
+  if (open) { renderMediaLog(); renderRecoverBtn(); }
+}
+
+function copyMediaLog() {
+  var el = document.getElementById('mediaLogText');
+  if (!el) return;
+  var text = el.textContent || '';
+  // Safari отдаёт clipboard API не во всех контекстах, поэтому запасной путь
+  // через скрытое поле и execCommand остаётся обязательным.
+  function fallback() {
+    var ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.top = '0';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.setSelectionRange(0, ta.value.length);
+    var ok = false;
+    try { ok = document.execCommand('copy'); } catch (e) {}
+    document.body.removeChild(ta);
+    showToast(ok ? 'Журнал скопирован' : 'Не удалось скопировать');
+  }
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(function() {
+      showToast('Журнал скопирован');
+    }, fallback);
+    return;
+  }
+  fallback();
+}
+
+function clearMediaLog() {
+  _mediaLog = [];
+  lsSet('_vc_medialog', '[]');
+  renderMediaLog();
+}
+
+// ── Настройки графики ──
+// Каждый пункт снимает свой вид постоянной работы. Хранятся отдельно от
+// серверных настроек: это свойство устройства, а не учётной записи — на
+// ноутбуке и на телефоне разумны разные значения.
+var perfCfg = {pauseBlur: false, noBlur: false, bgStatic: false, radioStatic: false};
+
+function perfLoad() {
+  try {
+    var saved = JSON.parse(localStorage.getItem('_vc_perf') || 'null');
+    if (saved) for (var k in perfCfg) if (saved[k] !== undefined) perfCfg[k] = !!saved[k];
+  } catch (e) {}
+  perfApply();
+}
+
+function perfApply() {
+  var root = document.documentElement;
+  root.classList.toggle('perf-noblur', perfCfg.noBlur);
+  root.classList.toggle('perf-radiostatic', perfCfg.radioStatic);
+  _bgForceDraw = true;        // при выключении статики фон надо перерисовать
+  syncUiActive();             // правило простоя зависит от pauseBlur
+  var ids = {pauseBlur: 'perfPauseBlur', noBlur: 'perfNoBlur',
+             bgStatic: 'perfBgStatic', radioStatic: 'perfRadioStatic'};
+  for (var k in ids) {
+    var el = document.getElementById(ids[k]);
+    if (el) el.checked = perfCfg[k];
+  }
+}
+
+function perfSet(key, on) {
+  perfCfg[key] = !!on;
+  lsSet('_vc_perf', JSON.stringify(perfCfg));
+  perfApply();
+}
+
+// Раздел свёрнут по умолчанию: настройки редкие, а профиль открывают ради
+// другого. Состояние не запоминаем — каждое открытие профиля начинается со
+// свёрнутого вида.
+function perfToggleOpen() {
+  var body = document.getElementById('perfBody');
+  var btn = document.getElementById('perfToggle');
+  var open = body.style.display === 'none';
+  body.style.display = open ? '' : 'none';
+  btn.classList.toggle('open', open);
+}
+
 function openProfile() {
+  perfApply();
+  document.getElementById('perfBody').style.display = 'none';
+  document.getElementById('perfToggle').classList.remove('open');
   document.getElementById('profileUser').textContent = 'Пользователь: ' + currentUser;
   document.getElementById('profOldPw').value = '';
   document.getElementById('profNewPw').value = '';
@@ -8078,9 +10432,19 @@ function loadAdminUsers() {
 // свежести их добавления, ходит за релизами в iTunes (запасной — Deezer) и
 // отмечает то, чего в каталоге ещё нет. Ничего не зашито: пополнили библиотеку —
 // поменялся и список отслеживаемых артистов.
-var releasesData = null;
-var _relLoading = false;
-var _relPollTimer = null;
+// В DROPS две ленты: NEW — новинки артистов библиотеки, 4YOU — остальной их
+// каталог. Растут они из одного серверного кэша артистов, но состояние у
+// каждой своё: данные, порция, набор узлов карточек и зеркало. Общий набор
+// узлов означал бы, что переключение подвкладки пересоздаёт все <img> и
+// обложки грузятся заново — ровно то, от чего мы уходили.
+var REL_TABS = ['new', 'foryou'];
+var _relTab = 'new';
+var relFeeds = {
+  'new':    {mode: 'new',    mirrorKey: 'feed',     lsKey: '_vc_rellimit'},
+  'foryou': {mode: 'foryou', mirrorKey: 'feed4you', lsKey: '_vc_fylimit'}
+};
+
+function relF(tab) { return relFeeds[tab || _relTab]; }
 
 // Развёрнутый релиз запоминаем по устойчивому ключу, а не по индексу в массиве:
 // лента перестраивается при каждом обновлении, порядок и состав меняются, и
@@ -8088,41 +10452,74 @@ var _relPollTimer = null;
 // соседнюю карточку.
 function relKey(it) { return (it.source || 'itunes') + ':' + it.rid; }
 
+function relSpinner() {
+  document.getElementById('newList').innerHTML =
+    '<div style="display:flex;flex-direction:column;align-items:center;padding:40px 20px;color:rgba(255,255,255,0.3)">'
+    + '<div class="loading-spinner"></div><div style="margin-top:12px;font-size:13px">Собираю новинки...</div></div>';
+}
+
+// Лента из зеркала: у копии нет прогресса проверки, всё остальное — как у
+// серверного ответа, поэтому renderReleases не различает их.
+function relFeedFromMirror(f) {
+  return {items: f.items, updated_at: f.updated_at, saved_at: f.saved_at,
+          found: f.found, artists_total: f.artists_total, artists_checked: f.artists_checked,
+          refreshing: false, progress: {done: 0, total: 0}};
+}
+
 function relEsc(s) { return esc(s || ''); }
 
-function loadReleases(silent) {
+function loadReleases(silent, tab) {
   // Раньше здесь стоял выход по _isOffline — из-за него в офлайне мы даже не
   // доходили до зеркала, ради которого всё и делалось. Запрос всё равно
   // мгновенный: Service Worker отвечает {error:'offline'} не ходя в сеть.
-  if (_relLoading) return;
-  _relLoading = true;
-  if (!silent && !releasesData) {
-    document.getElementById('newList').innerHTML =
-      '<div style="display:flex;flex-direction:column;align-items:center;padding:40px 20px;color:rgba(255,255,255,0.3)">'
-      + '<div class="loading-spinner"></div><div style="margin-top:12px;font-size:13px">Собираю новинки...</div></div>';
+  tab = tab || _relTab;
+  var f = relFeeds[tab];
+  if (!f || f.loading) return;
+  f.loading = true;
+  var mine = function() { return tab === _relTab; };   // рисуем только активную
+  // Спиннер — только когда показать нечего. Есть зеркало — рисуем его, не
+  // дожидаясь сервера: копия уже собрана и отличается от свежей ленты лишь
+  // временем проверки. Раньше зеркало читалось только в .catch(), поэтому при
+  // живом сервере каждое открытие приложения начиналось со спиннера и лента
+  // выглядела так, будто собирается заново.
+  if (!silent && !f.data && !f.hasMirror && mine()) relSpinner();
+  if (!f.data) {
+    relLoadMirror(tab, function(m) {
+      if (f.data) return;                   // сеть успела первой — не затираем
+      if (m && m.items && m.items.length) {
+        f.data = relFeedFromMirror(m);
+        if (mine()) renderReleases();
+      } else if (!silent && mine()) {
+        relSpinner();                       // зеркала не оказалось
+      }
+    });
   }
-  fetch('/api/releases?limit=' + _relLimit).then(function(r){ return r.json(); }).then(function(d) {
-    _relLoading = false;
+  var wasPolling = !!f.poll;
+  fetch('/api/releases?limit=' + f.limit + (f.mode === 'new' ? '' : '&mode=' + f.mode))
+      .then(function(r){ return r.json(); }).then(function(d) {
+    f.loading = false;
     if (!d || d.error) throw new Error('offline');
-    _relOffline = false;
-    releasesData = d;
-    renderReleases();
-    relSaveMirror();
-    relSaveStarredLocal(d.items || []);
+    f.offline = false;
+    f.data = d;
+    if (mine()) renderReleases();
+    relSaveMirror(tab);
+    relSaveStarredLocal();
     relFlushStars();          // отметки, поставленные без сервера
-    if (_relPollTimer) { clearTimeout(_relPollTimer); _relPollTimer = null; }
-    if (d.refreshing) _relPollTimer = setTimeout(function(){ loadReleases(true); }, 4000);
+    if (f.poll) { clearTimeout(f.poll); f.poll = null; }
+    if (d.refreshing) f.poll = setTimeout(function(){ loadReleases(true, tab); }, 4000);
+    // Проверка перебирает кэш артистов, из которого растут обе ленты. Соседнюю
+    // не перезапрашиваем сразу (она может быть даже не открыта) — просто метим
+    // как устаревшую, и она перечитается при следующем показе.
+    else if (wasPolling) relInvalidate(tab);
   }).catch(function() {
-    _relLoading = false;
+    f.loading = false;
     // Сервера нет — показываем последнюю синхронизированную копию, а не пустоту.
-    relLoadMirror(function(f) {
-      _relOffline = true;
-      if (f && f.items && f.items.length) {
-        releasesData = {items: f.items, updated_at: f.updated_at, saved_at: f.saved_at,
-                        found: f.found, artists_total: f.artists_total, artists_checked: f.artists_checked,
-                        refreshing: false, progress: {done: 0, total: 0}};
-        renderReleases();
-      } else if (!releasesData) {
+    relLoadMirror(tab, function(m) {
+      f.offline = true;
+      if (m && m.items && m.items.length) {
+        f.data = relFeedFromMirror(m);
+        if (mine()) renderReleases();
+      } else if (!f.data && mine()) {
         document.getElementById('newList').innerHTML =
           '<div class="rel-note" style="text-align:center;padding:32px 20px">Сервер недоступен, '
           + 'а сохранённой копии дропов ещё нет.<br><button class="folder-btn folder-btn-primary" '
@@ -8133,13 +10530,53 @@ function loadReleases(silent) {
   });
 }
 
+// Соседние ленты после проверки артистов: данные сбрасываем, зеркало нет —
+// при открытии копия нарисуется мгновенно, а сеть догонит.
+function relInvalidate(exceptTab) {
+  for (var i = 0; i < REL_TABS.length; i++) {
+    var t = REL_TABS[i];
+    if (t === exceptTab) continue;
+    // Ленту, на которую сейчас смотрят, гасить нельзя: renderReleases с пустыми
+    // данными выходит сразу, и на экране остались бы карточки, которых уже нет
+    // в состоянии. Её перезапрашиваем на месте.
+    if (t === _relTab && relFeeds[t].data) loadReleases(true, t);
+    else relFeeds[t].data = null;
+  }
+}
+
+// Переключение подвкладки. Раскрытый релиз относился к прежней ленте, поэтому
+// превью останавливаем; узлы карточек у лент раздельные, так что возврат
+// назад уже не грузит обложки заново.
+function showRelTab(tab) {
+  if (tab === _relTab || !relFeeds[tab]) return;
+  stopPreview();
+  _relTab = tab;
+  lsSet('_vc_reltab', tab);
+  var scroller = document.getElementById('newList');
+  if (scroller) scroller.scrollTop = 0;
+  syncRelHeader();
+  if (relF().data) renderReleases();
+  else { if (scroller) scroller.innerHTML = ''; loadReleases(); }
+}
+
+// Заголовок строки: количество слева, подвкладки справа.
+function syncRelHeader() {
+  var d = relF().data;
+  var n = d && d.items ? d.items.length : 0;
+  document.getElementById('playlistHeader').textContent =
+    d ? (n + ' ' + relPlural(n, 'дроп', 'дропа', 'дропов')) : 'Дропы';
+  var btnNew = document.getElementById('relTabNew'), btnFy = document.getElementById('relTabFy');
+  if (btnNew) btnNew.className = 'rel-subtab' + (_relTab === 'new' ? ' active' : '');
+  if (btnFy) btnFy.className = 'rel-subtab' + (_relTab === 'foryou' ? ' active' : '');
+}
+
 // Раздел живёт только онлайн: данные приходят с сервера, а офлайн вкладка
 // показывала бы пустоту. Прячем её и уводим с неё, если она была открыта.
 function syncNewTabVisibility() {
   var tab = document.getElementById('tabNew');
   if (!tab) return;
   // Вкладку прячем только если и сервера нет, и показать нечего.
-  var keep = !_isOffline || _relHasMirror;
+  var keep = !_isOffline || relFeeds['new'].hasMirror || relFeeds['foryou'].hasMirror;
   tab.style.display = keep ? '' : 'none';
   if (!keep) {
     if (typeof stopPreview === 'function') stopPreview();
@@ -8152,6 +10589,14 @@ function syncNewTabVisibility() {
 function updateReleasesBadge() {
   // Счётчик на вкладке убран намеренно: он почти всегда упирался в «99+» и не
   // нёс информации. Число видно в шапке списка.
+}
+
+// В NEW карточки разложены по свежести, в 4YOU это бессмысленно: там всё
+// старее окна новинок и попало бы в одну кучу «Раньше». Поэтому у 4YOU группа
+// одна на всю ленту — заголовок печатается один раз, при смене подписи.
+function relGroupFor(it) {
+  if (it.starred) return 'Избранное';
+  return _relTab === 'foryou' ? 'Рекомендации' : relGroupOf(it.date);
 }
 
 function relGroupOf(dateStr) {
@@ -8193,7 +10638,10 @@ function relDateLabel(dateStr) {
 
 function renderReleases() {
   var box = document.getElementById('newList');
-  if (!releasesData) return;
+  var feed = relF();
+  if (!feed.data) return;
+  var releasesData = feed.data;              // ниже читаем только активную ленту
+  var isFy = _relTab === 'foryou';
   var items = releasesData.items || [];
 
   // Три независимых блока: строка состояния и подвал меняются часто (прогресс
@@ -8207,10 +10655,7 @@ function renderReleases() {
   var cardsEl = document.getElementById('relCards');
   var footEl = document.getElementById('relFooter');
 
-  if (activeTab === 'new') {
-    document.getElementById('playlistHeader').textContent =
-      items.length + ' ' + relPlural(items.length, 'дроп', 'дропа', 'дропов');
-  }
+  if (activeTab === 'new') syncRelHeader();
 
   if (releasesData.refreshing) {
     var p = releasesData.progress || {};
@@ -8221,7 +10666,7 @@ function renderReleases() {
     // Кнопка проверки живёт сверху: за ней не надо прокручивать сотни карточек.
     statusEl.innerHTML = '<div class="rel-top">'
       + '<span class="rel-top-note">'
-      + (_relOffline && releasesData.saved_at
+      + (feed.offline && releasesData.saved_at
           ? '<span style="color:#e9a545">&#9679;</span> Копия от ' + relWhen(releasesData.saved_at)
           : (releasesData.updated_at ? 'Проверено ' + relWhen(releasesData.updated_at) : ''))
       + '</span>'
@@ -8233,13 +10678,18 @@ function renderReleases() {
     cardsEl.innerHTML = '<div class="rel-note" style="text-align:center;padding:32px 20px">'
       + (releasesData.refreshing
           ? 'Проверяю артистов — это занимает пару минут, можно уйти с вкладки.'
-          : 'Дропы ещё не собраны.<br>Проверка ходит в iTunes и Deezer по вашим артистам '
-            + '(' + releasesData.artists_total + ' в библиотеке) и занимает пару минут. '
-            + 'Сама она не запускается.'
-            + '<br><button class="folder-btn folder-btn-primary" style="margin-top:14px;font-size:12px" '
-            + 'onclick="refreshReleases()">Проверить новинки</button>')
+          : (releasesData.artists_checked
+              ? (isFy
+                  ? 'У артистов библиотеки не нашлось ничего, чего у вас ещё нет.'
+                  : 'Новинок пока нет.')
+              : (isFy ? 'Подборка растёт из того же кэша артистов, что и NEW. ' : 'Дропы ещё не собраны.<br>')
+                + 'Проверка ходит в iTunes и Deezer по вашим артистам '
+                + '(' + releasesData.artists_total + ' в библиотеке) и занимает пару минут. '
+                + 'Сама она не запускается.'
+                + '<br><button class="folder-btn folder-btn-primary" style="margin-top:14px;font-size:12px" '
+                + 'onclick="refreshReleases()">Проверить новинки</button>'))
       + '</div>';
-    _cardNodes = {};
+    feed.nodes = {};
     footEl.innerHTML = '';
     return;
   }
@@ -8251,14 +10701,15 @@ function renderReleases() {
 
   var more = (releasesData.found || 0) - items.length;
   footEl.innerHTML =
-       (more > 0 && !_relOffline
+       (more > 0 && !feed.offline
         ? '<div style="padding:4px 8px 0"><button class="folder-btn folder-btn-secondary" '
           + 'style="width:100%;font-size:12px;padding:10px" onclick="relShowMore()">'
           + 'Показать ещё ' + Math.min(REL_PAGE, more) + ' из ' + more + '</button></div>'
         : '')
        + '<div class="rel-note">Показано ' + items.length
        + (releasesData.found ? ' из ' + releasesData.found + ' найденных' : '')
-       + '. Отбор — по близости артиста и свежести релиза.'
+       + (isFy ? '. Отбор — по близости артиста; то, что уже есть в библиотеке, скрыто.'
+               : '. Отбор — по близости артиста и свежести релиза.')
        + '<br>Проверено артистов: ' + releasesData.artists_checked
        + ' из ' + releasesData.artists_total + '. Обновляется только по кнопке.</div>';
 }
@@ -8270,7 +10721,21 @@ var REL_ICON_STAR  = '<svg width="13" height="13" viewBox="0 0 24 24" fill="curr
 // Узлы карточек переиспользуются: при любой перерисовке существующие элементы
 // переставляются, а не создаются заново. Иначе каждый <img> рождался пустым и
 // обложки «пропадали и появлялись» — при клике, при отметке, при обновлении.
-var _cardNodes = {};
+
+
+// Прокси обложек умирает вместе с сервером, а картинки mzstatic/dzcdn грузятся
+// как <img> и без него. Поэтому первый отказ — повод сходить к источнику
+// напрямую, и только второй — поставить заглушку. Важно с тех пор, как лента
+// рисуется из зеркала до того, как известно, жив ли сервер.
+function relArtFallback(img) {
+  var direct = img.getAttribute('data-direct');
+  if (direct) {
+    img.removeAttribute('data-direct');
+    img.src = direct;
+    return;
+  }
+  img.outerHTML = '<div class="rel-art-ph">&#9834;</div>';
+}
 
 function releaseCardHtml(it) {
   var key = it.key || relKey(it);
@@ -8283,9 +10748,16 @@ function releaseCardHtml(it) {
   // Адрес держим в data-src, а не в src: загрузкой управляем сами (см.
   // relWarmArt). С loading="lazy" обложки появлялись только под прокрутку, и
   // список выглядел полупустым.
-  var artSrc = _relOffline ? it.art : ('/api/releases/art?u=' + encodeURIComponent(it.art));
+  var artSrc = relF().offline ? it.art : ('/api/releases/art?u=' + encodeURIComponent(it.art));
+  // Адрес всегда в data-src: байты берутся из своего кэша, а он читается
+  // асинхронно. Ставить src сразу, как раньше, больше нельзя — это опять
+  // отдало бы картинку HTTP-кэшу браузера, который iOS вытесняет.
+  // data-art — ключ кэша: исходный адрес обложки, один и тот же в онлайне и
+  // офлайне, поэтому запись не задваивается.
   var art = it.art
-    ? '<img class="rel-art" data-src="' + relEsc(artSrc) + '" decoding="async" onerror="this.outerHTML=\'<div class=&quot;rel-art-ph&quot;>&#9834;</div>\'">'
+    ? '<img class="rel-art" data-src="' + relEsc(artSrc) + '" data-art="' + relEsc(it.art) + '"'
+      + (artSrc !== it.art ? ' data-direct="' + relEsc(it.art) + '"' : '')
+      + ' decoding="async" onerror="relArtFallback(this)">'
     : '<div class="rel-art-ph">&#9834;</div>';
   var stop = 'event.stopPropagation();';
   return art
@@ -8339,17 +10811,42 @@ function relWarmArt() {
     var img = nextImg();
     if (!img) return;                       // всё загружено
     var url = img.getAttribute('data-src');
+    var key = img.getAttribute('data-art') || url;   // ключ кэша — исходный адрес
     img.removeAttribute('data-src');
     busy = true;
-    function done() {
-      img.removeEventListener('load', done);
-      img.removeEventListener('error', done);
+
+    // fast=true — картинка пришла из своего кэша, сети не было, поэтому и
+    // паузы не нужно: она существует только чтобы не забивать однопоточный
+    // сервер запросами к Apple.
+    function done(fast) {
       busy = false;
-      if (token === _artWarmToken) setTimeout(pump, 250);
+      if (token === _artWarmToken) setTimeout(pump, fast ? 0 : 250);
     }
-    img.addEventListener('load', done);
-    img.addEventListener('error', done);
-    img.src = url;
+
+    relArtGet(key, function(buf) {
+      if (buf && buf.byteLength) {
+        try { img.src = URL.createObjectURL(new Blob([buf])); } catch (e) {}
+        done(true);
+        return;
+      }
+      if (_isOffline) { relArtFallback(img); done(true); return; }
+      // Качаем байтами, а не через <img>: только так их можно сохранить.
+      fetch(url).then(function(r) {
+        if (!r.ok) throw new Error('http');
+        // 200 не значит картинку: при истёкшей сессии сюда приезжает JSON, и
+        // без проверки типа он осел бы в кэше вместо обложки — навсегда.
+        if (!/^image\//.test(r.headers.get('Content-Type') || '')) throw new Error('type');
+        return r.arrayBuffer();
+      }).then(function(bytes) {
+        if (!bytes || bytes.byteLength < 100) throw new Error('empty');
+        relArtPut(key, bytes);
+        try { img.src = URL.createObjectURL(new Blob([bytes])); } catch (e) {}
+        done(false);
+      }).catch(function() {
+        relArtFallback(img);
+        done(false);
+      });
+    });
   }
 
   pump();
@@ -8368,13 +10865,14 @@ function syncReleaseCards(items) {
   // Запоминаем позицию и возвращаем её, когда высота восстановится.
   var scroller = document.getElementById('newList');
   var keepScroll = scroller ? scroller.scrollTop : 0;
-  cardsEl.innerHTML = '';        // узлы остаются в _cardNodes и переиспользуются
+  var nodes = relF().nodes;
+  cardsEl.innerHTML = '';        // узлы остаются в feed.nodes и переиспользуются
   var used = {}, lastGroup = null, i = 0;
 
   function addOne(it, frag) {
     var key = it.key || relKey(it);
     used[key] = true;
-    var g = it.starred ? 'Избранное' : relGroupOf(it.date);
+    var g = relGroupFor(it);
     if (g !== lastGroup) {
       var t = document.createElement('div');
       t.className = 'rel-group-title';
@@ -8382,7 +10880,7 @@ function syncReleaseCards(items) {
       frag.appendChild(t);
       lastGroup = g;
     }
-    var node = _cardNodes[key];
+    var node = nodes[key];
     var state = relState(it);
     if (!node) {
       node = document.createElement('div');
@@ -8392,7 +10890,7 @@ function syncReleaseCards(items) {
         node.style.cursor = 'pointer';
       }
       node.innerHTML = releaseCardHtml(it);
-      _cardNodes[key] = node;
+      nodes[key] = node;
     } else if (node._state !== state) {
       // Состояние изменилось — перерисовываем всё, кроме обложки: она уже
       // загружена, а новый <img> пришлось бы ждать заново.
@@ -8417,7 +10915,7 @@ function syncReleaseCards(items) {
       scroller.scrollTop = keepScroll;
     }
     if (i < items.length) { setTimeout(step, 0); return; }
-    for (var k in _cardNodes) if (!used[k]) delete _cardNodes[k];
+    for (var k in nodes) if (!used[k]) delete nodes[k];
     if (scroller && keepScroll) scroller.scrollTop = keepScroll;
     applyExpansion();
     relWarmArt();
@@ -8434,7 +10932,7 @@ function toggleStar(key) {
   it.starred = on;
   it.key = key;
   resortReleases();
-  relSaveStarredLocal(releasesData.items);
+  relSaveStarredLocal();
   fetch('/api/releases/star', {method: 'POST', headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({key: key, on: on, item: on ? it : null})})
     .then(function(r){ return r.json(); })
@@ -8449,13 +10947,20 @@ function toggleStar(key) {
 }
 
 function resortReleases() {
-  if (!releasesData) return;
-  releasesData.items.sort(function(a, b) {
-    if (a.date !== b.date) return a.date < b.date ? 1 : -1;
-    return (b.artist_score || 0) - (a.artist_score || 0);
-  });
-  releasesData.items.sort(function(a, b) { return (a.starred ? 0 : 1) - (b.starred ? 0 : 1); });
-  syncReleaseCards(releasesData.items);
+  var d = relF().data;
+  if (!d) return;
+  // В NEW читается по свежести, в 4YOU — по близости артиста: там дата ни о
+  // чём не говорит, весь состав старее окна новинок.
+  if (_relTab === 'foryou') {
+    d.items.sort(function(a, b) { return (b.rank || 0) - (a.rank || 0); });
+  } else {
+    d.items.sort(function(a, b) {
+      if (a.date !== b.date) return a.date < b.date ? 1 : -1;
+      return (b.artist_score || 0) - (a.artist_score || 0);
+    });
+  }
+  d.items.sort(function(a, b) { return (a.starred ? 0 : 1) - (b.starred ? 0 : 1); });
+  syncReleaseCards(d.items);
   applyExpansion();
 }
 
@@ -8472,14 +10977,17 @@ function applyExpansion() {
   var card = cardsEl.querySelector('.rel-card[data-key="' + _previewKey + '"]');
   if (!card) { paintPreviewState(); return; }
   card.classList.add('expanded');
-  card.insertAdjacentHTML('afterend', previewTracksHtml(card.classList.contains('rel-owned')));
+  card.insertAdjacentHTML('afterend', previewTracksHtml(card.classList.contains('rel-owned'),
+                                                        card.classList.contains('rel-starred')));
   paintPreviewState();
 }
 
 function relShowMore() {
-  _relLimit += REL_PAGE;
+  var f = relF();
+  f.limit = Math.min(REL_LIMIT_MAX, f.limit + REL_PAGE);
+  lsSet(f.lsKey, String(f.limit));
   showToast('Загружаю ещё...');
-  loadReleases(true);
+  loadReleases(true, _relTab);
 }
 
 function refreshReleases() {
@@ -8488,13 +10996,15 @@ function refreshReleases() {
     .then(function(r){ return r.json(); })
     .then(function(d) {
       if (!d || !d.ok) throw new Error('no server');
-      setTimeout(function(){ loadReleases(true); }, 800);
+      // Проверка перебирает общий кэш артистов, поэтому устаревают обе ленты.
+      setTimeout(function(){ loadReleases(true, _relTab); relInvalidate(_relTab); }, 800);
     })
     .catch(function() {
       // Сервера нет — обходим артистов сами. Урезанно: без Deezer и без
       // серверного кэша обложек, зато работает вдали от дома.
       showToast('Сервер недоступен — проверяю через iTunes');
-      _relOffline = true;
+      relFeeds['new'].offline = true;
+      relFeeds['foryou'].offline = true;
       relSweepDirect();
     });
 }
@@ -8522,11 +11032,81 @@ function getRelease(key) {
 // этого заголовка), поэтому запасной источник и кэш обложек остаются серверными
 // — автономный режим сознательно урезанный, а не равноценный.
 var REL_DB = 'vinylNew';
-var _relOffline = false;      // лента показана из зеркала
 var REL_PAGE = 300;           // порция дропов
-var _relLimit = REL_PAGE;     // сколько просим у сервера сейчас
-var _relHasMirror = false;
+var REL_LIMIT_MAX = 3000;     // столько же максимум принимает сервер
 var _relSweeping = false;
+
+// Сколько просим у сервера. Значение переживает перезапуск: иначе каждое
+// открытие PWA откатывало ленту к первой порции, и «Показать ещё» надо было
+// жать заново — при том что расширенная лента уже лежит в зеркале.
+function relSavedLimit(key) {
+  var n = parseInt(localStorage.getItem(key), 10);
+  return (n >= REL_PAGE && n <= REL_LIMIT_MAX) ? n : REL_PAGE;
+}
+
+(function relInitFeeds() {
+  for (var i = 0; i < REL_TABS.length; i++) {
+    var f = relFeeds[REL_TABS[i]];
+    f.data = null; f.nodes = {}; f.poll = null;
+    f.loading = false; f.offline = false; f.hasMirror = false;
+    f.limit = relSavedLimit(f.lsKey);
+  }
+  var saved = localStorage.getItem('_vc_reltab');
+  if (saved && relFeeds[saved]) _relTab = saved;
+})();
+
+// Обложки, которые уже доезжали до этого клиента. Сервер отдаёт их с
+// max-age=30 дней, так что повторный показ берётся из HTTP-кэша — но очередь
+// прогрева об этом не знала и всё равно вела их по одной с паузой 250 мс, а
+// при играющей музыке стояла совсем. На срезе в 300 карточек это выглядело
+// как «дропы грузятся заново» при каждом открытии приложения.
+// Байты обложек релизов лежат в той же базе, что и зеркало ленты. Раньше их
+// держал только HTTP-кэш браузера, а iOS вытесняет его агрессивно: реестр
+// помнил, что картинка «была», ставил адрес сразу — но байтов уже не было, и
+// офлайн обложки не показывались вовсе. У обложек треков такой проблемы нет,
+// они с самого начала лежат в IndexedDB; здесь тот же приём.
+var ART_SEEN_MAX = 900;       // ~45 МБ при обложках 600×600
+
+function relArtKey(url) { return 'art:' + url; }
+function relArtGet(url, cb) { relDbGet(relArtKey(url), cb); }
+
+function relArtPut(url, buf) {
+  relDbSet(relArtKey(url), buf);
+  relMarkArtSeen(url);
+}
+var _artSeen = {};
+var _artSeenTimer = null;
+var _artSeenLoaded = false;
+
+function relLoadArtSeen() {
+  if (_artSeenLoaded) return;   // конфиг применяется не один раз за сессию
+  _artSeenLoaded = true;
+  relDbGet('artSeen', function(list) {
+    if (!list || !list.length) return;
+    for (var i = 0; i < list.length; i++) _artSeen[list[i]] = 1;
+  });
+}
+
+function relMarkArtSeen(url) {
+  if (!url || _artSeen[url]) return;
+  _artSeen[url] = 1;
+  // Пишем пачкой: прогрев отмечает по обложке каждые 250 мс, и транзакция на
+  // каждую из них — это сотни записей подряд на ровном месте.
+  if (_artSeenTimer) return;
+  _artSeenTimer = setTimeout(function() {
+    _artSeenTimer = null;
+    var keys = Object.keys(_artSeen);
+    if (keys.length > ART_SEEN_MAX) {
+      var drop = keys.slice(0, keys.length - ART_SEEN_MAX);
+      keys = keys.slice(keys.length - ART_SEEN_MAX);   // порядок вставки = давность
+      // Вместе с ключом убираем и байты, иначе база растёт бесконечно.
+      for (var d = 0; d < drop.length; d++) relDbDel(relArtKey(drop[d]));
+      _artSeen = {};
+      for (var i = 0; i < keys.length; i++) _artSeen[keys[i]] = 1;
+    }
+    relDbSet('artSeen', keys);
+  }, 3000);
+}
 
 function relDb(cb) {
   var req = indexedDB.open(REL_DB, 1);
@@ -8542,6 +11122,13 @@ function relDbSet(key, val) {
   relDb(function(db) {
     if (!db) return;
     try { db.transaction('kv', 'readwrite').objectStore('kv').put(val, key); } catch (e) {}
+  });
+}
+
+function relDbDel(key) {
+  relDb(function(db) {
+    if (!db) return;
+    try { db.transaction('kv', 'readwrite').objectStore('kv').delete(key); } catch (e) {}
   });
 }
 
@@ -8657,6 +11244,8 @@ function relItunesReleases(name, cb) {
 
 // Обход артистов прямо из браузера. Тот же темп, что на сервере: iTunes при
 // частых запросах рвёт соединение.
+// Один обход артистов кормит обе ленты: iTunes отдаёт весь список релизов
+// разом, и делить его по дате дешевле, чем ходить туда второй раз.
 function relSweepDirect() {
   if (_relSweeping) return;
   var ranked = relRankArtists();
@@ -8665,58 +11254,113 @@ function relSweepDirect() {
   var list = ranked.slice(0, budget);
   var owned = relOwnedNames();
   var cutoff = new Date(Date.now() - 400 * 86400000).toISOString().slice(0, 10);
-  var items = [], i = 0;
+  var fresh = [], older = [], i = 0;
   _relSweeping = true;
-  releasesData = releasesData || {items: [], artists_total: ranked.length, artists_checked: 0};
-  releasesData.refreshing = true;
-  releasesData.progress = {done: 0, total: list.length};
-  renderReleases();
+
+  function progress(done) {
+    for (var t = 0; t < REL_TABS.length; t++) {
+      var f = relFeeds[REL_TABS[t]];
+      f.data = f.data || {items: [], artists_total: ranked.length, artists_checked: 0};
+      f.data.refreshing = true;
+      f.data.progress = {done: done, total: list.length};
+    }
+    renderReleases();
+  }
+  progress(0);
 
   (function step() {
     if (i >= list.length) {
       _relSweeping = false;
-      relApplyStarred(items, function(finalItems) {
-        releasesData = {items: finalItems.slice(0, 300), updated_at: Date.now() / 1000,
-                        artists_total: ranked.length, artists_checked: list.length,
-                        refreshing: false, progress: {done: 0, total: 0}, starred_count: 0};
-        _cardNodes = {};
-        renderReleases();
-        relSaveMirror();
-        showToast('Проверено артистов: ' + list.length);
-      });
+      relFinishSweep('new', relDedup(fresh), ranked.length, list.length,
+                     function(sn){ return (sn.date || '') >= cutoff; }, false);
+      relFinishSweep('foryou', relRoundRobin(relDedup(older)), ranked.length, list.length,
+                     function(sn){ return (sn.date || '') < cutoff; }, true);
+      showToast('Проверено артистов: ' + list.length);
       return;
     }
     var a = list[i++];
-    releasesData.progress = {done: i, total: list.length};
-    renderReleases();
+    progress(i);
     relItunesReleases(a.name, function(rels) {
       var have = owned[a.key] || {};
       rels.forEach(function(r) {
-        if (r.date < cutoff) return;
         r.artist = a.name;
         r.artist_score = Math.round(a.score * 1000) / 1000;
         r.in_library = !!have[normSearch(r.title)];
         r.key = r.source + ':' + r.rid;
-        items.push(r);
+        if (r.date >= cutoff) fresh.push(r);
+        else if (!r.in_library) older.push(r);   // в 4YOU только то, чего нет
       });
       setTimeout(step, 1200);
     });
   })();
 }
 
-// ── Зеркало и очередь избранного ──
-function relSaveMirror() {
-  if (!releasesData) return;
-  relDbSet('feed', {items: releasesData.items, updated_at: releasesData.updated_at,
-                    found: releasesData.found, artists_total: releasesData.artists_total,
-                    artists_checked: releasesData.artists_checked, saved_at: Date.now() / 1000});
-  _relHasMirror = true;
+function relFinishSweep(tab, items, artistsTotal, checked, want, keepOrder) {
+  var f = relFeeds[tab];
+  relApplyStarred(items, want, keepOrder, function(finalItems) {
+    f.data = {items: finalItems.slice(0, 300), updated_at: Date.now() / 1000,
+              found: finalItems.length, artists_total: artistsTotal, artists_checked: checked,
+              refreshing: false, progress: {done: 0, total: 0}, starred_count: 0};
+    f.nodes = {};
+    if (tab === _relTab) renderReleases();
+    relSaveMirror(tab);
+  });
 }
 
-function relLoadMirror(cb) {
-  relDbGet('feed', function(f) {
-    _relHasMirror = !!(f && f.items && f.items.length);
-    cb(f);
+// Совместка приезжает от каждого участника — без этого она задваивалась бы.
+function relDedup(items) {
+  var seen = {}, out = [];
+  for (var i = 0; i < items.length; i++) {
+    if (seen[items[i].key]) continue;
+    seen[items[i].key] = 1;
+    out.push(items[i]);
+  }
+  return out;
+}
+
+// Тот же приём, что на сервере: артисты выдаются по кругу. При простой
+// сортировке по весу первые два десятка карточек занял бы один артист — у
+// каждого их в выдаче iTunes до 25 штук.
+function relRoundRobin(items) {
+  var buckets = {}, order = [];
+  for (var i = 0; i < items.length; i++) {
+    var k = (items[i].artist || '').toLowerCase();
+    if (!buckets[k]) { buckets[k] = []; order.push(k); }
+    buckets[k].push(items[i]);
+  }
+  order.sort(function(a, b) {
+    return (buckets[b][0].artist_score || 0) - (buckets[a][0].artist_score || 0);
+  });
+  for (var j = 0; j < order.length; j++) {
+    buckets[order[j]].sort(function(a, b) { return a.date < b.date ? 1 : (a.date > b.date ? -1 : 0); });
+  }
+  var out = [], row = 0, added = true;
+  while (added) {
+    added = false;
+    for (var n = 0; n < order.length; n++) {
+      var b = buckets[order[n]];
+      if (row < b.length) { b[row].rank = b[row].artist_score || 0; out.push(b[row]); added = true; }
+    }
+    row++;
+  }
+  return out;
+}
+
+// ── Зеркало и очередь избранного ──
+function relSaveMirror(tab) {
+  var f = relFeeds[tab || _relTab], d = f.data;
+  if (!d) return;
+  relDbSet(f.mirrorKey, {items: d.items, updated_at: d.updated_at,
+                         found: d.found, artists_total: d.artists_total,
+                         artists_checked: d.artists_checked, saved_at: Date.now() / 1000});
+  f.hasMirror = true;
+}
+
+function relLoadMirror(tab, cb) {
+  var f = relFeeds[tab || _relTab];
+  relDbGet(f.mirrorKey, function(m) {
+    f.hasMirror = !!(m && m.items && m.items.length);
+    cb(m);
   });
 }
 
@@ -8741,7 +11385,7 @@ function relFlushStars() {
         relDbSet('pendingStars', {});
         // Лента уже отрисована по данным сервера, который об этих отметках ещё
         // не знал — перезапрашиваем, иначе они выглядели бы снятыми.
-        if (sent) setTimeout(function(){ loadReleases(true); }, 400);
+        if (sent) setTimeout(function(){ loadReleases(true, _relTab); relInvalidate(_relTab); }, 400);
         return;
       }
       var k = keys[i++], v = p[k];
@@ -8754,27 +11398,43 @@ function relFlushStars() {
   });
 }
 
-function relApplyStarred(items, cb) {
+// want() отсеивает чужие снимки: хранилище отметок общее для обеих лент, и
+// без него закреплённое в 4YOU всплывало бы наверху NEW.
+function relApplyStarred(items, want, keepOrder, cb) {
   relDbGet('starred', function(st) {
     st = st || {};
     var seen = {};
     items.forEach(function(it) { it.starred = !!st[it.key]; seen[it.key] = true; });
     Object.keys(st).forEach(function(k) {
-      if (seen[k] || !st[k]) return;
+      if (seen[k] || !st[k] || !want(st[k])) return;
       var snap = JSON.parse(JSON.stringify(st[k]));
       snap.starred = true; snap.key = k;
       items.push(snap);
     });
-    items.sort(function(a, b) { return a.date < b.date ? 1 : (a.date > b.date ? -1 : 0); });
+    // В 4YOU порядок уже задан кругом по артистам, пересортировка по дате его
+    // сломала бы.
+    if (!keepOrder) items.sort(function(a, b) { return a.date < b.date ? 1 : (a.date > b.date ? -1 : 0); });
     items.sort(function(a, b) { return (a.starred ? 0 : 1) - (b.starred ? 0 : 1); });
     cb(items);
   });
 }
 
-function relSaveStarredLocal(items) {
-  var st = {};
-  items.forEach(function(it) { if (it.starred) st[it.key] = it; });
-  relDbSet('starred', st);
+// Хранилище отметок общее для NEW и 4YOU, поэтому снимок нельзя переписывать
+// по одной ленте: вторая может быть ещё не загружена, и её отметки пропали бы.
+// Загруженная лента авторитетна для своих ключей, остальные записи не трогаем.
+function relSaveStarredLocal() {
+  relDbGet('starred', function(prev) {
+    var st = prev || {};
+    for (var t = 0; t < REL_TABS.length; t++) {
+      var d = relFeeds[REL_TABS[t]].data;
+      if (!d || !d.items) continue;
+      for (var i = 0; i < d.items.length; i++) {
+        var it = d.items[i];
+        if (it.starred) st[it.key] = it; else delete st[it.key];
+      }
+    }
+    relDbSet('starred', st);
+  });
 }
 
 // ── Превью релизов ──
@@ -8794,15 +11454,19 @@ function stopPreview() {
 }
 
 function closePreview() {
+  exitPreviewPlayerUI();
   stopPreview();
   _previewKey = null; _previewTracks = [];
   applyExpansion();
 }
 
 function findRelease(key) {
-  if (!releasesData) return null;
-  for (var i = 0; i < releasesData.items.length; i++) {
-    if (relKey(releasesData.items[i]) === key) return releasesData.items[i];
+  var d = relF().data;
+  if (!d) return null;
+  for (var i = 0; i < d.items.length; i++) {
+    // Ключ берём тот, что прислал сервер: у записей без rid он строится из
+    // названия и даты, и relKey() дал бы другой.
+    if ((d.items[i].key || relKey(d.items[i])) === key) return d.items[i];
   }
   return null;
 }
@@ -8870,6 +11534,77 @@ function togglePreview(key, autoplay) {
     .catch(function(){ if (_previewKey === key) showToast('Не удалось загрузить превью'); });
 }
 
+// ── Отрывок DROPS в интерфейсе плеера ──
+// Звук идёт через отдельный <audio> (основной хранит контекст воспроизведения),
+// но показывать отрывок должен обычный плеер: обложка релиза, название, бейдж
+// и рабочие кнопки. Возврат к обычному виду — при первом же треке из библиотеки.
+var _previewMode = false;
+
+function previewArtSrc(rel) {
+  if (!rel || !rel.art) return '';
+  return relF().offline ? rel.art : ('/api/releases/art?u=' + encodeURIComponent(rel.art));
+}
+
+// Всё, что зависит от того, ведёт ли плеер отрывок: перемотки у него нет,
+// громкостью он не управляется. Обе панели гасим и возвращаем здесь, в одном
+// месте — иначе легко оставить путь, на котором вернулось только одно.
+function syncPreviewChrome() {
+  var pw = document.getElementById('progressWrap');
+  if (pw) pw.classList.toggle('no-seek', _previewMode);
+  var vw = document.querySelector('.volume-wrap');
+  if (vw) vw.classList.toggle('no-volume', _previewMode);
+}
+
+function enterPreviewPlayerUI(rel, tr) {
+  // Отрывок перехватывает плеер — значит станция больше не ведёт, как и при
+  // выборе плейлиста или трека. Без этого её рамка оставалась висеть поверх
+  // чужого воспроизведения.
+  stopRadio();
+  _previewMode = true;
+  var titleEl = document.getElementById('trackTitle');
+  var artistEl = document.getElementById('trackArtist');
+  titleEl.textContent = (tr && tr.title) || rel.title || '';
+  artistEl.textContent = rel.artist || '';
+  titleEl.style.opacity = '1'; artistEl.style.opacity = '1';
+  titleEl.removeAttribute('data-idle');
+  var badge = document.getElementById('trackTitleBadge');
+  if (badge) {
+    badge.textContent = 'DROPS';
+    badge.className = 'fmt-badge fmt-badge-player fmt-drops';
+    badge.style.display = '';
+  }
+  var ct = document.getElementById('cassetteTitle'), ca = document.getElementById('cassetteArtist');
+  if (ct) ct.textContent = titleEl.textContent;
+  if (ca) ca.textContent = artistEl.textContent;
+
+  var src = previewArtSrc(rel);
+  var img = document.getElementById('vinylCover');
+  var ph = document.getElementById('vinylPlaceholder');
+  if (src && img) {
+    // Фон подстраивается под обложку тем же путём, что и для обычных треков.
+    img.onload = function(){ extractColor(img); img.onload = null; };
+    img.src = src;
+    img.style.display = '';
+    if (ph) ph.style.display = 'none';
+    var ccov = document.getElementById('cassetteCover'), cph = document.getElementById('cassetteCoverPh');
+    if (ccov) { ccov.src = src; ccov.style.display = ''; if (cph) cph.style.display = 'none'; }
+  }
+  syncPreviewChrome();
+  setPlayState(!previewAudio.paused);
+}
+
+function exitPreviewPlayerUI() {
+  if (!_previewMode) return;
+  _previewMode = false;
+  try { previewAudio.pause(); } catch (e) {}
+  previewAudio.removeAttribute('src');
+  _previewTrack = -1;
+  var badge = document.getElementById('trackTitleBadge');
+  if (badge) badge.style.display = 'none';
+  syncPreviewChrome();
+  paintPreviewState();
+}
+
 function playPreview(n) {
   var t = _previewTracks[n];
   if (!t) return;
@@ -8880,6 +11615,8 @@ function playPreview(n) {
   _previewTrack = n;
   // Через свой сервер: он исправляет Content-Type, который у Apple нестандартный
   previewAudio.src = '/api/releases/preview?u=' + encodeURIComponent(t.preview);
+  var rel = findRelease(_previewKey);
+  if (rel) enterPreviewPlayerUI(rel, t);
   var p = previewAudio.play();
   if (p && p.catch) p.catch(function(err) {
     // NotAllowedError здесь означает, что жест не дошёл — не пугаем формулировкой
@@ -8917,20 +11654,30 @@ previewAudio.addEventListener('timeupdate', function() {
   var row = document.querySelector('#newList .rel-track[data-n="' + _previewTrack + '"] .rel-track-bar');
   if (row) row.style.width = (previewAudio.currentTime / previewAudio.duration * 100) + '%';
 });
-previewAudio.addEventListener('play', function(){ paintPreviewState(); });
-previewAudio.addEventListener('pause', function(){ paintPreviewState(); });
+previewAudio.addEventListener('play', function(){
+  paintPreviewState();
+  if (previewOwnsTransport()) setPlayState(true);
+});
+previewAudio.addEventListener('pause', function(){
+  paintPreviewState();
+  // Только пока отрывок действительно ведёт плеер. Обработчик play основного
+  // элемента зовёт stopPreview(), тот ставит превью на паузу, и это событие
+  // прилетало уже ПОСЛЕ setPlayState(true) — состояние сбрасывалось обратно
+  // на каждом запуске музыки.
+  if (previewOwnsTransport()) setPlayState(false);
+});
 previewAudio.addEventListener('ended', function() {
   // Дослушали отрывок — идём к следующему треку релиза, как в обычном плеере
   if (_previewTrack >= 0 && _previewTrack + 1 < _previewTracks.length) playPreview(_previewTrack + 1);
-  else stopPreview();
+  else { stopPreview(); if (_previewMode) setPlayState(false); }
 });
 previewAudio.addEventListener('error', function() {
   if (_previewTrack < 0) return;
   _previewTrack = -1; paintPreviewState();
 });
 
-function previewTracksHtml(owned) {
-  var cls = 'rel-tracks' + (owned ? ' owned' : ' missing');
+function previewTracksHtml(owned, starred) {
+  var cls = 'rel-tracks' + (starred ? ' starred' : (owned ? ' owned' : ' missing'));
   if (!_previewTracks.length) {
     return '<div class="' + cls + '"><div class="rel-track"><div class="rel-track-name" '
          + 'style="color:rgba(255,255,255,0.3)">Загружаю превью...</div></div></div>';
@@ -8951,15 +11698,309 @@ function previewTracksHtml(owned) {
 }
 
 // ── Playlists ──
+// ── Периоды прослушивания и умные плейлисты ──
+// Состав умных плейлистов не хранится, а вычисляется из каталога и истории,
+// поэтому они одинаково работают с сервером и офлайн: и список треков, и
+// счётчики, и разметка периодов уже лежат на клиенте.
+var eraConfig = {enabled: false, eras: []};
+var smartPlaylists = [];
+var SMART_LIMIT = 200;
+
+function erasKey(folder) { return '_vc_eras_' + folder; }
+
+function loadEras(folder) {
+  if (!folder) { eraConfig = {enabled: false, eras: []}; return; }
+  try {
+    var saved = localStorage.getItem(erasKey(folder));
+    eraConfig = saved ? JSON.parse(saved) : {enabled: false, eras: []};
+  } catch (e) { eraConfig = {enabled: false, eras: []}; }
+  refreshSmartPlaylists();
+  fetch('/api/eras', {method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({action: 'list', folder: folder})})
+    .then(function(r){ return r.json(); })
+    .then(function(d) {
+      if (!d || !d.ok || !d.eras) throw new Error('offline');
+      eraConfig = d.eras;
+      lsSet(erasKey(folder), JSON.stringify(eraConfig));
+      refreshSmartPlaylists();
+    })
+    .catch(function(){});      // офлайн — остаёмся на зеркале
+}
+
+function saveEras() {
+  var folder = _curFolder;
+  if (!folder) return;
+  lsSet(erasKey(folder), JSON.stringify(eraConfig));
+  refreshSmartPlaylists();
+  var payload = {action: 'save', folder: folder,
+                 enabled: eraConfig.enabled, eras: eraConfig.eras};
+  fetch('/api/eras', {method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(payload)})
+    .then(function(r){ return r.json(); })
+    .then(function(d){ if (!d || !d.ok) throw new Error('offline'); })
+    .catch(function() {
+      queueEras(folder, payload);
+      showToast('Периоды сохранены, уйдут на сервер при подключении');
+    });
+}
+
+// Номер из имени файла. Он не равен позиции в списке: в нумерации бывают
+// пропуски (в этой библиотеке разошлись 2435 файлов из 2440), а размечает
+// пользователь по тем номерам, которые видит у себя в каталоге.
+function eraFileNo(i) {
+  var t = tracks[i];
+  if (!t) return i + 1;
+  var m = /^(\d+)\./.exec(t.file);
+  return m ? parseInt(m[1], 10) : i + 1;
+}
+
+// Номер -> позиция. Файлы отсортированы по имени, то есть номера возрастают,
+// поэтому берём ближайший существующий: введённого номера может просто не быть.
+function eraPosOfNumber(num) {
+  num = parseInt(num, 10);
+  if (!num || !tracks.length) return 0;
+  var best = 0, bestDist = Infinity;
+  for (var i = 0; i < tracks.length; i++) {
+    var d = Math.abs(eraFileNo(i) - num);
+    if (d < bestDist) { bestDist = d; best = i; }
+    else if (eraFileNo(i) > num && bestDist < Infinity) break;   // номера растут
+  }
+  return best;
+}
+
+// Якорь — обезномеренное имя файла на краю диапазона. Номер как граница жил бы
+// до первого импорта: он перенумеровывает каталог целиком.
+// Разметку, сделанную без сервера, досылаем при первом же подключении — иначе
+// она осталась бы только на этом устройстве, и плейлисты по периодам на других
+// не появились бы вовсе. Тот же приём, что у прослушиваний и отметок в DROPS.
+function queueEras(folder, payload) {
+  relDbGet('pendingEras', function(p) {
+    p = p || {};
+    p[folder] = payload;
+    relDbSet('pendingEras', p);
+  });
+}
+
+function flushEras() {
+  relDbGet('pendingEras', function(p) {
+    var folders = p ? Object.keys(p) : [];
+    if (!folders.length) return;
+    var i = 0;
+    (function next() {
+      if (i >= folders.length) { relDbSet('pendingEras', p); return; }
+      var f = folders[i++];
+      fetch('/api/eras', {method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(p[f])})
+        .then(function(r){ return r.json(); })
+        .then(function(d){ if (d && d.ok) delete p[f]; next(); })
+        .catch(function(){ relDbSet('pendingEras', p); });   // не ушло — ждёт дальше
+    })();
+  });
+}
+
+function eraAnchorAt(pos) {
+  var t = tracks[Math.max(0, Math.min(tracks.length - 1, pos - 1))];
+  return t ? cacheKey(t.file) : '';
+}
+
+function eraIndexOf(anchor, hintPos) {
+  var hint = Math.max(0, Math.min(tracks.length - 1, (hintPos || 1) - 1));
+  if (anchor) {
+    // Берём совпадение, ближайшее к сохранённому номеру, а не первое: в
+    // каталоге встречаются файлы с одинаковым именем после снятия номера (в
+    // этой библиотеке — 69 пар), и первое совпадение растягивало период на
+    // десятки треков. Перенумерация сдвигает файл на единицы позиций, так что
+    // ближайший — он и есть.
+    var best = -1, bestDist = Infinity;
+    for (var i = 0; i < tracks.length; i++) {
+      if (cacheKey(tracks[i].file) !== anchor) continue;
+      var d = Math.abs(i - hint);
+      if (d < bestDist) { bestDist = d; best = i; }
+    }
+    if (best >= 0) return best;
+  }
+  // Файл-якорь удалили — падаем на сохранённый номер, чтобы разметка не
+  // разваливалась целиком из-за одного трека.
+  return hint;
+}
+
+function resolveEra(era) {
+  // Самый свежий период открыт сверху: новые треки приходят первыми номерами и
+  // должны попадать в текущий год сами, без правки границ.
+  var from = era.open_start ? 0 : eraIndexOf(era.from, era.from_pos);
+  var to = eraIndexOf(era.to, era.to_pos);
+  return from <= to ? {from: from, to: to} : {from: to, to: from};
+}
+
+function eraTrackFiles(era) {
+  var r = resolveEra(era), files = [];
+  for (var i = r.from; i <= r.to && i < tracks.length; i++) files.push(tracks[i].file);
+  return files;
+}
+
+function buildSmartPlaylists() {
+  var out = [], i;
+  if (!tracks.length) return out;
+  if (eraConfig.enabled && eraConfig.eras && eraConfig.eras.length) {
+    // Каталог отсортирован свежим вверх, поэтому и периоды — от новых к старым.
+    var eras = eraConfig.eras.slice().sort(function(a, b){ return (b.year || 0) - (a.year || 0); });
+    for (i = 0; i < eras.length; i++) {
+      var files = eraTrackFiles(eras[i]);
+      if (files.length) {
+        out.push({id: 'era:' + eras[i].year, name: 'Слушал в ' + eras[i].year,
+                  tracks: files, smart: true, era: eras[i].year});
+      }
+    }
+  }
+  var played = [];
+  for (i = 0; i < tracks.length; i++) if (playCountOf(tracks[i].file)) played.push(tracks[i]);
+  if (played.length) {
+    var recent = played.slice().sort(function(a, b){ return lastPlayedOf(b.file) - lastPlayedOf(a.file); });
+    out.push({id: 'smart:recent', name: 'Недавно слушал', smart: true,
+              tracks: recent.slice(0, SMART_LIMIT).map(function(t){ return t.file; })});
+    var often = played.slice().sort(function(a, b){ return playCountOf(b.file) - playCountOf(a.file); });
+    out.push({id: 'smart:often', name: 'Чаще всего', smart: true,
+              note: (function(m){ return 'до ' + m + ' ' + relPlural(m, 'прослушивания', 'прослушиваний', 'прослушиваний'); })(playCountOf(often[0].file)),
+              tracks: often.slice(0, SMART_LIMIT).map(function(t){ return t.file; })});
+    // Пока истории нет, «ещё не слушал» — это весь каталог, и плейлист бесполезен.
+    var never = tracks.filter(function(t){ return !playCountOf(t.file); });
+    if (never.length) {
+      out.push({id: 'smart:never', name: 'Ещё не слушал', smart: true,
+                tracks: never.slice(0, SMART_LIMIT).map(function(t){ return t.file; })});
+    }
+  }
+  return out;
+}
+
+// В заголовке — оба списка: умные плейлисты такие же строки этого экрана, и
+// «0 плейлистов» при трёх видимых карточках выглядело ошибкой.
+function plHeaderText() {
+  var n = userPlaylists.length + smartPlaylists.length;
+  return n + ' ' + relPlural(n, 'плейлист', 'плейлиста', 'плейлистов');
+}
+
+function refreshSmartPlaylists() {
+  _eraByIndex = null;        // разметка или каталог поменялись
+  smartPlaylists = buildSmartPlaylists();
+  if (activeTab === 'playlists') {
+    document.getElementById('playlistHeader').textContent = plHeaderText();
+    renderPlaylists();
+  }
+}
+
+// Умный плейлист во всём остальном ведёт себя как обычный, поэтому поиск по id
+// должен видеть оба списка.
+function findPlaylist(id) {
+  var pl = userPlaylists.find(function(p){ return p.id === id; });
+  return pl || smartPlaylists.find(function(p){ return p.id === id; }) || null;
+}
+
 var userPlaylists = [];
 var plEditId = null;
 var plEditTracks = [];
+
+// ── Записи плейлистов и офлайн ──
+//
+// Правило намеренно несимметричное. Создание, переименование, добавление
+// треков и порядок уезжают на сервер: это осознанная работа, терять её из-за
+// пропавшей связи нельзя. Удаление — не уезжает: сервер здесь истина, а на
+// клиенте легко нажать не то, и разослать случайную потерю по всем устройствам
+// хуже, чем не выполнить удаление. Удалённое без сети вернётся при первой же
+// синхронизации — список просто перечитывается с сервера.
+var PL_QUEUED_ACTIONS = {create: 1, update: 1, reorder: 1};
+var _flushingPl = false;
+
+function plTempId() {
+  return 'loc' + Date.now().toString(36) + Math.floor(Math.random() * 1e6).toString(36);
+}
+
+function plMirror() {
+  if (_curFolder) lsSet('_vc_playlists_' + _curFolder, JSON.stringify(userPlaylists));
+}
+
+// Отправка с очередью. onOk зовётся и при постановке в очередь: для интерфейса
+// изменение уже случилось, иначе пользователь видел бы, что его правка пропала.
+function plWrite(payload, onOk) {
+  fetch('/api/playlists', {method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(payload)})
+    .then(function(r){ return r.json(); })
+    .then(function(d) {
+      // SW подменяет неудачный /api/* телом {error:'offline'} со статусом 200,
+      // поэтому смотрим на тело, а не на r.ok.
+      if (!d || d.error || !d.ok) throw new Error('offline');
+      if (onOk) onOk(d, false);
+    })
+    .catch(function() {
+      if (!PL_QUEUED_ACTIONS[payload.action]) {
+        showToast('Нет связи с сервером — изменение не сохранено');
+        return;
+      }
+      queuePlaylistOp(payload);
+      if (onOk) onOk({ok: true}, true);
+    });
+}
+
+function queuePlaylistOp(payload) {
+  relDbGet('pendingPlaylists', function(q) {
+    q = q || [];
+    // Правка плейлиста, созданного тут же без сети, вливается в его «create»:
+    // отдельный «update» сервер не понял бы — у него нет такого id, он
+    // присваивает свой.
+    for (var i = 0; i < q.length; i++) {
+      if (q[i].id !== payload.id) continue;
+      if (payload.action === 'update' && (q[i].action === 'create' || q[i].action === 'update')) {
+        if (payload.name !== undefined) q[i].name = payload.name;
+        if (payload.tracks !== undefined) q[i].tracks = payload.tracks;
+        relDbSet('pendingPlaylists', q);
+        return;
+      }
+    }
+    if (payload.action === 'reorder') {
+      // Порядок важен только последний.
+      q = q.filter(function(op){ return op.action !== 'reorder'; });
+    }
+    q.push(payload);
+    relDbSet('pendingPlaylists', q.slice(-200));
+  });
+}
+
+// Досылаем накопленное по очереди: порядок важен, «create» должен уйти раньше
+// правок того же плейлиста.
+function flushPlaylists() {
+  if (_flushingPl) return;
+  relDbGet('pendingPlaylists', function(q) {
+    if (!q || !q.length) return;
+    _flushingPl = true;
+    var i = 0;
+    (function next() {
+      if (i >= q.length) {
+        _flushingPl = false;
+        relDbSet('pendingPlaylists', []);
+        loadUserPlaylists();     // итог берём с сервера: он присвоил свои id
+        showToast('Плейлисты синхронизированы');
+        return;
+      }
+      var op = q[i++];
+      fetch('/api/playlists', {method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(op)})
+        .then(function(r){ return r.json(); })
+        .then(function(d) {
+          if (!d || d.error) throw new Error('offline');
+          next();
+        })
+        .catch(function() {
+          _flushingPl = false;
+          relDbSet('pendingPlaylists', q.slice(i - 1));   // с неотправленного
+        });
+    })();
+  });
+}
 
 function loadUserPlaylists() {
   var folder = document.getElementById('folderSelect').value;
   function setHeader() {
     if (activeTab === 'playlists') {
-      document.getElementById('playlistHeader').textContent = userPlaylists.length + ' плейлистов';
+      document.getElementById('playlistHeader').textContent = plHeaderText();
     }
   }
   if (!folder) { userPlaylists = []; renderPlaylists(); setHeader(); return; }
@@ -8988,44 +12029,231 @@ function loadUserPlaylists() {
 
 var expandedPlaylist = null;
 
-function renderPlaylists() {
-  var html = '';
-  if (userRole !== 'demo') {
-    html += '<div style="padding:8px 12px"><button class="folder-btn folder-btn-secondary" style="width:100%;font-size:12px" onclick="createPlaylist()">+ Создать плейлист</button></div>';
-  }
-  for (var i = 0; i < userPlaylists.length; i++) {
-    var pl = userPlaylists[i];
-    var isExp = expandedPlaylist === pl.id;
-    var coverHtml = buildPlCover(pl);
-    html += '<div class="album-card pl-drag-card' + (isExp ? ' active' : '') + '" data-plid="' + pl.id + '" data-plidx="' + i + '" draggable="true" onclick="togglePlaylistExpand(\'' + pl.id + '\')" oncontextmenu="showPlCtxMenu(event,\'' + pl.id + '\')" data-longpress-pl="' + pl.id + '">'
-      + '<div class="album-cover" style="position:relative;overflow:hidden">' + coverHtml + '</div>'
-      + '<div class="album-info"><div class="album-name">' + esc(pl.name) + '</div>'
-      + '<div class="album-count">' + pl.tracks.length + ' треков</div></div>'
-      + '<button class="shuffle-btn" style="width:32px;height:32px;flex-shrink:0" onclick="event.stopPropagation();cachePlaylist(\'' + pl.id + '\')" data-tip="Кэшировать"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg></button>'
-      + (userRole !== 'demo' ? '<button class="shuffle-btn" style="width:32px;height:32px;flex-shrink:0" onclick="event.stopPropagation();editPlaylist(\'' + pl.id + '\')" data-tip="Редактировать"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 000-1.41l-2.34-2.34a1 1 0 00-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg></button>' : '')
-      + '</div>';
-    // Expanded track list
-    html += '<div class="album-tracks' + (isExp ? ' open' : '') + '">';
-    if (isExp) {
-      html += '<div style="padding:6px 12px"><button class="folder-btn folder-btn-primary" style="width:100%;font-size:11px;padding:6px" onclick="event.stopPropagation();playPlaylist(\'' + pl.id + '\')">&#9654; Воспроизвести</button></div>';
-      for (var ti = 0; ti < pl.tracks.length; ti++) {
-        var file = pl.tracks[ti];
-        var t = tracks.find(function(tr){return tr.file===file});
-        if (!t) continue;
-        var trackIdx = tracks.indexOf(t);
-        var plCachedDot = isTrackCached(file) ? '<span style="width:5px;height:5px;border-radius:50%;background:#52b788;flex-shrink:0;margin-left:auto"></span>' : '';
-        var plOffDis = _isOffline && !isTrackCached(file);
-        html += '<div class="playlist-item' + (trackIdx === currentIdx ? ' active' : '') + '"'
-          + (plOffDis ? ' style="padding-left:20px;opacity:0.3;pointer-events:none"' : ' style="padding-left:20px"')
-          + (plOffDis ? '' : ' onclick="event.stopPropagation();playFromPlaylist(\'' + pl.id + '\',' + ti + ')"') + '>'
-          + '<div class="info"><div class="name" style="font-size:12px">' + esc(t.title) + '</div>'
-          + '<div class="artist" style="font-size:11px">' + esc(t.artist) + '</div></div>' + plCachedDot + '</div>';
-      }
+// Умные и обычные плейлисты рисуются одним списком: карточка и раскрытый
+// список треков у них общие, различий ровно два — у умных нет перетаскивания и
+// редактирования, потому что их состав вычисляется, а не хранится.
+function plCardHtml(pl, idx) {
+  var smart = idx < 0;
+  var isExp = expandedPlaylist === pl.id;
+  var esc_id = pl.id.replace(/'/g, "\\'");
+  var html = '<div class="album-card ' + (smart ? 'pl-smart-card' : 'pl-drag-card')
+    + (isExp ? ' active' : '') + '" data-plid="' + esc(pl.id) + '"'
+    + (smart ? '' : ' data-plidx="' + idx + '" draggable="true"')
+    + ' onclick="togglePlaylistExpand(\'' + esc_id + '\')"'
+    + (smart ? '' : ' oncontextmenu="showPlCtxMenu(event,\'' + esc_id + '\')" data-longpress-pl="' + esc(pl.id) + '"')
+    + '>'
+    + '<div class="album-cover" style="position:relative;overflow:hidden">' + buildPlCover(pl) + '</div>'
+    + '<div class="album-info"><div class="album-name">' + esc(pl.name) + '</div>'
+    + '<div class="album-count">' + pl.tracks.length + ' ' + relPlural(pl.tracks.length, 'трек', 'трека', 'треков')
+    + (smart && pl.note ? ' · ' + esc(pl.note) : '') + '</div></div>'
+    + '<button class="shuffle-btn" style="width:32px;height:32px;flex-shrink:0" onclick="event.stopPropagation();cachePlaylist(\'' + esc_id + '\')" data-tip="Кэшировать"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg></button>'
+    + (!smart && userRole !== 'demo' ? '<button class="shuffle-btn" style="width:32px;height:32px;flex-shrink:0" onclick="event.stopPropagation();editPlaylist(\'' + esc_id + '\')" data-tip="Редактировать"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 000-1.41l-2.34-2.34a1 1 0 00-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg></button>' : '')
+    + '</div>';
+  html += '<div class="album-tracks' + (isExp ? ' open' : '') + '">';
+  if (isExp) {
+    html += '<div style="padding:6px 12px"><button class="folder-btn folder-btn-primary" style="width:100%;font-size:11px;padding:6px" onclick="event.stopPropagation();playPlaylist(\'' + esc_id + '\')">&#9654; Воспроизвести</button></div>';
+    for (var ti = 0; ti < pl.tracks.length; ti++) {
+      var file = pl.tracks[ti];
+      var t = tracks.find(function(tr){return tr.file===file});
+      if (!t) continue;
+      var trackIdx = tracks.indexOf(t);
+      var plCachedDot = isTrackCached(file) ? '<span style="width:5px;height:5px;border-radius:50%;background:#52b788;flex-shrink:0;margin-left:auto"></span>' : '';
+      var plOffDis = _isOffline && !isTrackCached(file);
+      html += '<div class="playlist-item' + (trackIdx === currentIdx ? ' active' : '') + '"'
+        + (plOffDis ? ' style="padding-left:20px;opacity:0.3;pointer-events:none"' : ' style="padding-left:20px"')
+        + (plOffDis ? '' : ' onclick="event.stopPropagation();playFromPlaylist(\'' + esc_id + '\',' + ti + ')"') + '>'
+        + '<div class="info"><div class="name" style="font-size:12px">' + esc(t.title) + '</div>'
+        + '<div class="artist" style="font-size:11px">' + esc(t.artist) + '</div></div>' + plCachedDot + '</div>';
     }
-    html += '</div>';
   }
+  html += '</div>';
+  return html;
+}
+
+// Два раздела с постоянными заголовками: у умных и пользовательских плейлистов
+// разная природа (состав вычисляется против составленного руками), и без явной
+// границы они читались как один список. Кнопки разложены по смыслу: «Периоды»
+// настраивает умные, «Создать» — пользовательские.
+function renderPlaylists() {
+  var demo = userRole === 'demo';
+  var html = '<div class="pl-section"><span class="pl-section-title">Умные плейлисты</span>'
+    + (demo ? '' : '<button class="folder-btn folder-btn-secondary" onclick="openErasModal()" data-tip="Периоды прослушивания">Периоды</button>')
+    + '</div>';
+  // Радиостанция — не плейлист: состава у неё нет, она его порождает. Поэтому
+  // своя карточка, а не строка в общем списке.
+  html += '<div class="album-card radio-card' + (radioOn ? ' on' : '') + '" onclick="openRadioModal()">'
+    + '<div class="album-cover" style="display:flex;align-items:center;justify-content:center;background:rgba(233,69,96,0.12);color:#e94560">'
+    + '<svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2a1 1 0 0 1 .45 1.9L8.2 6h11.3A2.5 2.5 0 0 1 22 8.5v10A2.5 2.5 0 0 1 19.5 21h-15A2.5 2.5 0 0 1 2 18.5v-10a2.5 2.5 0 0 1 1.6-2.33l8-3.98A1 1 0 0 1 12 2zm5 7a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7zm0 2a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3zM5 10h6v2H5v-2zm0 4h6v2H5v-2z"/></svg></div>'
+    + '<div class="album-info"><div class="album-name">Радиостанция</div>'
+    + '<div class="album-count">' + (radioOn ? 'играет · ' + esc(radioSummary()) : 'бесконечный поток по критериям') + '</div></div>'
+    + '</div>';
+  if (smartPlaylists.length) {
+    for (var si = 0; si < smartPlaylists.length; si++) html += plCardHtml(smartPlaylists[si], -1);
+  } else {
+    html += '<div class="rel-note" style="padding:2px 14px 8px">Соберутся сами, когда накопится история прослушиваний'
+      + (demo ? '' : ' или вы разметите периоды') + '.</div>';
+  }
+  html += '<div class="pl-section"><span class="pl-section-title">Мои плейлисты</span>'
+    + (demo ? '' : '<button class="folder-btn folder-btn-secondary" onclick="createPlaylist()">+ Создать</button>')
+    + '</div>';
+  if (!userPlaylists.length) {
+    html += '<div class="rel-note" style="padding:2px 14px 8px">Пока ни одного.</div>';
+  }
+  for (var i = 0; i < userPlaylists.length; i++) html += plCardHtml(userPlaylists[i], i);
   document.getElementById('playlistsList').innerHTML = html;
   initPlDrag();
+}
+
+// ── Окно разметки периодов ──
+// Правим в номерах — так думает пользователь, глядя на список. В якоря номера
+// переводятся при сохранении.
+var _eraDraft = [];
+var RADIO_GENRE_MIN = 10;     // мельче — прячем за чипом «ещё»
+var _radioGenresOpen = false;
+
+function openErasModal() {
+  if (!tracks.length) { showToast('Сначала откройте каталог'); return; }
+  _eraDraft = (eraConfig.eras || []).map(function(e) {
+    var r = resolveEra(e);
+    return {year: e.year, from: eraFileNo(r.from), to: eraFileNo(r.to)};
+  });
+  _eraDraft.sort(function(a, b){ return a.from - b.from; });
+  document.getElementById('erasEnabled').checked = !!eraConfig.enabled;
+  renderEraRows();
+  document.getElementById('erasOverlay').classList.add('show');
+}
+
+function closeErasModal() { document.getElementById('erasOverlay').classList.remove('show'); }
+
+function renderEraRows() {
+  var html = '';
+  for (var i = 0; i < _eraDraft.length; i++) {
+    var d = _eraDraft[i];
+    html += '<div class="era-row">'
+      + '<input type="number" style="width:74px" placeholder="год" value="' + esc(String(d.year || '')) + '" oninput="setEraField(' + i + ',\'year\',this.value)">'
+      + '<span class="era-sep">треки №</span>'
+      + '<input type="number" style="flex:1" placeholder="с" value="' + esc(String(d.from || '')) + '" oninput="setEraField(' + i + ',\'from\',this.value)">'
+      + '<span class="era-sep">–</span>'
+      + '<input type="number" style="flex:1" placeholder="по" value="' + esc(String(d.to || '')) + '" oninput="setEraField(' + i + ',\'to\',this.value)">'
+      + '<button class="shuffle-btn" style="width:30px;height:30px;flex-shrink:0;color:#e94560" onclick="removeEraRow(' + i + ')" data-tip="Убрать">&times;</button>'
+      + '</div>'
+      + '<div class="era-bound">'
+      +   '<button class="era-pick-link" id="eraBoundFrom' + i + '" onclick="openEraPick(' + i + ',\'from\')"></button>'
+      +   '<button class="era-pick-link" id="eraBoundTo' + i + '" onclick="openEraPick(' + i + ',\'to\')"></button>'
+      + '</div>';
+  }
+  document.getElementById('erasRows').innerHTML = html;
+  for (var k = 0; k < _eraDraft.length; k++) paintEraBounds(k);
+  document.getElementById('erasHint').textContent =
+    'В каталоге ' + tracks.length + ' треков, номера с ' + eraFileNo(0) + ' по ' + eraFileNo(tracks.length - 1)
+    + '. Первый в списке — самый свежий.';
+}
+
+function setEraField(i, field, value) {
+  if (!_eraDraft[i]) return;
+  _eraDraft[i][field] = value;      // перерисовку не делаем: сбросился бы фокус
+  paintEraBounds(i);
+}
+
+// Показываем, какие треки легли на края: номер в имени файла и позиция в списке
+// расходятся, и без этого пользователь не мог бы проверить себя.
+function paintEraBounds(i) {
+  var d = _eraDraft[i];
+  if (!d) return;
+  var pair = [['From', d.from], ['To', d.to]];
+  for (var k = 0; k < pair.length; k++) {
+    var el = document.getElementById('eraBound' + pair[k][0] + i);
+    if (!el) continue;
+    var t = tracks[eraPosOfNumber(pair[k][1])];
+    var label = k === 0 ? 'с: ' : 'по: ';
+    el.textContent = t ? (label + (t.artist || '?') + ' · ' + (t.title || '?')) : (label + 'выбрать трек');
+  }
+}
+
+// ── Выбор границы по списку треков ──
+var _eraPickTarget = null;
+var ERA_PICK_MAX = 400;      // 2440 строк разом подвешивают вкладку
+
+function openEraPick(i, field) {
+  if (!_eraDraft[i]) return;
+  _eraPickTarget = {i: i, field: field};
+  document.getElementById('eraPickTitle').textContent =
+    'Период ' + (_eraDraft[i].year || '') + ': ' + (field === 'from' ? 'первый трек' : 'последний трек');
+  var q = document.getElementById('eraPickSearch');
+  q.value = '';
+  renderEraPick('');
+  document.getElementById('eraPickOverlay').classList.add('show');
+  // Сразу подкручиваем к текущей границе — обычно правят рядом с ней.
+  var cur = document.getElementById('eraPickCur');
+  if (cur && cur.scrollIntoView) cur.scrollIntoView({block: 'center'});
+}
+
+function closeEraPick() {
+  document.getElementById('eraPickOverlay').classList.remove('show');
+  _eraPickTarget = null;
+}
+
+function renderEraPick(query) {
+  if (!_eraPickTarget) return;
+  var q = normSearch(query || '');
+  var curNo = _eraDraft[_eraPickTarget.i] ? _eraDraft[_eraPickTarget.i][_eraPickTarget.field] : 0;
+  var curPos = eraPosOfNumber(curNo);
+  var html = '', shown = 0, total = 0;
+  for (var i = 0; i < tracks.length; i++) {
+    var t = tracks[i];
+    if (q && normSearch((t.artist || '') + ' ' + (t.title || '') + ' ' + t.file).indexOf(q) < 0) continue;
+    total++;
+    if (shown >= ERA_PICK_MAX) continue;
+    shown++;
+    html += '<div class="era-pick-row"' + (i === curPos ? ' id="eraPickCur" style="background:rgba(233,69,96,0.12)"' : '')
+      + ' onclick="pickEraTrack(' + i + ')">'
+      + '<span class="era-pick-no">' + eraFileNo(i) + '</span>'
+      + '<span class="era-pick-name">' + esc(t.artist || '') + ' · ' + esc(t.title || '') + '</span></div>';
+  }
+  document.getElementById('eraPickList').innerHTML = html || '<div style="padding:14px;color:rgba(255,255,255,0.3);font-size:12px">Ничего не нашлось</div>';
+  document.getElementById('eraPickNote').textContent = total > shown
+    ? ('Показано ' + shown + ' из ' + total + ' – уточните поиск')
+    : (total ? ('Найдено: ' + total) : '');
+}
+
+function pickEraTrack(i) {
+  if (!_eraPickTarget) return;
+  var d = _eraDraft[_eraPickTarget.i];
+  if (d) d[_eraPickTarget.field] = eraFileNo(i);
+  closeEraPick();
+  renderEraRows();
+}
+
+function addEraRow() {
+  var last = _eraDraft.length ? _eraDraft[_eraDraft.length - 1] : null;
+  var from = last ? (parseInt(last.to, 10) || 0) + 1 : eraFileNo(0);
+  _eraDraft.push({year: '', from: from, to: eraFileNo(tracks.length - 1)});
+  renderEraRows();
+}
+
+function removeEraRow(i) { _eraDraft.splice(i, 1); renderEraRows(); }
+
+function applyEras() {
+  var rows = [];
+  for (var i = 0; i < _eraDraft.length; i++) {
+    var d = _eraDraft[i];
+    var year = parseInt(d.year, 10);
+    if (!year) continue;                       // строка без года — просто пустая
+    // Ввод — в номерах файлов, хранение — в позициях и якорях.
+    var from = eraPosOfNumber(d.from) + 1, to = eraPosOfNumber(d.to) + 1;
+    if (from > to) { var sw = from; from = to; to = sw; }
+    rows.push({year: year, from_pos: from, to_pos: to,
+               from: eraAnchorAt(from), to: eraAnchorAt(to),
+               // Период, начинающийся с первого трека каталога, остаётся открытым
+               // сверху: новые треки приходят наверх и должны попадать в текущий
+               // год сами, без правки границ.
+               open_start: from === 1});
+  }
+  eraConfig.enabled = document.getElementById('erasEnabled').checked;
+  eraConfig.eras = rows;
+  saveEras();
+  closeErasModal();
+  showToast(eraConfig.enabled ? 'Периодов: ' + rows.length : 'Периоды выключены');
 }
 
 function togglePlaylistExpand(id) {
@@ -9166,12 +12394,15 @@ function plReorder(fromIdx, toIdx) {
   // Save to server
   var order = userPlaylists.map(function(p){return p.id});
   var folder = document.getElementById('folderSelect').value;
-  fetch('/api/playlists', {method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({folder: folder, action: 'reorder', order: order})});
+  // Локальный список уже переставлен выше, поэтому здесь только отправка.
+  plWrite({folder: folder, action: 'reorder', order: order}, function(d, queued) {
+    if (queued) plMirror();
+  });
 }
 
 function playFromPlaylist(plId, trackIndex) {
-  var pl = userPlaylists.find(function(p){return p.id===plId});
+  stopRadio();
+  var pl = findPlaylist(plId);
   if (!pl) return;
   playQueue = [];
   for (var i = 0; i < pl.tracks.length; i++) {
@@ -9186,18 +12417,40 @@ function playFromPlaylist(plId, trackIndex) {
   selectTrack(playQueue[playQueuePos], true);
 }
 
+// Обложка на карточке плейлиста. Раньше <img> вели прямо на /api/cover/ и без
+// запасного пути: без сервера запрос падал, и браузер рисовал свой значок
+// битой картинки — хотя обложка лежала в кэше, а на совсем пустой случай у нас
+// есть заглушка. Список треков этой болезнью не болел, там onerror был.
+function plCoverImg(file) {
+  var enc = encodeURIComponent(file);
+  return '<img src="/api/cover/' + enc + '" style="width:100%;height:100%;object-fit:cover"'
+       + ' onerror="plCoverFallback(this,\'' + enc + '\')">';
+}
+
+function plCoverFallback(img, encodedFile) {
+  img.onerror = null;                       // без этого возможна петля
+  getCachedCover(decodeURIComponent(encodedFile), function(buf) {
+    if (buf) { img.src = URL.createObjectURL(new Blob([buf])); return; }
+    // В кэше тоже нет — показываем свою заглушку, а не битую картинку.
+    var ph = document.createElement('div');
+    ph.className = 'pl-cover-ph';
+    ph.innerHTML = '&#9835;';
+    if (img.parentNode) img.parentNode.replaceChild(ph, img);
+  });
+}
+
 function buildPlCover(pl) {
   // 4 covers from last 4 tracks
   var covers = [];
   for (var i = pl.tracks.length - 1; i >= 0 && covers.length < 4; i--) {
     var file = pl.tracks[i];
     var t = tracks.find(function(tr){return tr.file === file});
-    if (t && t.has_cover) covers.push('/api/cover/' + encodeURIComponent(t.file));
+    if (t && t.has_cover) covers.push(t.file);
   }
-  if (covers.length === 0) return '<div style="width:100%;height:100%;background:#333;display:flex;align-items:center;justify-content:center;color:rgba(255,255,255,0.2);font-size:20px">&#9835;</div>';
-  if (covers.length < 4) return '<img src="' + covers[0] + '" style="width:100%;height:100%;object-fit:cover">';
+  if (covers.length === 0) return '<div class="pl-cover-ph">&#9835;</div>';
+  if (covers.length < 4) return plCoverImg(covers[0]);
   return '<div style="display:grid;grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr;width:100%;height:100%">'
-    + covers.map(function(c){return '<img src="'+c+'" style="width:100%;height:100%;object-fit:cover">'}).join('')
+    + covers.map(plCoverImg).join('')
     + '</div>';
 }
 
@@ -9326,37 +12579,48 @@ function deletePlEdit() {
     fetch('/api/playlists', {method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({folder: folder, action: 'delete', id: plEditId})})
     .then(function(r){return r.json()}).then(function(d) {
-      if (d.ok) {
-        showToast('Плейлист удалён');
-        document.getElementById('plEditOverlay').classList.remove('show');
-        loadUserPlaylists();
-      } else showToast(d.error);
-    });
+      // Удаление не откладывается: сервер здесь истина. Без связи оно просто не
+      // происходит, и об этом надо сказать — молчание выглядело бы как успех.
+      if (!d || d.error || !d.ok) { showToast('Удаление доступно только при связи с сервером'); return; }
+      showToast('Плейлист удалён');
+      document.getElementById('plEditOverlay').classList.remove('show');
+      loadUserPlaylists();
+    }).catch(function(){ showToast('Удаление доступно только при связи с сервером'); });
   }, 'Удалить');
 }
 
 function savePlEdit() {
-  var folder = document.getElementById('folderSelect').value;
+  var folder = _curFolder || document.getElementById('folderSelect').value;
   var name = document.getElementById('plEditName').value.trim() || 'Плейлист';
-  var action = plEditId ? 'update' : 'create';
-  var body = {folder: folder, action: action, name: name, tracks: plEditTracks};
-  if (plEditId) body.id = plEditId;
-  fetch('/api/playlists', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)})
-  .then(function(r){return r.json()}).then(function(d) {
-    if (d.ok) {
-      showToast(plEditId ? 'Плейлист обновлён' : 'Плейлист создан');
-      document.getElementById('plEditOverlay').classList.remove('show');
-      loadUserPlaylists();
+  var isNew = !plEditId;
+  // Новому плейлисту нужен временный id: без сети сервер его ещё не присвоил, а
+  // показать и дать править нужно уже сейчас. При досылке сервер выдаст свой,
+  // и список перечитается.
+  var id = plEditId || plTempId();
+  var tracks_ = plEditTracks.slice();
+  var body = {folder: folder, action: isNew ? 'create' : 'update',
+              name: name, tracks: tracks_, id: id};
+  plWrite(body, function(d, queued) {
+    if (queued) {
+      // Применяем у себя: для пользователя правка уже состоялась.
+      if (isNew) userPlaylists.push({id: id, name: name, tracks: tracks_});
+      else for (var i = 0; i < userPlaylists.length; i++) {
+        if (userPlaylists[i].id === id) { userPlaylists[i].name = name; userPlaylists[i].tracks = tracks_; }
+      }
+      plMirror();
+      renderPlaylists();
+      showToast((isNew ? 'Плейлист создан' : 'Плейлист обновлён') + ' — уйдёт на сервер при подключении');
     } else {
-      // Окно остаётся открытым: собранный список треков — это работа, и терять
-      // её из-за пропавшей связи нельзя. Появится сеть — жмите «Сохранить» ещё раз.
-      showToast(d.error || 'Ошибка');
+      showToast(isNew ? 'Плейлист создан' : 'Плейлист обновлён');
+      loadUserPlaylists();
     }
-  }).catch(function() { showToast('Нет связи с сервером — изменение не сохранено'); });
+    document.getElementById('plEditOverlay').classList.remove('show');
+  });
 }
 
 function playPlaylist(id) {
-  var pl = userPlaylists.find(function(p){return p.id===id});
+  stopRadio();          // попросили конкретный плейлист — станция больше не ведёт
+  var pl = findPlaylist(id);
   if (!pl || !pl.tracks.length) return;
   // Build play queue from playlist tracks
   playQueue = [];
@@ -9845,13 +13109,10 @@ function ctxAddToPlaylist(plId, where) {
   if (where === 'start') newTracks.unshift(file);
   else newTracks.push(file);
   var folder = document.getElementById('folderSelect').value;
-  fetch('/api/playlists', {method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({folder: folder, action: 'update', id: plId, tracks: newTracks})})
-  .then(function(r){return r.json()}).then(function(d) {
-    if (d.ok) {
-      pl.tracks = newTracks;
-      showToast('Добавлено в «' + pl.name + '»');
-    }
+  plWrite({folder: folder, action: 'update', id: plId, tracks: newTracks}, function(d, queued) {
+    pl.tracks = newTracks;
+    plMirror();
+    showToast('Добавлено в «' + pl.name + '»' + (queued ? ' — уйдёт на сервер при подключении' : ''));
   });
 }
 
@@ -9927,11 +13188,11 @@ function exitSelection() {
   selectedFiles = {};
   document.getElementById('selectControls').style.display = 'none';
   // Restore header controls to their normal visibility.
-  document.getElementById('shuffleListBtn').style.display = '';
   var onTracks = activeTab === 'tracks';
+  document.getElementById('shuffleListBtn').style.display = onTracks ? '' : 'none';
   document.getElementById('cacheBtn').style.display = onTracks ? '' : 'none';
   document.getElementById('cachedOnlyBtn').style.display = onTracks ? '' : 'none';
-  document.getElementById('downloadCatalogBtn').style.display = (isAdmin && !_isOffline) ? '' : 'none';
+  syncDownloadBtn();
   document.getElementById('editBtn').style.display = (isNumberedCatalog && userRole !== 'demo') ? '' : 'none';
   updateTrackCounter();
   renderTracks();
@@ -9952,13 +13213,13 @@ function bulkAddToPlaylist(plId, where) {
   if (!toAdd.length) { showToast('Уже в плейлисте'); exitSelection(); return; }
   var newTracks = where === 'start' ? toAdd.concat(existing) : existing.concat(toAdd);
   var folder = document.getElementById('folderSelect').value;
-  fetch('/api/playlists', {method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({folder: folder, action: 'update', id: plId, tracks: newTracks})})
-  .then(function(r){return r.json()}).then(function(d) {
-    if (d.ok) { pl.tracks = newTracks; showToast('Добавлено ' + toAdd.length + ' в «' + pl.name + '»'); }
-    else { showToast(d.error || 'Ошибка'); }
-    exitSelection();
+  plWrite({folder: folder, action: 'update', id: plId, tracks: newTracks}, function(d, queued) {
+    pl.tracks = newTracks;
+    plMirror();
+    showToast('Добавлено ' + toAdd.length + ' в «' + pl.name + '»'
+              + (queued ? ' — уйдёт на сервер при подключении' : ''));
   });
+  exitSelection();
 }
 
 function bulkCache() {
@@ -10071,8 +13332,10 @@ function plCtxDelete() {
     fetch('/api/playlists', {method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({folder: folder, action: 'delete', id: id})})
     .then(function(r){return r.json()}).then(function(d) {
-      if (d.ok) { showToast('Плейлист удалён'); loadUserPlaylists(); }
-    });
+      if (!d || d.error || !d.ok) { showToast('Удаление доступно только при связи с сервером'); return; }
+      showToast('Плейлист удалён');
+      loadUserPlaylists();
+    }).catch(function(){ showToast('Удаление доступно только при связи с сервером'); });
   }, 'Удалить');
 }
 
@@ -10107,28 +13370,85 @@ function plCtxDelete() {
   });
 })();
 
+var _tiCoverData = null;      // выбранная обложка, до сохранения только здесь
+
+function tiSet(id, val) {
+  var el = document.getElementById(id);
+  if (el) el.textContent = (val === '' || val === null || val === undefined) ? '—' : String(val);
+}
+
+function tiSetEdit(on) {
+  document.getElementById('tiModal').classList.toggle('editing', !!on);
+  if (on) document.getElementById('trackEditTitle').focus();
+  else openTrackEdit(editingTrackIdx);    // «Отмена» — вернуть исходные значения
+}
+
+function tiPickCover() { document.getElementById('tiCoverInput').click(); }
+
+function tiCoverChosen(input) {
+  var f = input.files && input.files[0];
+  input.value = '';
+  if (!f) return;
+  if (f.size > 4 * 1024 * 1024) { showToast('Обложка больше 4 МБ'); return; }
+  var rd = new FileReader();
+  rd.onload = function() {
+    _tiCoverData = rd.result;             // data:image/...;base64,...
+    var img = document.getElementById('tiCover');
+    img.src = _tiCoverData;
+    img.style.display = '';
+    document.getElementById('tiCoverPh').style.display = 'none';
+  };
+  rd.readAsDataURL(f);
+}
+
+// Окно сведений о треке. Правка включается кнопкой: смотреть теги нужно часто,
+// менять — редко, и случайная правка на ощупь никому не нужна.
 function openTrackEdit(idx) {
   if (idx < 0 || idx >= tracks.length) return;
   editingTrackIdx = idx;
+  _tiCoverData = null;
   var t = tracks[idx];
+
+  document.getElementById('tiModal').classList.remove('editing');
   document.getElementById('trackEditFile').textContent = t.file;
-  document.getElementById('trackEditTitle').value = t.title || '';
-  document.getElementById('trackEditArtist').value = t.artist || '';
-  document.getElementById('trackEditMeta').checked = false;
+  tiSet('tiHeadTitle', t.title || t.file);
+  tiSet('tiHeadArtist', t.artist || '');
+
+  var img = document.getElementById('tiCover'), ph = document.getElementById('tiCoverPh');
+  img.style.display = 'none'; ph.style.display = '';
+  img.onerror = function(){ img.style.display = 'none'; ph.style.display = ''; };
+  img.onload = function(){ img.style.display = ''; ph.style.display = 'none'; };
+  setCoverSrc(img, t.file, t.has_cover, ph);
+
+  // Значения для просмотра и они же в поля правки.
+  var pairs = [['tiValTitle', 'trackEditTitle', t.title || ''],
+               ['tiValArtist', 'trackEditArtist', t.artist || ''],
+               ['tiValAlbum', 'tiAlbum', t.album || ''],
+               ['tiValAart', 'tiAart', t.aart || ''],
+               ['tiValYear', 'tiYear', t.yr || ''],
+               ['tiValGenre', 'tiGenre', t.gen || ''],
+               ['tiValTrk', 'tiTrk', t.trk || '']];
+  for (var i = 0; i < pairs.length; i++) {
+    tiSet(pairs[i][0], pairs[i][2]);
+    var inp = document.getElementById(pairs[i][1]);
+    if (inp) inp.value = pairs[i][2] === '' ? '' : pairs[i][2];
+  }
+
   var m = t.file.match(/^(\d+)\.\s/);
   var hint = document.getElementById('trackEditOrderHint');
-  if (m) {
-    document.getElementById('trackEditOrder').value = parseInt(m[1]);
-    hint.textContent = '(сейчас: ' + parseInt(m[1]) + ')';
-  } else {
-    document.getElementById('trackEditOrder').value = '';
-    hint.textContent = '(нет номера — введите чтобы назначить)';
-  }
-  // Show cache status
-  var cacheRow = document.getElementById('trackEditCacheRow');
-  cacheRow.style.display = isTrackCached(t.file) ? 'flex' : 'none';
+  document.getElementById('trackEditOrder').value = m ? parseInt(m[1]) : '';
+  tiSet('tiValOrder', m ? parseInt(m[1]) : '');
+  hint.textContent = m ? '' : '(нет номера)';
+
+  tiSet('tiValDur', t.dur ? formatTime(t.dur) : '');
+  var q = [];
+  if (t.fmt) q.push(t.fmt);
+  if (t.br) q.push(t.br + ' кбит/с');
+  tiSet('tiValQuality', q.join(' · '));
+
+  document.getElementById('trackEditMeta').checked = false;
+  document.getElementById('trackEditCacheRow').style.display = isTrackCached(t.file) ? 'flex' : 'none';
   document.getElementById('trackEditOverlay').classList.add('show');
-  document.getElementById('trackEditTitle').focus();
 }
 
 function uncacheEditTrack() {
@@ -10169,7 +13489,16 @@ function saveTrackEdit() {
   if (wasPlaying) { audio.pause(); setPlayState(false); }
 
   fetch('/api/track/edit', {method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({folder: folder, file: t.file, title: title, artist: artist, order: order, run_meta: runMeta})})
+    body: JSON.stringify({folder: folder, file: t.file, title: title, artist: artist,
+      order: order, run_meta: runMeta,
+      // Пустое поле означает «не трогать тег», а не «стереть»: стереть его
+      // случайно в окне правки слишком легко, а вернуть нечем.
+      album: document.getElementById('tiAlbum').value.trim(),
+      albumartist: document.getElementById('tiAart').value.trim(),
+      genre: document.getElementById('tiGenre').value.trim(),
+      year: document.getElementById('tiYear').value,
+      track_no: document.getElementById('tiTrk').value,
+      cover: _tiCoverData || ''})})
   .then(function(r){return r.json()}).then(function(d) {
     if (d.ok) {
       showToast(runMeta ? 'Трек обновлён, ищу мета-данные...' : 'Трек обновлён');
@@ -10690,7 +14019,7 @@ function updateCacheBtn() {
 }
 
 function cachePlaylist(plId) {
-  var pl = userPlaylists.find(function(p){return p.id===plId});
+  var pl = findPlaylist(plId);
   if (!pl) return;
   var files = pl.tracks.filter(function(f) { return !isTrackCached(f); });
   if (!files.length) { showToast('Плейлист уже в кэше'); return; }
@@ -10806,18 +14135,24 @@ function warmAppCache() {
   }
   // Check on load (after 5s) and every 60s
   setTimeout(checkUpdate, 5000);
-  setInterval(checkUpdate, 60000);
+  setInterval(function(){ if (_uiActive) checkUpdate(); }, 60000);
 })();
 
+perfLoad();
+syncUiActive();
 initBgCanvas();
 // Hide volume slider on iOS (audio.volume is read-only)
 if(_isIOS){var vw=document.querySelector('.volume-wrap input[type=range]');if(vw)vw.style.display='none';var vs=document.querySelector('.volume-wrap span');if(vs)vs.style.display='none';}
 initMediaSession();
+initMediaLogging();
 initPlaybackContext();
 initWidgetBridge();
 
 // Detect online/offline transitions
 window.addEventListener('online', function() {
+  flushPlays();
+  flushEras();
+  flushPlaylists();
   if (_isOffline) {
     _isOffline = false;
     showOfflineBanner(false);
@@ -11048,6 +14383,10 @@ class Handler(BaseHTTPRequestHandler):
             if not self._is_localhost():
                 self._respond_json({"error": "forbidden"})
                 return
+            # Эту ручку читает сам виджет — значит он запущен. Другого признака
+            # его присутствия у нас нет, и лучшего не нужно.
+            global _widget_seen
+            _widget_seen = time.time()
             with _widget_lock:
                 st = dict(_widget_state)
             ts = st.pop("ts", 0)
@@ -11066,7 +14405,10 @@ class Handler(BaseHTTPRequestHandler):
             with _widget_lock:
                 cmd = _widget_command
                 _widget_command = None
-            self._respond_json({"cmd": cmd})
+            # Браузер по этому флагу решает, как часто спрашивать: пока виджета
+            # нет, чаще раза в десять секунд незачем.
+            alive = WIDGET_POSSIBLE and (time.time() - _widget_seen) < WIDGET_ALIVE_SEC
+            self._respond_json({"cmd": cmd, "widget": alive})
             return
 
         if not user:
@@ -11109,6 +14451,7 @@ class Handler(BaseHTTPRequestHandler):
                 "role": udata.get("role", "user") if udata else "user",
                 "music_root": get_music_root(),
                 "is_local": is_local,
+                "widget_possible": WIDGET_POSSIBLE,
             })
 
         elif path == "/api/scan":
@@ -11214,11 +14557,18 @@ class Handler(BaseHTTPRequestHandler):
             # исключительно кнопкой (/api/releases/refresh): ходить в чужие API
             # и сканировать библиотеку в фоне, когда пользователь об этом не
             # просил, — не то поведение, которого от плеера ждут.
+            q = parse_qs(parsed.query)
             try:
-                limit = int(parse_qs(parsed.query).get("limit", [RELEASES_LIMIT])[0])
+                limit = int(q.get("limit", [RELEASES_LIMIT])[0])
             except Exception:
                 limit = RELEASES_LIMIT
-            self._respond_json(build_releases_feed(user, max(50, min(3000, limit))))
+            limit = max(50, min(3000, limit))
+            # Обе ленты растут из одного кэша артистов, поэтому это одна ручка
+            # с переключателем, а не два раздельных конвейера.
+            if q.get("mode", ["new"])[0] == "foryou":
+                self._respond_json(build_foryou_feed(user, limit))
+            else:
+                self._respond_json(build_releases_feed(user, limit))
 
         elif path == "/api/releases/preview":
             src_url = parse_qs(parsed.query).get("u", [""])[0]
@@ -12122,6 +15472,35 @@ class Handler(BaseHTTPRequestHandler):
             new_artist = data.get("artist", "").strip()
             new_order = data.get("order", 0)
             run_meta = data.get("run_meta", False)
+            # Остальные теги и обложка приходят по желанию: пустое поле значит
+            # «не трогать», а не «стереть» — стирать теги из окна правки нельзя,
+            # это слишком легко сделать случайно.
+            extra = {}
+            for key in ("album", "genre", "albumartist"):
+                val = (data.get(key) or "").strip()
+                if val:
+                    extra[key] = val
+            try:
+                if int(data.get("year") or 0):
+                    extra["year"] = str(int(data["year"]))
+            except (TypeError, ValueError):
+                pass
+            try:
+                if int(data.get("track_no") or 0):
+                    extra["track"] = int(data["track_no"])
+            except (TypeError, ValueError):
+                pass
+            cover_bytes = None
+            cover_b64 = data.get("cover") or ""
+            if cover_b64:
+                try:
+                    raw = base64.b64decode(cover_b64.split(",", 1)[-1])
+                    # Проверяем сигнатурой, а не доверяем присланному типу:
+                    # записать в тег что угодно означало бы сломать файл.
+                    if _art_sniff(raw):
+                        cover_bytes = raw
+                except Exception:
+                    cover_bytes = None
             if not folder or not old_file or not new_title:
                 self._respond_json({"ok": False, "error": "Заполните название."})
                 return
@@ -12200,6 +15579,10 @@ class Handler(BaseHTTPRequestHandler):
                     try:
                         fp = str(Path(folder) / new_name)
                         _update_tags(fp, new_title, new_artist)
+                        # Остальное дописываем общим писателем: он умеет и
+                        # обложку, и жанр с годом, и знает форматы.
+                        if extra or cover_bytes:
+                            write_metadata_to_file(str(fp), extra, cover_bytes, overwrite=True)
                     except Exception:
                         pass
                 # Run meta search if requested
@@ -12223,6 +15606,31 @@ class Handler(BaseHTTPRequestHandler):
                 self._respond_json({"ok": True, "new_file": new_name})
             except Exception:
                 self._respond_json({"ok": False, "error": "Ошибка переименования."})
+
+        elif path == "/api/eras":
+            folder = data.get("folder", _user_music_dirs.get(user, ""))
+            if not folder:
+                self._respond_json({"ok": False, "error": "Нет каталога."})
+                return
+            if data.get("action") == "save":
+                if self._deny_demo(udata): return
+                self._respond_json({"ok": True, "eras": save_eras(folder, data)})
+            else:
+                self._respond_json({"ok": True, "eras": load_eras(folder)})
+
+        elif path == "/api/plays":
+            # POST и для чтения — как у /api/playlists: путь каталога в query
+            # строке выглядел бы плохо и упирался бы в её длину.
+            folder = data.get("folder", _user_music_dirs.get(user, ""))
+            if not folder:
+                self._respond_json({"ok": False, "error": "Нет каталога."})
+                return
+            if data.get("action") == "record":
+                if self._deny_demo(udata): return
+                n = record_plays(user, folder, data.get("plays") or [])
+                self._respond_json({"ok": True, "recorded": n})
+            else:
+                self._respond_json({"ok": True, "plays": get_plays(user, folder)})
 
         elif path == "/api/playlists":
             folder = data.get("folder", _user_music_dirs.get(user, ""))
