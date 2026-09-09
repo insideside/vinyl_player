@@ -5190,6 +5190,7 @@ html.ui-idle .radio-halo.on { animation-play-state: paused; }
           <button class="folder-btn folder-btn-secondary" style="flex:1;font-size:12px" onclick="copyMediaLog()">Копировать</button>
           <button class="folder-btn folder-btn-secondary" style="flex:1;font-size:12px;color:#e94560" onclick="clearMediaLog()">Очистить</button>
         </div>
+        <button id="scratchCtxBtn" class="folder-btn folder-btn-secondary" style="width:100%;font-size:12px;margin-top:6px" onclick="toggleScratchCtx()">Звук скретча: вкл</button>
         <button id="recoverBtn" class="folder-btn folder-btn-secondary" style="width:100%;font-size:12px;margin-top:6px" onclick="toggleRecover()">Пересборка при застревании: выкл</button>
       </div>
     </div>
@@ -5367,6 +5368,7 @@ var _pwaAudioChecked = false;
 var _pwaRecoverAttempts = 0;
 
 function _pwaRecoverAudio() {
+  if (typeof mediaLog === 'function') mediaLog('pwa:recover', mediaLogState());
   // iOS PWA audio session recovery:
   // 1. Try re-creating audio element (clears stale WebKit audio state)
   // 2. Try silent AudioContext unlock (activates system audio session)
@@ -5579,12 +5581,34 @@ function prefetchNext() {
 
 // ── Scratch sound via Web Audio API ──
 var audioCtx = null;
+var _scratchOff = false;
+try { _scratchOff = localStorage.getItem('_vc_noctx') === '1'; } catch (e) {}
 var scratchGain = null;
 var scratchNoise = null;
 var scratchFilter = null;
 var isScratchPlaying = false;
 
+function acRevive(where) {
+  if (!audioCtx || audioCtx.state === 'running') return;
+  var p = null;
+  try { p = audioCtx.resume(); }
+  catch (e) { mediaLog('ac:resume>throw', where + ' ' + ((e && e.name) || '?')); return; }
+  if (p && p.then) {
+    p.then(function() { mediaLog('ac:resume>ok', where + ' ' + audioCtx.state); },
+           function(e) { mediaLog('ac:resume>rej', where + ' ' + ((e && e.name) || '?')); });
+  }
+}
+
+function scratchCtxRelease() {
+  if (!audioCtx) return;
+  try { audioCtx.close(); } catch (e) {}
+  audioCtx = null; scratchGain = null; scratchFilter = null; scratchNoise = null;
+  isScratchPlaying = false;
+  if (typeof mediaLog === 'function') mediaLog('ac:closed');
+}
+
 function initScratchSound() {
+  if (_scratchOff) return;
   if (audioCtx) {
     // iOS requires resume after user gesture
     if (audioCtx.state === 'suspended') audioCtx.resume();
@@ -5610,6 +5634,11 @@ function initScratchSound() {
   scratchFilter.connect(scratchGain);
   scratchGain.connect(audioCtx.destination);
   scratchNoise.start();
+  var ctx = audioCtx;
+  try {
+    ctx.addEventListener('statechange', function() { mediaLog('ac:' + ctx.state); });
+  } catch (e) {}
+  mediaLog('ac:created', audioCtx.state);
 }
 
 function startScratch(speed) {
@@ -5629,10 +5658,9 @@ function startScratch(speed) {
 // (iOS PWA requires a gesture to unlock audio; touchmove alone is not enough)
 (function() {
   function unlock() {
+    if (_scratchOff) return;
     if (!audioCtx) initScratchSound();
-    else if (audioCtx.state !== 'running') { try { audioCtx.resume(); } catch(e) {} }
-    document.removeEventListener('touchstart', unlock, true);
-    document.removeEventListener('mousedown', unlock, true);
+    acRevive('touch');
   }
   document.addEventListener('touchstart', unlock, true);
   document.addEventListener('mousedown', unlock, true);
@@ -6538,7 +6566,7 @@ function selectTrack(i, autoplay) {
 
   function doPlay() {
     if (!autoplay) return;
-    var p = audio.play();
+    var p = ourAudioPlay();
     if (p && p.then) p.then(function() {
       if (!_pwaAudioChecked && window.navigator.standalone) {
         _pwaAudioChecked = true;
@@ -6571,7 +6599,7 @@ function selectTrack(i, autoplay) {
           audio.addEventListener('loadedmetadata', function onceLm() {
             audio.removeEventListener('loadedmetadata', onceLm);
             try { audio.currentTime = curTime; } catch(e) {}
-            if (wasPlaying) audio.play().catch(function(){});
+            if (wasPlaying) ourAudioPlay().catch(function(){});
           });
           setAudioSrc(streamUrl);
         }
@@ -6602,13 +6630,13 @@ function selectTrack(i, autoplay) {
         if (buf) {
           _blobUrlCache[t.file] = makeBlobUrl(buf, t.file);
           setAudioSrc(_blobUrlCache[t.file]);
-          if (autoplay) audio.play().catch(function(){});
+          if (autoplay) ourAudioPlay().catch(function(){});
           watchDuration(true);
         } else {
           delete cachedFiles[cacheKey(t.file)];
           if (!_isOffline) {
             setAudioSrc(streamUrl);
-            if (autoplay) audio.play().catch(function(){});
+            if (autoplay) ourAudioPlay().catch(function(){});
           }
         }
       });
@@ -6728,7 +6756,7 @@ function togglePlay() {
     audio.pause();
     setPlayState(false);
   } else {
-    audio.play();
+    ourAudioPlay();
     setPlayState(true);
   }
 }
@@ -8069,6 +8097,7 @@ function restorePlaybackContext() {
 // this is the only lever a web page has to reclaim the entry.
 function refreshNowPlaying() {
   if (currentIdx < 0 || currentIdx >= tracks.length) return;
+  initMediaSession();   // перевесить обработчики: набор команд система читает при захвате слота
   updateMediaSession(tracks[currentIdx]);
   onTimeUpdate();
   setMediaPlaybackState(audio.paused ? 'paused' : 'playing');
@@ -8132,7 +8161,7 @@ var _stuckAt = -1;   // позиция, на которой застряло в�
 
 function recoverCycle(t0) {
   try { audio.pause(); } catch (e) {}
-  var p = audio.play();
+  var p = ourAudioPlay();
   mediaLog('rec:cycle', mediaLogState());
   if (p && p.then) {
     p.then(function() { mediaLog('rec:cycle>ok'); },
@@ -8152,7 +8181,7 @@ function recoverReload(t0) {
     if (fired) return;
     fired = true;
     try { audio.currentTime = t0; } catch (e) {}
-    var p = audio.play();
+    var p = ourAudioPlay();
     mediaLog('rec:load>play', mediaLogState());
     if (p && p.then) {
       p.then(function() { mediaLog('rec:load>ok'); },
@@ -8164,6 +8193,19 @@ function recoverReload(t0) {
   }
   audio.addEventListener('loadedmetadata', onMeta);
   try { audio.load(); } catch (e) { mediaLog('rec:load>throw', e.name || '?'); }
+}
+
+function renderScratchBtn() {
+  var b = document.getElementById('scratchCtxBtn');
+  if (b) b.textContent = 'Звук скретча: ' + (_scratchOff ? 'выкл' : 'вкл');
+}
+
+function toggleScratchCtx() {
+  _scratchOff = !_scratchOff;
+  lsSet('_vc_noctx', _scratchOff ? '1' : '0');
+  mediaLog('ac:' + (_scratchOff ? 'disabled' : 'enabled'));
+  if (_scratchOff) scratchCtxRelease();
+  renderScratchBtn();
 }
 
 function renderRecoverBtn() {
@@ -8225,6 +8267,13 @@ function mediaLog(tag, extra) {
 
 // Снимок, по которому потом разбирают запись. hidden отличает блокировку
 // и сворачивание от простой потери фокуса.
+var _ourPlayAt = 0;
+
+function ourAudioPlay() {
+  _ourPlayAt = Date.now();
+  return audio.play();
+}
+
 function mediaLogState() {
   var u = audio.currentSrc || audio.src || '';
   // Источник решает всё: из офлайн-кэша играем blob:, без кэша — поток с
@@ -8235,7 +8284,9 @@ function mediaLogState() {
     + ' rs=' + audio.readyState
     + ' ' + kind
     + ' t=' + (audio.currentTime || 0).toFixed(1)
-    + ' v=' + audio.volume + (audio.muted ? ' MUTED' : '');
+    + ' v=' + audio.volume + (audio.muted ? ' MUTED' : '')
+    + ' ac=' + (audioCtx ? audioCtx.state : '-')
+    + ' act=' + (audioCtx ? audioCtx.currentTime.toFixed(1) : '-');
 }
 
 // Часы элемента при заблокированном экране. Если звука нет, а t растёт —
@@ -8251,12 +8302,15 @@ function initMediaLogging() {
       audio.addEventListener(name, function() {
         var extra = mediaLogState();
         if (name === 'error' && audio.error) extra = 'code=' + audio.error.code + ' ' + extra;
-        mediaLog('audio:' + name, extra);
+        var tag = 'audio:' + name;
+        if (name === 'play' && Date.now() - _ourPlayAt > 500) tag += '(ext)';
+        mediaLog(tag, extra);
       });
     })(evs[i]);
   }
   document.addEventListener('visibilitychange', function() {
     mediaLog(document.hidden ? 'page:hidden' : 'page:visible', mediaLogState());
+    if (!document.hidden) acRevive('visible');
     if (document.hidden || _stuckAt < 0) return;
     var t0 = _stuckAt;
     _stuckAt = -1;
@@ -8295,12 +8349,13 @@ function initMediaSession() {
   if (!('mediaSession' in navigator)) return;
   navigator.mediaSession.setActionHandler('play', function() {
     mediaLog('ms:play', mediaLogState());
+    acRevive('ms:play');
     if (currentIdx < 0 && tracks.length > 0) { mediaLog('ms:play>first'); selectTrack(0, true); return; }
     if (currentIdx < 0) { mediaLog('ms:play>noidx'); return; }
     // A restored track may have lost its src (iOS unloads media in suspended
     // pages), in which case play() would silently reject — reload it instead.
     if (!audio.currentSrc && !audio.src) { mediaLog('ms:play>reload'); reloadCurrentKeepingPos(); return; }
-    var p = audio.play();
+    var p = ourAudioPlay();
     if (p && p.then) {
       p.then(function() { mediaLog('ms:play>ok', mediaLogState()); resumeWatch(); },
              function(err) {
@@ -8312,8 +8367,10 @@ function initMediaSession() {
   });
   navigator.mediaSession.setActionHandler('pause', function() {
     mediaLog('ms:pause', mediaLogState());
+    acRevive('ms:pause');
     _stuckAt = -1;
     audio.pause(); setPlayState(false);
+    mediaLog('ms:pause>after', mediaLogState());
   });
   setMediaAction('previoustrack', function() { mediaLog('ms:prev', mediaLogState()); prevTrack(); });
   setMediaAction('nexttrack', function() { mediaLog('ms:next', mediaLogState()); nextTrack(); });
@@ -10222,7 +10279,7 @@ function toggleMediaLog() {
   if (!box) return;
   var open = box.style.display === 'none';
   box.style.display = open ? 'block' : 'none';
-  if (open) { renderMediaLog(); renderRecoverBtn(); }
+  if (open) { renderMediaLog(); renderScratchBtn(); renderRecoverBtn(); }
 }
 
 function copyMediaLog() {
@@ -13528,7 +13585,7 @@ function saveTrackEdit() {
               currentIdx = i;
               setAudioSrc('/api/stream/' + encodeURIComponent(d.new_file));
               audio.currentTime = playPos;
-              audio.play();
+              ourAudioPlay();
               setPlayState(true);
               break;
             }
