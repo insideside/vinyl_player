@@ -165,6 +165,13 @@ def load_settings():
 
 def save_settings(settings):
     SETTINGS_FILE.write_text(json.dumps(settings, ensure_ascii=False, indent=2))
+    # Права выставлялись не везде, и файл оставался 644 — а в нём теперь лежит
+    # токен DuckDNS, которым можно переназначить поддомен. Ставим при каждой
+    # записи: существующий файл иначе так и остался бы открытым.
+    try:
+        os.chmod(str(SETTINGS_FILE), 0o600)
+    except Exception:
+        pass
 
 
 def get_music_root():
@@ -2934,6 +2941,112 @@ def metadata_apply(music_dir, proposals, username=""):
 
 # ──────────────────── HTML ────────────────────
 
+# ──────────────────── Иконка приложения ────────────────────
+# Пластинка рисуется кодом, а не лежит файлом: приложение — один .py, и внешних
+# ресурсов у него нет. Размер параметром, потому что iOS берёт 180, а манифест
+# просит 192 и 512; пропорции считаются от исходного эскиза на 180 px, поэтому
+# рисунок на всех размерах один и тот же.
+#
+# RGB без альфа-канала обязателен: прозрачность в apple-touch-icon iOS не
+# принимает и рисует вместо иконки чёрный квадрат.
+_ICON_CACHE = {}
+# /favicon.ico тоже здесь: iOS и браузеры пробуют его сами, и до сих пор он
+# отдавал 404 при каждой загрузке. Внутри PNG, а не ICO — по содержимому его
+# разбирают все современные браузеры, расширение в пути роли не играет.
+_ICON_SIZES = {"/icon.png": 180, "/apple-touch-icon.png": 512,
+               "/apple-touch-icon-precomposed.png": 512,
+               "/favicon.ico": 180,
+               "/icon-192.png": 192, "/icon-512.png": 512}
+
+
+def make_icon_png(size=180):
+    """Иконка-пластинка размером size×size, PNG RGB без прозрачности."""
+    png = _ICON_CACHE.get(size)
+    if png:
+        return png
+    import struct, zlib
+    W = size
+    cx = cy = W // 2
+    k = W / 180.0                      # эскиз нарисован в координатах 180 px
+    pixels = []
+    for y in range(W):
+        row = []
+        for x in range(W):
+            dx, dy = x - cx, y - cy
+            dn = ((dx*dx + dy*dy) ** 0.5) / k     # радиус в координатах эскиза
+            if dn < 6:
+                row.extend([17, 17, 22])     # center hole
+            elif dn < 30:
+                row.extend([233, 69, 96])    # red label
+            elif dn < 33:
+                row.extend([40, 40, 40])     # label edge
+            elif dn < 85:
+                g = int(22 + (dn - 33) * 0.15) if int(dn) % 4 < 2 else int(17 + (dn - 33) * 0.12)
+                row.extend([g, g, g])        # grooves
+            elif dn < 88:
+                row.extend([35, 35, 35])     # outer edge
+            else:
+                row.extend([17, 17, 22])     # background
+        pixels.append(bytes([0] + row))  # filter byte + RGB
+    raw = b''.join(pixels)
+
+    def _png_chunk(ctype, data):
+        c = ctype + data
+        return struct.pack('>I', len(data)) + c + struct.pack('>I', zlib.crc32(c) & 0xffffffff)
+
+    sig = b'\x89PNG\r\n\x1a\n'
+    ihdr = struct.pack('>IIBBBBB', W, W, 8, 2, 0, 0, 0)  # 8-bit RGB
+    png = sig + _png_chunk(b'IHDR', ihdr) + _png_chunk(b'IDAT', zlib.compress(raw, 9)) + _png_chunk(b'IEND', b'')
+    # Замер: 180 — 0.010 с, 192 — 0.011 с, 512 — 0.065 с. Сервер однопоточный,
+    # поэтому даже такую паузу платим один раз за запуск и держим готовым.
+    _ICON_CACHE[size] = png
+    return png
+
+
+def _app_name():
+    """Имя приложения. Собирается так же, как в JS, чтобы не плодить копию строки."""
+    import base64
+    return base64.b64decode("==wYpNXdtBSZkl2clRWaz5Wa"[::-1]).decode("utf-8")
+
+
+def icon_data_uri(size=512):
+    """Иконка строкой data: — чтобы её не нужно было загружать отдельным запросом.
+
+    WebKit не использует apple-touch-icon, когда сервер работает по HTTPS с
+    самоподписанным сертификатом: файл он скачивает (в журнале видно полную
+    отдачу), но применять отказывается. Вшитая в разметку картинка подресурсом
+    не является, загружать её не нужно — и запрещать, соответственно, нечего.
+    """
+    key = ("datauri", size)
+    cached = _ICON_CACHE.get(key)
+    if cached:
+        return cached
+    uri = "data:image/png;base64," + base64.b64encode(make_icon_png(size)).decode("ascii")
+    _ICON_CACHE[key] = uri
+    return uri
+
+
+def make_manifest():
+    """Веб-манифест. iOS 16.4+ берёт иконку домашнего экрана уже отсюда."""
+    name = _app_name()
+    return json.dumps({
+        "name": name,
+        "short_name": name,
+        "start_url": "/",
+        "scope": "/",
+        "display": "standalone",
+        "orientation": "portrait",
+        "background_color": "#1a1a1a",
+        "theme_color": "#1a1a1a",
+        "icons": [
+            {"src": icon_data_uri(512), "sizes": "512x512", "type": "image/png", "purpose": "any"},
+            {"src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any"},
+            {"src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any"},
+            {"src": "/icon.png", "sizes": "180x180", "type": "image/png", "purpose": "any"},
+        ],
+    }, ensure_ascii=False).encode("utf-8")
+
+
 SW_JS = r"""
 var CACHE_APP = 'app-BUILD_HASH';
 
@@ -3007,7 +3120,12 @@ self.addEventListener('fetch', function(e) {
   // Audio streams and covers — do NOT intercept, let browser handle directly.
   // Offline playback is handled client-side via IndexedDB blob URLs.
   // Intercepting audio breaks iOS PWA standalone mode (Range request issues).
-  if (url.pathname.startsWith('/api/stream/') || url.pathname.startsWith('/api/cover/') || url.pathname === '/reset' || url.pathname === '/icon.png') {
+  // Иконки и манифест тоже мимо: их запрашивает не страница, а система в
+  // момент «На экран „Домой“». Ответ, подменённый Service Worker'ом (а он на
+  // неудачный запрос отдаёт JSON про офлайн), оставил бы iPhone без иконки.
+  if (url.pathname.startsWith('/api/stream/') || url.pathname.startsWith('/api/cover/') || url.pathname === '/reset'
+      || url.pathname === '/manifest.json' || url.pathname === '/favicon.ico'
+      || url.pathname.indexOf('/icon') === 0 || url.pathname.indexOf('/apple-touch-icon') === 0) {
     return;
   }
 
@@ -3056,8 +3174,14 @@ HTML_PAGE = r"""<!DOCTYPE html>
 <meta name="apple-mobile-web-app-title" content="">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="theme-color" content="#1a1a1a">
-<link rel="apple-touch-icon" sizes="180x180" href="/icon.png">
-<link rel="icon" type="image/png" sizes="180x180" href="/icon.png">
+<!-- Ровно одно объявление иконки: в журнале обращений видно, что iOS
+     запрашивает адрес по разу на каждое объявление, а прежние четыре ссылки на
+     один и тот же файл выбор только запутывали. Размер не указываем — пусть
+     система возьмёт что дали. Манифест отдельно: с iOS 16.4 значок домашнего
+     экрана берётся уже оттуда. -->
+<link rel="apple-touch-icon" href="APPLE_ICON_URI">
+<link rel="icon" href="/favicon.ico">
+<link rel="manifest" href="/manifest.json">
 <title></title>
 <style>
 * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; -webkit-user-select: none; }
@@ -4748,6 +4872,20 @@ html.ui-idle .radio-halo.on { animation-play-state: paused; }
 
       <div id="lanInfo" style="font-size:11px;color:rgba(255,255,255,0.4);display:none;line-height:1.6"></div>
 
+      <!-- Сертификат от публичного центра. Нужен из-за того, что WebKit не
+           использует apple-touch-icon с самоподписанного HTTPS: значок на
+           домашнем экране iPhone не появляется, хотя файл скачивается. -->
+      <div id="acmeBox" style="display:none;margin-top:10px;padding:10px;border:1px solid rgba(255,255,255,0.08);border-radius:10px">
+        <div style="font-size:12px;color:rgba(255,255,255,0.65);margin-bottom:6px">Сертификат Let's Encrypt</div>
+        <div id="acmeState" style="font-size:11px;color:rgba(255,255,255,0.45);line-height:1.6;margin-bottom:8px"></div>
+        <div id="acmeForm">
+          <input type="text" id="acmeDomain" class="folder-path-input" style="width:100%;margin-bottom:6px" placeholder="поддомен duckdns (без .duckdns.org)" autocapitalize="off" autocorrect="off" spellcheck="false">
+          <input type="text" id="acmeToken" class="folder-path-input" style="width:100%;margin-bottom:6px" placeholder="токен DuckDNS" autocapitalize="off" autocorrect="off" spellcheck="false">
+          <button class="folder-btn folder-btn-primary" style="width:100%" onclick="acmeIssue()">Выпустить сертификат</button>
+        </div>
+        <button id="acmeDetachBtn" class="folder-btn folder-btn-secondary" style="width:100%;display:none" onclick="acmeDetach()">Отвязать и вернуться к своему</button>
+      </div>
+
       <div class="search-wrap" style="position:relative">
         <input type="text" id="searchInput" class="folder-path-input" style="width:100%" placeholder="Поиск по трекам..." oninput="onSearchInput(this.value)">
         <button class="search-clear" id="searchClear" onclick="clearSearch()">&times;</button>
@@ -5389,9 +5527,15 @@ html.ui-idle .radio-halo.on { animation-play-state: paused; }
 // shared system audio session. User returns to PWA — audio works.
 var _pwaAudioChecked = false;
 var _pwaRecoverAttempts = 0;
+// Номер элемента <audio>: 0 — исходный из разметки, дальше растёт при каждой
+// пересборке в _pwaRecoverAudio. Нужен журналу: по нему видно, что дальше
+// играет уже не тот элемент, на который вешались обработчики при старте.
+var _audioElGen = 0;
 
 function _pwaRecoverAudio() {
-  if (typeof mediaLog === 'function') mediaLog('pwa:recover', mediaLogState());
+  if (typeof mediaLog === 'function') {
+    mediaLog('pwa:recover', 'try=' + (_pwaRecoverAttempts + 1) + ' ' + mediaLogState());
+  }
   // iOS PWA audio session recovery:
   // 1. Try re-creating audio element (clears stale WebKit audio state)
   // 2. Try silent AudioContext unlock (activates system audio session)
@@ -5405,6 +5549,7 @@ function _pwaRecoverAudio() {
     parent.replaceChild(newAudio, audio);
     audio = newAudio;
     audio.volume = 0.8;
+    _audioElGen++;
     bindAudioEvents();
     // Silent AudioContext unlock to activate system audio session
     try {
@@ -5420,7 +5565,16 @@ function _pwaRecoverAudio() {
     } catch(e) {}
     _pwaAudioChecked = false; // allow re-check on next play
     showToast('Восстановление аудио…');
-    setTimeout(function() { togglePlay(); }, 300);
+    setTimeout(function() {
+      // Этот togglePlay выбирает действие по isPlaying, а обновляли его
+      // обработчики play/pause, которых на новом элементе уже нет. Пишем
+      // значение флага рядом с настоящим состоянием элемента: расхождение
+      // между ними и есть искомое.
+      if (typeof mediaLog === 'function') {
+        mediaLog('pwa:recover>toggle', 'isPlaying=' + (isPlaying ? 1 : 0) + ' ' + mediaLogState());
+      }
+      togglePlay();
+    }, 300);
   } else {
     // All retries failed — notify user
     showToast('Аудио не запускается. Попробуйте закрыть и открыть приложение');
@@ -5637,6 +5791,11 @@ function acRevive(where) {
   // Слот Now Playing система забирает в момент старта трека. Пока ничего не
   // играет, поднимать контекст нельзя — иначе виджет привяжется к нему.
   // Исключение: обработчики виджета, где контекст и нужен.
+  //
+  // ОТКАТ 19.09.2026: была попытка усыплять контекст на время игры (казалось,
+  // что второй источник мешает CarPlay). Она сломала плей с локскрина — то
+  // есть ровно то, ради чего живой контекст и заведён. Работающий контекст
+  // держит аудиосессию, и во время воспроизведения он тоже нужен.
   if (audio.paused && where !== 'ms:play' && where !== 'ms:pause' && where !== 'scratch') {
     mediaLog('ac:resume>hold', where);
     return;
@@ -5919,6 +6078,13 @@ function bindAudioEvents() {
       }, 350);
     }
   });
+  bindAudioLogging();   // журнал обязан пережить подмену элемента
+  // Первая привязка — исходный элемент разметки, сообщать не о чем. Пишем
+  // только пересборки: ctxb здесь сразу покажет, что обработчики play/pause
+  // на новый элемент не переехали.
+  if (_audioElGen > 0 && typeof mediaLog === 'function') {
+    mediaLog('pwa:rebind', 'el=' + _audioElGen + ' ctxb=' + (audio._vcCtxBound ? 1 : 0));
+  }
 }
 bindAudioEvents();
 
@@ -6341,7 +6507,7 @@ function renderTracks() {
         + (offDisabled ? '' : ' onclick="playFromList(' + i + ')"')
         + (offDisabled ? ' style="opacity:0.3;pointer-events:none"' : '')
         + ' oncontextmenu="event.preventDefault();showCtxMenu(event,' + i + ')"'
-        + ' data-longpress="' + i + '">'
+        + ' data-longpress="' + i + '" data-file="' + encodeURIComponent(t.file) + '">'
         + '<div class="cover-thumb">' + coverHtml + '</div>'
         + '<div class="info"><div class="name-row"><span class="name">' + esc(t.title) + '</span>' + fmtBadgeHtml(t)
         + (queuedNext ? '<span class="next-badge" data-tip="Играет следующим">следующий</span>' : '') + '</div>'
@@ -6620,7 +6786,12 @@ function selectTrack(i, autoplay) {
   var streamUrl = '/api/stream/' + encodeURIComponent(t.file);
   var genAtLoad = _trackSrcGen;
   _ctxRestored = true;   // an explicit choice replaces whatever was stored
-  if (!_ctxRestoring) { _ctxPlayed = false; _pendingSeek = 0; }
+  if (!_ctxRestoring) { _ctxPlayed = false; _pendingSeek = 0; _pendingSeekFile = ''; }
+  // Даже под _ctxRestoring: если ждущая перемотка не от этого трека, она
+  // протухла — иначе новый трек начнётся с позиции предыдущего.
+  if (_pendingSeek && _pendingSeekFile !== t.file) {
+    _pendingSeek = 0; _pendingSeekFile = ''; _ctxRestoring = false;
+  }
   setTimeout(function() { savePlaybackContext(true); }, 0);
 
   function doPlay() {
@@ -6630,7 +6801,12 @@ function selectTrack(i, autoplay) {
       if (!_pwaAudioChecked && window.navigator.standalone) {
         _pwaAudioChecked = true;
         setTimeout(function() {
-          if (audio.currentTime < 0.01 && !audio.paused) {
+          var stuck = audio.currentTime < 0.01 && !audio.paused;
+          // Пишем и отрицательный исход: проверка одноразовая и живёт только
+          // в standalone, поэтому без записи «не сработала» неотличимо от
+          // «до неё не дошли».
+          mediaLog(stuck ? 'pwa:stall' : 'pwa:stall>ok', mediaLogState());
+          if (stuck) {
             setPlayState(false);
             audio.pause();
             _pwaRecoverAudio();
@@ -6642,6 +6818,13 @@ function selectTrack(i, autoplay) {
       console.error('play() failed:', err);
       showToast('Ошибка воспроизведения: ' + err.message);
     });
+    // Проверка застревания раньше стояла только в обработчике виджета, поэтому
+    // автопереход на следующий трек она не покрывала: в журнале видно, как
+    // трек «играет» (p=0, rs=4, буфер полон), а часы стоят на 0.0 четырнадцать
+    // секунд — пока пользователь не ткнул паузу и плей руками. Ровно это и
+    // делает recoverCycle, просто теперь само. В фоне чинить нечем, там
+    // позиция запомнится и починится при возврате экрана.
+    resumeWatch();
     setPlayState(true);
   }
 
@@ -8085,6 +8268,13 @@ var _ctxRestored = false;
 var _ctxRestoring = false;     // suppress saves while we're seeking back into place
 var _ctxPlayed = false;        // has the current track actually played this session
 var _pendingSeek = 0;          // restored position not applied yet (media still loading)
+// Имя трека, которому эта перемотка принадлежит. Без привязки она утекала на
+// следующий трек: selectTrack чистит _pendingSeek только при снятом
+// _ctxRestoring, а тот остаётся поднятым, если перемотка так и не легла (у
+// трека не приехала длительность, элемент застрял). Дальше автопереход на
+// следующий трек, loadedmetadata — и новый трек начинался с позиции прежнего.
+// В журнале это видно как audio:seeking с jump:back сразу после смены трека.
+var _pendingSeekFile = '';
 var _wasInterrupted = false;   // paused by the system, not by the user
 
 // Assigning src runs the media load algorithm, which pauses the element and
@@ -8148,10 +8338,17 @@ function savePlaybackContext(force) {
 // finally starts rather than relying on 'loadedmetadata' alone.
 function applyPendingSeek() {
   if (_pendingSeek <= 1) return;
+  // Перемотка чужого трека — выбрасываем, а не применяем.
+  if (currentIdx < 0 || !tracks[currentIdx] || tracks[currentIdx].file !== _pendingSeekFile) {
+    mediaLog('seek>drop', _pendingSeekFile + ' -> ' + (tracks[currentIdx] ? tracks[currentIdx].file : '-'));
+    _pendingSeek = 0; _pendingSeekFile = ''; _ctxRestoring = false;
+    return;
+  }
   if (!audio.duration || isNaN(audio.duration)) return;
   if (audio.currentTime > 1) { _pendingSeek = 0; return; }
   try { audio.currentTime = _pendingSeek; } catch (e) { return; }
   _pendingSeek = 0;
+  _pendingSeekFile = '';
   _ctxRestoring = false;
   onTimeUpdate();
 }
@@ -8177,6 +8374,7 @@ function restorePlaybackContext() {
   _ctxPlayed = false;
   selectTrack(idx, false);
   _pendingSeek = st.position || 0;
+  _pendingSeekFile = st.file;
   if (_pendingSeek > 1) {
     applyPendingSeek();
   } else {
@@ -8197,6 +8395,11 @@ function refreshNowPlaying() {
 }
 
 function initPlaybackContext() {
+  // Метка ставится на сам элемент, а не в переменную: _pwaRecoverAudio создаёт
+  // новый <audio>, и эти обработчики на него не переносятся. Флаг едет в
+  // журнал полем ctxb= — потерю надо видеть прямо, а не выводить из того, что
+  // записи перестали появляться.
+  audio._vcCtxBound = true;
   audio.addEventListener('loadedmetadata', applyPendingSeek);
 
   audio.addEventListener('play', function() {
@@ -8269,7 +8472,11 @@ function recoverCycle(t0) {
            function(err) { mediaLog('rec:cycle>rej', (err && err.name) || '?'); });
   }
   setTimeout(function() {
-    if (audio.currentTime > t0 + 0.05) { mediaLog('rec:cycle>moving', mediaLogState()); return; }
+    if (audio.currentTime > t0 + 0.05) {
+      _stuckAt = -1;
+      mediaLog('rec:cycle>moving', mediaLogState());
+      return;
+    }
     recoverReload(t0);
   }, 800);
 }
@@ -8366,6 +8573,10 @@ function resumeWatch() {
     if (!_recoverOn) return;
     // В фоне пересобирать нечего: load() там встаёт на readyState=1 и висит
     // до разблокировки. Запоминаем позицию и чиним, когда экран вернётся.
+    //
+    // Пробовать здесь дешёвый цикл «пауза + плей» нельзя: pause() сработает
+    // наверняка, а play() без жеста могут отклонить — и вместо застрявшего,
+    // но живого элемента получится честная пауза, которую увидит виджет.
     if (document.hidden) { _stuckAt = t0; mediaLog('rec:deferred'); return; }
     recoverCycle(t0);
   }, 700);
@@ -8377,7 +8588,11 @@ function resumeWatch() {
 // нажимаются, но исполнять команду уже некому. Отличить это от «обработчик
 // отработал, а play() отклонили» без внешнего отладчика нельзя, поэтому
 // события пишутся на самом устройстве и читаются после разблокировки.
-var MEDIA_LOG_MAX = 80;
+// Потолок поднят втрое: при заикании на CarPlay записи идут по несколько в
+// секунду, и на восьмидесяти начало эпизода вытеснялось раньше, чем до журнала
+// доходили руки. Больше не ставим намеренно — mediaLogWrite сериализует весь
+// массив на каждую запись, так что цена записи растёт вместе с потолком.
+var MEDIA_LOG_MAX = 250;
 var _mediaLog = null;
 
 function mediaLogAll() {
@@ -8421,6 +8636,16 @@ function ourAudioPlay() {
   return p;
 }
 
+function _bufAhead() {
+  try {
+    var b = audio.buffered, t = audio.currentTime;
+    for (var i = 0; i < b.length; i++) {
+      if (t >= b.start(i) - 0.1 && t <= b.end(i) + 0.1) return b.end(i) - t;
+    }
+  } catch (e) {}
+  return 0;
+}
+
 function mediaLogState() {
   var u = audio.currentSrc || audio.src || '';
   // Источник решает всё: из офлайн-кэша играем blob:, без кэша — поток с
@@ -8437,17 +8662,114 @@ function mediaLogState() {
     + (typeof previewAudio !== 'undefined' && previewAudio && !previewAudio.paused
         ? ' PREVIEW t=' + (previewAudio.currentTime || 0).toFixed(1) : '')
     + ' pos=' + (_posCleared ? 'clear' : 'set')
-    + ' dur=' + (isFinite(audio.duration) ? 1 : 0);
+    + ' dur=' + (isFinite(audio.duration) ? 1 : 0)
+    // el — какой по счёту элемент <audio> сейчас играет, ctxb — живы ли на нём
+    // обработчики play/pause из initPlaybackContext. ctxb=0 означает, что
+    // состояние виджета и mediaSession больше никто не обновляет.
+    + ' el=' + (_audioElGen || 0) + ' ctxb=' + (audio._vcCtxBound ? 1 : 0)
+    // buf — на сколько секунд вперёд есть данные. У blob-источника он всегда
+    // большой, и если при полном буфере звук всё равно рвётся, виновата не
+    // подача данных, а маршрут звука. rate и net отделяют замедление
+    // воспроизведения и сетевые простои от того и другого.
+    + ' buf=' + _bufAhead().toFixed(1) + ' rate=' + audio.playbackRate + ' net=' + audio.networkState;
 }
 
 // Часы элемента при заблокированном экране. Если звука нет, а t растёт —
 // элемент играет «в никуда», и лечить надо маршрут звука, а не запуск.
 var _mediaTickAt = 0;
 
+// ── Детектор заикания ──
+// Короткие провалы звука не порождают ни pause, ни waiting: элемент считает,
+// что играет, просто часы проседают. Поэтому сверяем прирост currentTime с
+// настоящим временем.
+//
+// Ведём по timeupdate, а не по setInterval: в фоне и на заблокированном экране
+// таймеры зажимаются до секунды — там детектор врал бы сам, — а события
+// элемента приходят, пока он действительно играет. Ровно по этой причине так
+// же устроен пятисекундный тик журнала. Если timeupdate перестал приходить,
+// это и есть провал: следующее событие покажет большой разрыв по реальному
+// времени при крошечном приросте часов.
+//
+// Подряд идущие плохие окна копим и пишем одной записью, иначе журнал забьётся
+// за несколько секунд.
+var _gWall = 0, _gT = 0, _gRun = 0, _gLost = 0, _gWorst = 0, _tuCount = 0;
+
+function glitchReset() {
+  _gWall = Date.now();
+  _gT = audio.currentTime;
+}
+
+function glitchFlush() {
+  if (_gRun) {
+    mediaLog('GLITCH', 'окон=' + _gRun + ' потеряно=' + _gLost.toFixed(2)
+             + 'с худшее=' + _gWorst.toFixed(2) + 'с ' + mediaLogState());
+  }
+  _gRun = 0; _gLost = 0; _gWorst = 0;
+}
+
+function glitchTick() {
+  if (!_logOn || audio.paused) return;
+  var now = Date.now(), t = audio.currentTime;
+  var wall = (now - _gWall) / 1000, adv = t - _gT;
+  _gWall = now; _gT = t;
+  if (wall <= 0) return;
+  // Больше пяти секунд — это сон устройства, перемотка или заторможенная
+  // вкладка, а не заикание. Тот же порог, что у счётчика прослушиваний.
+  if (wall > 5) { glitchFlush(); return; }
+  if (adv < -0.05) {
+    glitchFlush();
+    mediaLog('jump:back', 'на=' + adv.toFixed(2) + 'с ' + mediaLogState());
+    return;
+  }
+  var expected = wall * (audio.playbackRate || 1);
+  if (expected < 0.05) return;                 // слишком короткое окно
+  if (adv < expected * 0.5) {
+    _gRun++;
+    var lost = Math.max(0, expected - adv);
+    _gLost += lost;
+    if (lost > _gWorst) _gWorst = lost;
+    if (_gRun >= 25) glitchFlush();            // длинный провал — не ждём конца
+  } else if (_gRun) {
+    glitchFlush();
+  }
+}
+
+// ── Сторож замирания ──
+// Детектор заикания выше идёт по timeupdate, и ровно поэтому не видит худшего
+// случая: элемент замирает совсем, события прекращаются, и молчит как музыка,
+// так и детектор. В журнале это выглядит как разрыв на десятки минут, после
+// которого p=0, rs=4, буфер полон, а часы стоят на том же месте.
+//
+// Поэтому здесь отдельный таймер по реальному времени. В фоне его зажимают,
+// но для замирания это не важно: даже один тик в минуту заметит, что часы не
+// идут. Чинить в фоне не пытаемся — только запоминаем позицию, а починку
+// делает существующий путь при возврате экрана.
+var FREEZE_CHECK_MS = 15000;
+var _frzT = -1, _frzAt = 0, _frzLogged = false;
+
+function freezeCheck() {
+  if (!audio || audio.paused || audio.ended) { _frzT = -1; _frzLogged = false; return; }
+  var t = audio.currentTime, now = Date.now();
+  if (_frzT < 0 || t > _frzT + 0.05) { _frzT = t; _frzAt = now; _frzLogged = false; return; }
+  var stuck = (now - _frzAt) / 1000;
+  if (!_frzLogged) {
+    mediaLog('FREEZE', 'стоит=' + stuck.toFixed(0) + 'с ' + mediaLogState());
+    _frzLogged = true;
+  }
+  // Позицию запоминаем, чтобы вернувшийся экран её починил.
+  if (_recoverOn && _stuckAt < 0) _stuckAt = t;
+}
+
 // События элемента и жизненного цикла страницы. Отдельным слушателем, а не
 // внутри существующих, чтобы диагностика не влияла на логику.
-function initMediaLogging() {
-  var evs = ['play', 'pause', 'playing', 'waiting', 'stalled', 'suspend', 'ended', 'error'];
+// Слушатели журнала, висящие НА ЭЛЕМЕНТЕ, вынесены отдельно: _pwaRecoverAudio
+// заменяет <audio> целиком, и всё, что было привязано к прежнему, исчезает.
+// Диагностика обязана пережить подмену — иначе журнал замолкает ровно там, где
+// начинается интересное. Зовётся из bindAudioEvents, то есть и при пересборке.
+// emptied и abort добавлены сюда же: это следы самой подмены источника.
+function bindAudioLogging() {
+  var evs = ['play', 'pause', 'playing', 'waiting', 'stalled', 'suspend', 'ended', 'error',
+             'emptied', 'abort', 'seeking', 'seeked', 'ratechange', 'canplay', 'loadeddata'];
   for (var i = 0; i < evs.length; i++) {
     (function(name) {
       audio.addEventListener(name, function() {
@@ -8460,6 +8782,20 @@ function initMediaLogging() {
       });
     })(evs[i]);
   }
+  // Детектор ведём отсюда же: эти слушатели переживают подмену элемента.
+  audio.addEventListener('playing', glitchReset);
+  audio.addEventListener('seeked', glitchReset);
+  audio.addEventListener('pause', glitchFlush);
+  audio.addEventListener('ended', glitchFlush);
+  audio.addEventListener('emptied', glitchFlush);
+  audio.addEventListener('timeupdate', function() { _tuCount++; glitchTick(); });
+}
+
+// Всё остальное вешается РОВНО ОДИН раз: document, window и previewAudio
+// подмену элемента переживают, и повторная регистрация копила бы обработчики —
+// refreshNowPlaying и acRevive срабатывали бы пачкой на каждую разблокировку,
+// а это прямой путь к мигающему виджету.
+function initMediaLogging() {
   if (typeof previewAudio !== 'undefined' && previewAudio) {
     var pevs = ['play', 'pause', 'ended', 'error'];
     for (var k = 0; k < pevs.length; k++) {
@@ -8474,13 +8810,22 @@ function initMediaLogging() {
   document.addEventListener('visibilitychange', function() {
     mediaLog(document.hidden ? 'page:hidden' : 'page:visible', mediaLogState());
     if (!document.hidden) acRevive('visible');
-    if (document.hidden || _stuckAt < 0) return;
+    if (document.hidden) return;
+    if (_stuckAt < 0) {
+      // Замирание посреди трека раньше не покрывалось ничем: resumeWatch
+      // смотрит только первые 700 мс после запуска, а тут элемент встаёт
+      // спустя секунды. Проверяем на возврате экрана тем же механизмом —
+      // он и чинит, и работает только на переднем плане.
+      if (!audio.paused) resumeWatch();
+      return;
+    }
     var t0 = _stuckAt;
     _stuckAt = -1;
     if (audio.paused || audio.currentTime > t0 + 0.05) return;   // ожило само
     mediaLog('rec:onvisible', mediaLogState());
     recoverCycle(t0);
   });
+  setInterval(freezeCheck, FREEZE_CHECK_MS);
   window.addEventListener('pagehide', function() { mediaLog('page:pagehide', mediaLogState()); });
   // Page Lifecycle: в Safari может не поддерживаться, но если придёт - это
   // прямое доказательство заморозки.
@@ -8495,8 +8840,9 @@ function reloadCurrentKeepingPos() {
   if (currentIdx < 0) return;
   var pos = audio.currentTime || 0;
   if (pos > 1) _ctxRestoring = true;   // иначе сохранится позиция 0 до перемотки
+  var keepFile = tracks[currentIdx] ? tracks[currentIdx].file : '';
   selectTrack(currentIdx, true);
-  if (pos > 1) _pendingSeek = pos;
+  if (pos > 1) { _pendingSeek = pos; _pendingSeekFile = keepFile; }
 }
 
 // Регистрация обработчиков виджета молчала в try/catch: отказ iOS выглядел бы
@@ -8600,9 +8946,12 @@ function initMediaSession() {
 
 // Update position state for lock screen progress bar
 function onTimeUpdate() {
+  var _t0 = _logOn ? (window.performance ? performance.now() : Date.now()) : 0;
   if (_logOn && !audio.paused && Date.now() - _mediaTickAt > 5000) {
     _mediaTickAt = Date.now();
-    mediaLog('tick', mediaLogState());
+    // tu — сколько timeupdate пришло за пять секунд: норма около 20.
+    mediaLog('tick', 'tu=' + _tuCount + ' ' + mediaLogState());
+    _tuCount = 0;
   }
   playMeterTick();
   fadeCheck();
@@ -8616,6 +8965,12 @@ function onTimeUpdate() {
         position: audio.currentTime
       });
     } catch(e) {}
+  }
+  // Обработчик идёт четырежды в секунду и пишет в localStorage. Если он
+  // занимает десятки миллисекунд, это кандидат в виновники сам по себе.
+  if (_logOn) {
+    var _ms = (window.performance ? performance.now() : Date.now()) - _t0;
+    if (_ms > 20) mediaLog('slow:timeupdate', _ms.toFixed(0) + 'мс');
   }
 }
 
@@ -8828,6 +9183,7 @@ function initWidgetBridge() {
 // ── Config / Folders ──
 var currentUser = '';
 var isAdmin = false;
+var isPublic = false;      // включён ли LAN: от него зависит, нужен ли сертификат
 var userRole = 'user';
 var isLocal = true;
 
@@ -8836,6 +9192,8 @@ var _isOffline = false;
 function applyConfig(cfg) {
   currentUser = cfg.username || '';
   isAdmin = cfg.is_admin || false;
+  isPublic = !!cfg.public;
+  if (isAdmin) setTimeout(acmeSync, 300);
   userRole = cfg.role || 'user';
   savedFolders = cfg.folders || [];
   renderFolderSelect();
@@ -9442,14 +9800,84 @@ function setToggle(id, dotId, on) {
 var _lanInfoOpen = false;
 var _lanInfoHasContent = false;
 
+var _acmeAvailable = false;
+
 function applyLanInfoVisibility() {
   var info = document.getElementById('lanInfo');
   var btn = document.getElementById('lanInfoBtn');
+  // Сертификат живёт под тем же «i», что и адреса: это одна тема — как
+  // подключаться к серверу, — и отдельная кнопка рядом только шумела бы.
+  var any = _lanInfoHasContent || _acmeAvailable;
   if (btn) {
-    btn.style.display = _lanInfoHasContent ? 'flex' : 'none';
-    btn.classList.toggle('open', _lanInfoOpen && _lanInfoHasContent);
+    btn.style.display = any ? 'flex' : 'none';
+    btn.classList.toggle('open', _lanInfoOpen && any);
   }
   if (info) info.style.display = (_lanInfoOpen && _lanInfoHasContent) ? '' : 'none';
+  var box = document.getElementById('acmeBox');
+  if (box) box.style.display = (_lanInfoOpen && _acmeAvailable) ? '' : 'none';
+}
+
+// ── Сертификат Let's Encrypt через DuckDNS ──
+// Выпуск идёт минуты (проверка владения доменом ждёт распространения DNS),
+// поэтому состояние опрашивается, а шаги показываются по мере прохождения —
+// иначе экран выглядит зависшим.
+var _acmeTimer = null;
+
+function acmePost(body, cb) {
+  fetch('/api/cert/acme', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify(body)})
+    .then(function(r){return r.json()}).then(cb).catch(function(){ cb(null); });
+}
+
+function acmeSync() {
+  if (!isAdmin) return;
+  fetch('/api/cert/acme').then(function(r){return r.json()}).then(function(d) {
+    if (!d || d.error === 'offline') return;
+    var box = document.getElementById('acmeBox');
+    if (!box) return;
+    _acmeAvailable = !!isPublic;
+    applyLanInfoVisibility();
+    var acme = d.mode === 'acme';
+    document.getElementById('acmeForm').style.display = (acme || d.running) ? 'none' : '';
+    document.getElementById('acmeDetachBtn').style.display = acme && !d.running ? '' : 'none';
+    var txt;
+    if (d.running) {
+      txt = '<span style="color:#e9a545">&#9679;</span> ' + esc(d.step || 'работаю...');
+    } else if (d.error) {
+      txt = '<span style="color:#e94560">&#9679;</span> ' + esc(d.error);
+    } else if (acme) {
+      txt = '<span style="color:#52b788">&#9679;</span> Выпущен на <b>' + esc(d.domain) + '.duckdns.org</b>'
+          + (d.days_left != null ? ', действует ещё ' + d.days_left + ' дн.' : '')
+          + '<br><span style="opacity:0.7">Продлится сам, когда останется '
+          + (d.renew_at_days || 30) + ' дней.</span>';
+    } else {
+      txt = 'Свой сертификат. Значок на домашнем экране iPhone с ним не появляется — это ограничение iOS.'
+          + '<br><span style="opacity:0.7">Нужен бесплатный поддомен на duckdns.org и его токен. Наружу ничего не открывается: запись указывает на локальный адрес.</span>';
+    }
+    document.getElementById('acmeState').innerHTML = txt;
+    // Пока идёт выпуск — спрашиваем чаще; закончился — прекращаем опрос.
+    if (_acmeTimer) { clearTimeout(_acmeTimer); _acmeTimer = null; }
+    if (d.running) _acmeTimer = setTimeout(acmeSync, 2000);
+    else if (d.done) showToast('Сертификат выпущен');
+  }).catch(function(){});
+}
+
+function acmeIssue() {
+  var dom = document.getElementById('acmeDomain').value.trim();
+  var tok = document.getElementById('acmeToken').value.trim();
+  if (!dom || !tok) { showToast('Укажите поддомен и токен'); return; }
+  acmePost({action:'issue', domain:dom, token:tok}, function(d) {
+    if (d && d.ok) { document.getElementById('acmeToken').value = ''; acmeSync(); }
+    else showToast((d && d.error) || 'Не получилось');
+  });
+}
+
+function acmeDetach() {
+  if (!confirm('Вернуться к своему сертификату? Выпущенный останется на диске, повторно выпускать не придётся.')) return;
+  acmePost({action:'detach'}, function(d) {
+    showToast(d && d.ok ? 'Отвязано' : 'Не получилось');
+    setTimeout(acmeSync, 500);
+  });
 }
 
 function setLanInfo(html, forceOpen) {
@@ -9498,6 +9926,11 @@ function syncNetworkState(retriesLeft) {
         // it's the address a phone should install the PWA from.
         if (cfg.lan_host_url) {
           parts.push('<span style="color:#52b788">&#9679;</span> Для PWA на iPhone (Safari, адрес не меняется при смене сети): <a href="' + cfg.lan_host_url + '" target="_blank" class="net-link">' + cfg.lan_host_url + '</a>');
+          // Без доверенного корневого сертификата система не может сходить на
+          // сервер сама — и иконка домашнего экрана не приезжает, хотя страница
+          // открывается. Поэтому ставим это рядом с адресом, а не прячем.
+          parts.push('<span style="color:#e9c46a">&#9679;</span> Сертификат для iPhone: <a href="' + cfg.lan_host_url + '/ca.crt" target="_blank" class="net-link">скачать</a>'
+            + '<br><span style="opacity:0.55">Один раз на устройство: Настройки → «Профиль загружен» → Установить, затем Основные → Об этом устройстве → Доверие сертификатам → включить. Без этого шага iOS не покажет иконку на домашнем экране.</span>');
         }
       }
     }
@@ -13953,6 +14386,29 @@ function refreshCachedList() {
 
 function isTrackCached(file) { return !!cachedFiles[cacheKey(file)]; }
 
+// Каталог кэшируется пачкой, и зелёные точки раньше появлялись только когда
+// очередь заканчивалась целиком: cacheNextInQueue после успеха не трогал
+// разметку вовсе, и увидеть отметку можно было, лишь уйдя на другую вкладку и
+// вернувшись. Полная перерисовка на каждый трек не годится — на нескольких
+// тысячах строк это заметная работа, и она сбрасывает позицию прокрутки прямо
+// под руками. Поэтому меняем ровно ту строку, которая только что скачалась.
+function markTrackCached(file) {
+  var list = document.getElementById('trackList');
+  if (!list) return;
+  var want = encodeURIComponent(file);
+  var rows = list.querySelectorAll('.playlist-item[data-file]');
+  for (var i = 0; i < rows.length; i++) {
+    if (rows[i].getAttribute('data-file') !== want) continue;
+    var btn = rows[i].querySelector('button[data-tip="Кэшировать"]');
+    if (!btn) return;                 // уже отмечена или кнопки нет
+    var dot = document.createElement('span');
+    dot.style.cssText = 'width:6px;height:6px;border-radius:50%;background:#52b788;flex-shrink:0';
+    dot.setAttribute('data-tip', 'В кэше');
+    btn.parentNode.replaceChild(dot, btn);
+    return;
+  }
+}
+
 // onDone(ok, reason): 'ok' | 'http' (server replied, file missing/forbidden)
 // | 'net' (fetch rejected — connection or TLS died) | 'db' (IndexedDB full).
 // The queue needs that distinction: one bad file should be skipped, a dead
@@ -14228,6 +14684,7 @@ function cacheNextInQueue() {
   updateCacheBtn();
   cacheTrack(file, function(ok, reason) {
     if (ok) {
+      markTrackCached(file);          // отметка появляется сразу, а не в конце
       cacheQueue.shift();
       _cacheFails = 0;
       saveCacheQueue();
@@ -14478,8 +14935,8 @@ LOGIN_PAGE = r"""<!DOCTYPE html>
 <html lang="ru"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<link rel="apple-touch-icon" sizes="180x180" href="/icon.png">
-<link rel="icon" type="image/png" sizes="180x180" href="/icon.png">
+<link rel="apple-touch-icon" href="APPLE_ICON_URI">
+<link rel="icon" href="/favicon.ico">
 <title></title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
@@ -14580,44 +15037,55 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path
 
-        # PWA icon — 180x180 PNG vinyl record (RGB, no alpha — iOS compatible)
-        if path == "/icon.png":
-            import struct, zlib
-            W = 180
-            cx, cy = W // 2, W // 2
-            pixels = []
-            for y in range(W):
-                row = []
-                for x in range(W):
-                    dx, dy = x - cx, y - cy
-                    d = (dx*dx + dy*dy) ** 0.5
-                    if d < 6:
-                        row.extend([17, 17, 22])     # center hole
-                    elif d < 30:
-                        row.extend([233, 69, 96])    # red label
-                    elif d < 33:
-                        row.extend([40, 40, 40])     # label edge
-                    elif d < 85:
-                        g = int(22 + (d - 33) * 0.15) if int(d) % 4 < 2 else int(17 + (d - 33) * 0.12)
-                        row.extend([g, g, g])        # grooves
-                    elif d < 88:
-                        row.extend([35, 35, 35])     # outer edge
-                    else:
-                        row.extend([17, 17, 22])     # background
-                pixels.append(bytes([0] + row))  # filter byte + RGB
-            raw = b''.join(pixels)
-            def _png_chunk(ctype, data):
-                c = ctype + data
-                return struct.pack('>I', len(data)) + c + struct.pack('>I', zlib.crc32(c) & 0xffffffff)
-            sig = b'\x89PNG\r\n\x1a\n'
-            ihdr = struct.pack('>IIBBBBB', W, W, 8, 2, 0, 0, 0)  # 8-bit RGB
-            png = sig + _png_chunk(b'IHDR', ihdr) + _png_chunk(b'IDAT', zlib.compress(raw, 9)) + _png_chunk(b'IEND', b'')
+        # Иконки и манифест — до всякой авторизации: их запрашивает не страница,
+        # а сама система в момент «На экран „Домой“», и никакой сессии у неё нет.
+        # /apple-touch-icon.png и -precomposed лежат в корне намеренно: если
+        # разбор <link> почему-то не сработал, iOS пробует эти пути сама.
+        if path in _ICON_SIZES:
+            png = make_icon_png(_ICON_SIZES[path])
             self.send_response(200)
             self.send_header("Content-Type", "image/png")
             self.send_header("Content-Length", str(len(png)))
             self.send_header("Cache-Control", "public, max-age=604800")
             self.end_headers()
-            self.wfile.write(png)
+            # Журнал обращений пишется в send_response, то есть В НАЧАЛЕ ответа:
+            # код 200 там не доказывает, что тело ушло целиком. Поэтому отмечаем
+            # и завершение — иначе оборванную отдачу не отличить от успешной.
+            try:
+                self.wfile.write(png)
+                self.wfile.flush()
+                _access_log("icon:done {} {} байт | Accept: {}".format(
+                    path, len(png), (self.headers.get("Accept", "") or "-")[:60]))
+            except Exception as ex:
+                _access_log("icon:FAIL {} {}".format(path, type(ex).__name__))
+            return
+
+        # Корневой сертификат для установки на телефон. Тип
+        # application/x-x509-ca-cert — по нему iOS понимает, что это профиль,
+        # а не просто файл, и предлагает установку. Закрытый ключ (CA_KEY_FILE)
+        # не отдаётся никогда и никуда: им подписываются сертификаты, которым
+        # устройство будет доверять.
+        if path == "/ca.crt":
+            if not CA_CERT_FILE.exists():
+                self._respond(404, "text/plain", "Корневой сертификат ещё не создан".encode("utf-8"))
+                return
+            body = CA_CERT_FILE.read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/x-x509-ca-cert")
+            self.send_header("Content-Disposition", 'attachment; filename="insideside-music-ca.crt"')
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
+        if path == "/manifest.json":
+            body = make_manifest()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/manifest+json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "public, max-age=3600")
+            self.end_headers()
+            self.wfile.write(body)
             return
 
         # Reset page — clears SW cache, not intercepted by SW
@@ -14656,11 +15124,21 @@ class Handler(BaseHTTPRequestHandler):
         # No users yet or not logged in — show login
         if path == "/" or path == "/index.html":
             if not users or not user:
-                self._respond(200, "text/html", LOGIN_PAGE.encode("utf-8"))
+                self._respond(200, "text/html",
+                              LOGIN_PAGE.replace("APPLE_ICON_URI", icon_data_uri(512)).encode("utf-8"))
                 return
             build_hash = hashlib.md5(HTML_PAGE.encode()).hexdigest()[:8]
-            page = HTML_PAGE.replace("PORT_PLACEHOLDER", str(SERVER_PORT)).replace("APP_BUILD_HASH", build_hash)
+            page = (HTML_PAGE.replace("PORT_PLACEHOLDER", str(SERVER_PORT))
+                    .replace("APP_BUILD_HASH", build_hash)
+                    .replace("APPLE_ICON_URI", icon_data_uri(512)))
             self._respond(200, "text/html", page.encode("utf-8"))
+            # Без return выполнение проваливалось сквозь весь остаток do_GET до
+            # финального else и дописывало в тот же сокет второй ответ — 404.
+            # Страница при этом отображалась (клиент читает ровно
+            # Content-Length), поэтому дефект жил незаметно: в журнале это пара
+            # «GET / 200» и «GET / 404» на один запрос, и только у вошедшего
+            # пользователя — ветка страницы входа return делала.
+            return
 
         elif path == "/sw.js":
             # Inject build hash so SW updates when app changes
@@ -14922,6 +15400,20 @@ class Handler(BaseHTTPRequestHandler):
                                     params.get("artist", [""])[0],
                                     params.get("title", [""])[0])
             self._respond_json({"ok": True, "tracks": tracks})
+
+        elif path == "/api/cert/acme":
+            st = load_settings()
+            with _acme_lock:
+                cur = dict(_acme_state)
+            self._respond_json({
+                "mode": cert_mode(),
+                "domain": st.get("duckdns_domain", ""),
+                "has_token": bool(st.get("duckdns_token")),
+                "running": cur["running"], "step": cur["step"],
+                "error": cur["error"], "done": cur["done"], "log": cur["log"],
+                "days_left": _cert_days_left(),
+                "renew_at_days": 30,
+            })
 
         elif path == "/api/wan/status":
             active = _tunnel_proc is not None and _tunnel_proc.poll() is None
@@ -15367,6 +15859,30 @@ class Handler(BaseHTTPRequestHandler):
                 self._respond_json({"ok": True, "renewed": True})
             else:
                 self._respond_json({"ok": False, "error": "Не удалось обновить сертификат"})
+
+        elif path == "/api/cert/acme":
+            if not udata or not udata.get("is_admin"):
+                self._respond_json({"ok": False, "error": "Нет доступа."})
+                return
+            action = data.get("action")
+            if action == "detach":
+                acme_detach()
+                self._respond_json({"ok": True, "mode": "self"})
+                return
+            if action == "issue":
+                dom = (data.get("domain") or "").strip().lower()
+                tok = (data.get("token") or "").strip()
+                # Поддомен, а не полное имя: пользователи вводят и так, и так.
+                dom = dom.replace(".duckdns.org", "").strip("./")
+                if not re.match(r"^[a-z0-9-]{1,63}$", dom) or not tok:
+                    self._respond_json({"ok": False, "error": "Укажите поддомен и токен DuckDNS."})
+                    return
+                if not acme_start(dom, tok):
+                    self._respond_json({"ok": False, "error": "Выпуск уже идёт."})
+                    return
+                self._respond_json({"ok": True, "started": True})
+                return
+            self._respond_json({"ok": False, "error": "Неизвестное действие."})
 
         elif path == "/api/remove_folder":
             if self._deny_demo(udata): return
@@ -16155,7 +16671,20 @@ class Handler(BaseHTTPRequestHandler):
         self._respond(200, "application/json", body)
 
     def log_message(self, format, *args):
-        pass
+        # Обращения по умолчанию не пишем: сервер однопоточный, а поток запросов
+        # от плеера плотный. Включается переменной VINYL_ACCESS_LOG=1 и нужна
+        # ровно для таких случаев, как иконка домашнего экрана: надо понять,
+        # дошёл ли до сервера системный запрос вообще. Отсутствие записи —
+        # такой же результат, как запись.
+        if not _ACCESS_LOG:
+            return
+        try:
+            line = format % args
+        except Exception:
+            line = str(format)
+        _access_log("{} | {} | UA: {}".format(
+            self.client_address[0] if self.client_address else "-",
+            line, (self.headers.get("User-Agent", "") or "-")[:90]))
 
     def handle(self):
         try:
@@ -16285,6 +16814,24 @@ def stop_tunnel():
         pass
 
 
+# Журнал обращений: по умолчанию выключен, включается VINYL_ACCESS_LOG=1.
+ACCESS_LOG_FILE = Path.home() / ".vinyl_access.log"
+# Включатель — либо переменная окружения, либо просто наличие самого файла.
+# Второе важнее: сервер обычно запускают не из терминала (виджет, launchd), и
+# передать туда переменную неоткуда. Создал файл, перезапустил — пишется.
+_ACCESS_LOG = (os.environ.get("VINYL_ACCESS_LOG") == "1") or ACCESS_LOG_FILE.exists()
+
+
+def _access_log(line):
+    if not _ACCESS_LOG:
+        return
+    try:
+        with open(ACCESS_LOG_FILE, "a", encoding="utf-8") as f:
+            f.write("{} {}\n".format(time.strftime("%H:%M:%S"), line))
+    except Exception:
+        pass
+
+
 CERT_FILE = Path.home() / ".vinyl_cert.pem"
 KEY_FILE = Path.home() / ".vinyl_key.pem"
 _use_https = False
@@ -16355,13 +16902,31 @@ def _cert_covers_current_names():
     return True
 
 
-def _cert_expires_soon(days_threshold=30):
+def _cert_days_left(cert_file=None):
+    """Сколько дней осталось сертификату. Раньше интерфейс показывал ступеньку
+    из набора 90/60/30 и честные 89 дней округлял вниз до 60 — выглядело так,
+    будто сертификат выдан на два месяца."""
+    cert_file = cert_file or active_cert_pair()[0]
+    if not cert_file.exists():
+        return None
+    try:
+        out = subprocess.check_output(
+            ["openssl", "x509", "-in", str(cert_file), "-noout", "-enddate"],
+            stderr=subprocess.DEVNULL, timeout=5).decode()
+        end = datetime.strptime(out.split("=", 1)[1].strip(), "%b %d %H:%M:%S %Y %Z")
+        return max(0, (end - datetime.utcnow()).days)
+    except Exception:
+        return None
+
+
+def _cert_expires_soon(days_threshold=30, cert_file=None):
     """Check if cert expires within given number of days."""
-    if not CERT_FILE.exists():
+    cert_file = cert_file or active_cert_pair()[0]
+    if not cert_file.exists():
         return True
     try:
         result = subprocess.run(
-            ["openssl", "x509", "-in", str(CERT_FILE), "-noout", "-checkend", str(days_threshold * 86400)],
+            ["openssl", "x509", "-in", str(cert_file), "-noout", "-checkend", str(days_threshold * 86400)],
             capture_output=True, timeout=5
         )
         # openssl returns 1 if cert expires within the period
@@ -16386,6 +16951,11 @@ def _cert_needs_renewal():
     ошибок, а все текущие загрузки рвались на середине.
     """
     global _ssl_error_count
+    if cert_mode() == "acme":
+        # У сертификата Let's Encrypt в SAN только доменное имя, локальных
+        # адресов там нет и быть не должно — проверять покрытие бессмысленно,
+        # иначе сторож гонял бы перевыпуск по кругу. Смотрим только срок.
+        return _cert_expires_soon()
     if not CERT_FILE.exists() or not KEY_FILE.exists():
         return True
     if _cert_expires_soon():
@@ -16403,6 +16973,13 @@ def _renew_cert_and_restart():
     """Regenerate certificate and restart HTTPS server if needed."""
     global _use_https, _ssl_error_count
     if not IS_PUBLIC or not _use_https:
+        return False
+    if cert_mode() == "acme":
+        st = load_settings()
+        dom, tok = st.get("duckdns_domain"), st.get("duckdns_token")
+        if dom and tok and not _acme_state["running"]:
+            print("HTTPS: продлеваю сертификат Let's Encrypt...")
+            acme_start(dom, tok)   # сам перезапустит сервер, когда закончит
         return False
     print("HTTPS: автоматическая перегенерация сертификата...")
     if _generate_self_signed_cert(force=True):
@@ -16427,7 +17004,28 @@ def _start_cert_watchdog():
     if _cert_watchdog_running:
         return
     _cert_watchdog_running = True
+    # Первое касание — сразу: после переезда в другую сеть запись должна
+    # выправиться к моменту, когда телефон впервые постучится, а не через
+    # пять минут.
+    threading.Thread(target=duckdns_sync_ip, kwargs={"force": True}, daemon=True).start()
+    threading.Thread(target=_duckdns_watchdog, daemon=True).start()
     threading.Thread(target=_cert_watchdog, daemon=True).start()
+
+
+def _duckdns_watchdog():
+    """Следит за сменой сети. Отдельно от сертификатного сторожа и чаще его:
+    там пять минут между проверками, а тут важна скорость — телефон должен
+    находить сервер вскоре после того, как ноутбук подключился к другому
+    Wi-Fi. Запрос к DuckDNS уходит только когда адрес реально изменился.
+    """
+    while True:
+        time.sleep(60)
+        try:
+            if not IS_PUBLIC:
+                return
+            duckdns_sync_ip()
+        except Exception as ex:
+            print("DuckDNS watchdog: {}".format(ex))
 
 
 def _cert_watchdog():
@@ -16445,20 +17043,204 @@ def _cert_watchdog():
             print(f"HTTPS watchdog error: {ex}")
 
 
-def _generate_self_signed_cert(force=False):
-    """Генерирует self-signed сертификат для HTTPS (LAN/offline)."""
-    if not force and CERT_FILE.exists() and KEY_FILE.exists():
-        if _cert_covers_current_names():
-            return True
-        print("HTTPS: адреса изменились, перегенерирую сертификат...")
-    san_ips = list(set(["127.0.0.1"] + get_all_local_ips()))
-    # mDNS-имя в SAN — чтобы PWA можно было поставить по стабильному адресу
-    # https://<имя>.local:PORT, который переживает смену сети.
+# ──────────────────── Корневой и серверный сертификаты ────────────────────
+# Apple с iOS 13 предъявляет к серверным сертификатам требования, которым
+# одиночный самоподписанный удовлетворить не может: обязательный
+# extendedKeyUsage=serverAuth и срок не больше 398 дней (для выданных после
+# 01.09.2020). Прежний сертификат жил 3650 дней и не имел ни EKU, ни
+# basicConstraints — поэтому его нельзя было ни установить корневым (в «Доверие
+# сертификатам» он просто не появлялся), ни принять как серверный. Страница
+# открывалась только через исключение «всё равно продолжить», а системные
+# запросы — тот же загрузчик иконки для домашнего экрана — молча падали.
+#
+# Отсюда пара. Корневой живёт долго, ставится на устройство ОДИН раз и получает
+# доверие вручную; на корневые ограничение в 398 дней не распространяется.
+# Серверный подписан корневым, короткий, перевыпускается сторожем сам — и
+# переподтверждать его не нужно, потому что доверие выдано корневому. Это же
+# снимает давнюю боль: раньше каждый перевыпуск требовал заново принимать
+# сертификат на iPhone.
+CA_CERT_FILE = Path.home() / ".vinyl_ca.pem"
+CA_KEY_FILE = Path.home() / ".vinyl_ca_key.pem"
+CA_DAYS = 3650
+LEAF_DAYS = 398          # предел Apple; сторож обновляет за 30 дней до конца
+_CA_RENEW_DAYS = 180     # корневой меняем сильно заранее: это ручная операция
+_CA_SUBJECT = "/CN=insideside-music CA"
+_LEAF_SUBJECT = "/CN=insideside-music"
+
+# Корневому разрешено ручаться только за локальные имена и приватные сети.
+# Это не украшение: установленный на телефон корневой — полноценный якорь
+# доверия, и без ограничения его утёкший ключ позволил бы выписать сертификат
+# на любой чужой домен. Проверено: серверный сертификат с именем вне этого
+# списка openssl verify отвергает как permitted subtree violation.
+_CA_CONF = """[req]
+distinguished_name = dn
+[dn]
+[ext]
+basicConstraints = critical,CA:TRUE,pathlen:0
+keyUsage = critical,keyCertSign,cRLSign
+subjectKeyIdentifier = hash
+nameConstraints = critical,permitted;DNS:local,permitted;DNS:localhost,permitted;IP:127.0.0.0/255.0.0.0,permitted;IP:10.0.0.0/255.0.0.0,permitted;IP:172.16.0.0/255.240.0.0,permitted;IP:192.168.0.0/255.255.0.0,permitted;IP:169.254.0.0/255.255.0.0
+"""
+
+_LEAF_CONF = """[req]
+distinguished_name = dn
+[dn]
+[ext]
+basicConstraints = critical,CA:FALSE
+keyUsage = critical,digitalSignature,keyEncipherment
+extendedKeyUsage = serverAuth
+subjectKeyIdentifier = hash
+# Без authorityKeyIdentifier строгая проверка X.509 отвергает цепочку
+# («Missing Authority Key Identifier»), хотя LibreSSL её пропускает. Поймано
+# строгим клиентом на стенде — на устройстве это выглядело бы как необъяснимый
+# отказ доверия.
+authorityKeyIdentifier = keyid:always,issuer
+subjectAltName = {san}
+"""
+
+
+def _openssl_ok():
+    """Есть ли рабочий openssl. LibreSSL из macOS годится: проверено, что он
+    понимает и -addext, и -extfile с нужными расширениями."""
+    try:
+        subprocess.run(["openssl", "version"], capture_output=True, timeout=5, check=True)
+        return True
+    except Exception:
+        return False
+
+
+def _write_conf(text):
+    import tempfile
+    f = tempfile.NamedTemporaryFile("w", suffix=".cnf", delete=False)
+    f.write(text)
+    f.close()
+    return f.name
+
+
+def _chmod600(*paths):
+    for p in paths:
+        try:
+            os.chmod(str(p), 0o600)
+        except Exception:
+            pass
+
+
+def _ca_is_usable():
+    """Корневой на месте и не истекает в ближайшие полгода."""
+    if not (CA_CERT_FILE.exists() and CA_KEY_FILE.exists()):
+        return False
+    try:
+        r = subprocess.run(
+            ["openssl", "x509", "-in", str(CA_CERT_FILE), "-noout",
+             "-checkend", str(_CA_RENEW_DAYS * 86400)],
+            capture_output=True, timeout=5)
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
+def _generate_ca():
+    """Создаёт корневой сертификат. После этого устройствам нужно принять его
+    заново — операция ручная, поэтому делается только когда его нет или он
+    вот-вот истечёт."""
+    conf = _write_conf(_CA_CONF)
+    try:
+        subprocess.run([
+            "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+            "-keyout", str(CA_KEY_FILE), "-out", str(CA_CERT_FILE),
+            "-days", str(CA_DAYS), "-sha256", "-subj", _CA_SUBJECT,
+            "-config", conf, "-extensions", "ext",
+        ], capture_output=True, timeout=60, check=True)
+    except Exception as ex:
+        print("HTTPS: не удалось создать корневой сертификат: {}".format(ex))
+        return False
+    finally:
+        try:
+            os.unlink(conf)
+        except Exception:
+            pass
+    _chmod600(CA_KEY_FILE, CA_CERT_FILE)
+    print("HTTPS: создан корневой сертификат — установите его на устройства (/ca.crt)")
+    return True
+
+
+def _generate_leaf(san_ips, san_dns):
+    """Выпускает серверный сертификат, подписанный корневым."""
+    san = ",".join(["IP:" + ip for ip in san_ips] + ["DNS:" + d for d in san_dns])
+    conf = _write_conf(_LEAF_CONF.format(san=san))
+    csr = str(CERT_FILE) + ".csr"
+    leaf = str(CERT_FILE) + ".leaf"
+    try:
+        subprocess.run([
+            "openssl", "req", "-new", "-newkey", "rsa:2048", "-nodes",
+            "-keyout", str(KEY_FILE), "-out", csr,
+            "-subj", _LEAF_SUBJECT, "-config", conf,
+        ], capture_output=True, timeout=60, check=True)
+        subprocess.run([
+            "openssl", "x509", "-req", "-in", csr,
+            "-CA", str(CA_CERT_FILE), "-CAkey", str(CA_KEY_FILE), "-CAcreateserial",
+            "-out", leaf, "-days", str(LEAF_DAYS), "-sha256",
+            "-extfile", conf, "-extensions", "ext",
+        ], capture_output=True, timeout=60, check=True)
+        # Проверяем цепочку сразу: ошибка в ограничениях корневого иначе всплыла
+        # бы только на устройстве, где её не отладить.
+        v = subprocess.run(["openssl", "verify", "-CAfile", str(CA_CERT_FILE), leaf],
+                           capture_output=True, timeout=10, text=True)
+        if v.returncode != 0:
+            print("HTTPS: цепочка не проверяется: {}".format((v.stdout + v.stderr).strip()))
+            return False
+        # CERT_FILE — цепочка «серверный, затем корневой»: load_cert_chain берёт
+        # её целиком, и клиент, у которого корневого ещё нет, получает его сам.
+        CERT_FILE.write_bytes(Path(leaf).read_bytes() + CA_CERT_FILE.read_bytes())
+    except Exception as ex:
+        print("HTTPS: не удалось выпустить серверный сертификат: {}".format(ex))
+        return False
+    finally:
+        for p in (conf, csr, leaf):
+            try:
+                os.unlink(p)
+            except Exception:
+                pass
+    _chmod600(KEY_FILE, CERT_FILE)
+    return True
+
+
+def _current_san():
+    """Имена и адреса, которые должен покрывать серверный сертификат.
+
+    Голого имени машины (без .local) здесь намеренно нет: браузеры ходят по
+    <имя>.local, а ограничения корневого разрешают только суффикс .local —
+    голое имя ломало бы проверку цепочки (permitted subtree violation).
+    """
+    san_ips = sorted(set(["127.0.0.1"] + get_all_local_ips()))
     san_dns = ["localhost"]
     host = get_mdns_hostname()
     if host:
-        san_dns += [host, host[:-len(".local")]]
-    # Try openssl CLI first, then Python fallback
+        san_dns.append(host)
+    return san_ips, san_dns
+
+
+def _generate_self_signed_cert(force=False):
+    """Готовит пару «корневой + серверный» для HTTPS в локальной сети."""
+    if (not force and CERT_FILE.exists() and KEY_FILE.exists()
+            and CA_CERT_FILE.exists() and _cert_covers_current_names()):
+        return True
+    san_ips, san_dns = _current_san()
+    if _openssl_ok():
+        if not _ca_is_usable() and not _generate_ca():
+            return _legacy_cert(san_ips, san_dns)
+        if _generate_leaf(san_ips, san_dns):
+            return True
+    return _legacy_cert(san_ips, san_dns)
+
+
+def _legacy_cert(san_ips, san_dns):
+    """Запасной путь: одиночный самоподписанный сертификат, как было раньше.
+
+    iOS такой не примет (нет serverAuth, срок больше 398 дней), но HTTPS в сети
+    поднимется и с компьютера всё работает — это лучше, чем не подняться вовсе.
+    """
+    print("HTTPS: откат на одиночный сертификат — iOS его не примет")
     if _generate_cert_openssl(san_ips, san_dns):
         return True
     if _generate_cert_python(san_ips, san_dns):
@@ -16554,6 +17336,325 @@ print("NEED_CRYPTOGRAPHY")
         return False
 
 
+# ──────────────────── Сертификат Let's Encrypt через DuckDNS ────────────────────
+# Зачем: WebKit не использует apple-touch-icon, когда сервер работает по HTTPS с
+# самоподписанным сертификатом — файл скачивает, а применять отказывается
+# (проверено по журналу обращений: полная отдача, нулевые обрывы, и всё равно
+# буква вместо значка). Лечится только сертификатом от публичного центра.
+#
+# Наружу при этом ничего не выставляется: A-запись указывает на локальный адрес
+# Мака, который снаружи не маршрутизируется, а проверка владения доменом идёт
+# через TXT-запись (DNS-01) — входящие соединения не нужны.
+#
+# Отвязка не разрушающая: самоподписанная пара остаётся на своих файлах, режим
+# переключается полем cert_mode в настройках, и вернуться можно в любой момент.
+ACME_DIR_PROD = "https://acme-v02.api.letsencrypt.org/directory"
+ACME_DIR_STAGING = "https://acme-staging-v02.api.letsencrypt.org/directory"
+ACME_CERT_FILE = Path.home() / ".vinyl_acme_cert.pem"
+ACME_KEY_FILE = Path.home() / ".vinyl_acme_srvkey.pem"
+ACME_ACCOUNT_KEY = Path.home() / ".vinyl_acme_account.pem"
+DUCKDNS_API = "https://www.duckdns.org/update"
+
+_acme_state = {"running": False, "step": "", "error": "", "done": False, "log": []}
+_acme_lock = threading.Lock()
+
+
+def _acme_say(msg):
+    """Шаг наружу — в интерфейс и в консоль. Выпуск идёт минуты, без этого
+    пользователь смотрит в неподвижный экран."""
+    with _acme_lock:
+        _acme_state["step"] = msg
+        _acme_state["log"].append(msg)
+        del _acme_state["log"][:-40]
+    print("ACME: " + msg)
+
+
+def _b64(data):
+    return base64.urlsafe_b64encode(data).decode("ascii").rstrip("=")
+
+
+def _run(args, stdin=None):
+    return subprocess.run(args, input=stdin, capture_output=True, check=True, timeout=60).stdout
+
+
+def _acme_account_key():
+    if not ACME_ACCOUNT_KEY.exists():
+        _run(["openssl", "genrsa", "-out", str(ACME_ACCOUNT_KEY), "2048"])
+        try:
+            os.chmod(str(ACME_ACCOUNT_KEY), 0o600)
+        except Exception:
+            pass
+    return ACME_ACCOUNT_KEY
+
+
+def _acme_jwk():
+    """JWK аккаунта. Без cryptography: модуль и экспоненту достаём из openssl."""
+    key = _acme_account_key()
+    mod = _run(["openssl", "rsa", "-in", str(key), "-noout", "-modulus"]).decode()
+    txt = _run(["openssl", "rsa", "-in", str(key), "-noout", "-text"]).decode()
+    n_hex = mod.split("=", 1)[1].strip()
+    e_dec = int(re.search(r"publicExponent:\s*(\d+)", txt).group(1))
+    e_hex = "%x" % e_dec
+    if len(e_hex) % 2:
+        e_hex = "0" + e_hex
+    return {"e": _b64(bytes.fromhex(e_hex)), "kty": "RSA", "n": _b64(bytes.fromhex(n_hex))}
+
+
+def _acme_thumbprint(jwk):
+    canon = json.dumps(jwk, separators=(",", ":"), sort_keys=True).encode()
+    return _b64(hashlib.sha256(canon).digest())
+
+
+def _acme_sign(payload):
+    return _run(["openssl", "dgst", "-sha256", "-sign", str(_acme_account_key())], stdin=payload)
+
+
+class _Acme(object):
+    def __init__(self, client, directory_url):
+        self.c = client
+        self.dir = client.get(directory_url, timeout=30).json()
+        self.nonce = None
+        self.kid = None
+        self.jwk = _acme_jwk()
+        self.thumb = _acme_thumbprint(self.jwk)
+
+    def _new_nonce(self):
+        r = self.c.head(self.dir["newNonce"], timeout=30)
+        return r.headers["Replay-Nonce"]
+
+    def post(self, url, payload):
+        """POST с подписью JWS. payload=None означает POST-as-GET — так ACME
+        требует читать заказы, проверки и сам сертификат."""
+        for attempt in range(3):
+            if not self.nonce:
+                self.nonce = self._new_nonce()
+            protected = {"alg": "RS256", "nonce": self.nonce, "url": url}
+            if self.kid:
+                protected["kid"] = self.kid
+            else:
+                protected["jwk"] = self.jwk
+            p64 = _b64(json.dumps(protected).encode())
+            b64payload = "" if payload is None else _b64(json.dumps(payload).encode())
+            sig = _b64(_acme_sign((p64 + "." + b64payload).encode()))
+            body = {"protected": p64, "payload": b64payload, "signature": sig}
+            r = self.c.post(url, json=body, headers={"Content-Type": "application/jose+json"}, timeout=60)
+            self.nonce = r.headers.get("Replay-Nonce")
+            if r.status_code == 400 and "badNonce" in r.text:
+                # Протухший nonce — штатная ситуация протокола, просто берём новый.
+                self.nonce = None
+                continue
+            if r.status_code >= 400:
+                raise RuntimeError("{} {}: {}".format(url, r.status_code, r.text[:300]))
+            return r
+        raise RuntimeError("ACME: не удалось подобрать nonce")
+
+    def register(self):
+        r = self.post(self.dir["newAccount"], {"termsOfServiceAgreed": True})
+        self.kid = r.headers["Location"]
+
+
+def _duckdns(client, domain, token, **params):
+    q = {"domains": domain, "token": token}
+    q.update(params)
+    r = client.get(DUCKDNS_API, params=q, timeout=30)
+    body = (r.text or "").strip()
+    if not body.startswith("OK"):
+        raise RuntimeError("DuckDNS ответил: " + (body[:120] or "пусто"))
+    return body
+
+
+def _dns_txt_ready(name, expected, tries=20, delay=6):
+    """Ждём, пока TXT разойдётся по DNS. Спрашиваем публичный резолвер, а не
+    системный: системный кэширует, и отрицательный ответ висел бы до конца TTL."""
+    for i in range(tries):
+        try:
+            out = subprocess.run(["dig", "+short", "@1.1.1.1", "TXT", name],
+                                 capture_output=True, timeout=20).stdout.decode()
+            if expected in out:
+                return True
+        except Exception:
+            pass
+        _acme_say("жду распространения DNS ({}/{})".format(i + 1, tries))
+        time.sleep(delay)
+    return False
+
+
+def _acme_issue(domain, token, staging=False):
+    """Выпускает сертификат на <domain>.duckdns.org проверкой DNS-01."""
+    fqdn = domain + ".duckdns.org"
+    import httpx
+    with httpx.Client(follow_redirects=True) as client:
+        _acme_say("направляю {} на локальный адрес".format(fqdn))
+        _duckdns(client, domain, token, ip=get_local_ip())
+
+        a = _Acme(client, ACME_DIR_STAGING if staging else ACME_DIR_PROD)
+        _acme_say("регистрирую аккаунт" + (" (проверочный сервер)" if staging else ""))
+        a.register()
+
+        _acme_say("создаю заказ на " + fqdn)
+        order = a.post(a.dir["newOrder"], {"identifiers": [{"type": "dns", "value": fqdn}]})
+        order_url = order.headers["Location"]
+        od = order.json()
+
+        for authz_url in od["authorizations"]:
+            az = a.post(authz_url, None).json()
+            ch = next(c for c in az["challenges"] if c["type"] == "dns-01")
+            key_auth = ch["token"] + "." + a.thumb
+            txt = _b64(hashlib.sha256(key_auth.encode()).digest())
+            _acme_say("ставлю TXT-запись для проверки владения")
+            _duckdns(client, domain, token, txt=txt)
+            if not _dns_txt_ready("_acme-challenge." + fqdn, txt):
+                raise RuntimeError("TXT-запись не разошлась по DNS")
+            _acme_say("прошу Let's Encrypt проверить запись")
+            a.post(ch["url"], {})
+            for _ in range(30):
+                time.sleep(3)
+                az = a.post(authz_url, None).json()
+                if az["status"] == "valid":
+                    break
+                if az["status"] in ("invalid", "revoked", "expired"):
+                    raise RuntimeError("проверка не прошла: " + json.dumps(az.get("challenges", []))[:300])
+            else:
+                raise RuntimeError("проверка владения не завершилась")
+
+        _acme_say("готовлю запрос на сертификат")
+        conf = _write_conf("[req]\ndistinguished_name=dn\n[dn]\n[ext]\nsubjectAltName=DNS:{}\n".format(fqdn))
+        csr = str(ACME_CERT_FILE) + ".csr"
+        try:
+            _run(["openssl", "req", "-new", "-newkey", "rsa:2048", "-nodes",
+                  "-keyout", str(ACME_KEY_FILE), "-out", csr, "-subj", "/CN=" + fqdn,
+                  "-config", conf, "-reqexts", "ext"])
+            der = _run(["openssl", "req", "-in", csr, "-outform", "DER"])
+        finally:
+            for p in (conf, csr):
+                try:
+                    os.unlink(p)
+                except Exception:
+                    pass
+
+        _acme_say("отправляю запрос")
+        a.post(od["finalize"], {"csr": _b64(der)})
+        for _ in range(30):
+            time.sleep(3)
+            od = a.post(order_url, None).json()
+            if od["status"] == "valid":
+                break
+            if od["status"] == "invalid":
+                raise RuntimeError("заказ отклонён: " + json.dumps(od)[:300])
+        else:
+            raise RuntimeError("сертификат не выдан за отведённое время")
+
+        _acme_say("забираю сертификат")
+        pem = a.post(od["certificate"], None).text
+        ACME_CERT_FILE.write_text(pem)
+        _chmod600(ACME_CERT_FILE, ACME_KEY_FILE)
+        _acme_say("убираю проверочную TXT-запись")
+        try:
+            _duckdns(client, domain, token, txt="", clear="true")
+        except Exception:
+            pass
+    return True
+
+
+def _acme_worker(domain, token):
+    """Сначала прогон на проверочном сервере, потом боевой выпуск.
+
+    У Let's Encrypt жёсткие ограничения на число неудач, а весь танец с DNS-01
+    длинный: дешевле один раз убедиться на staging, что всё сходится, чем
+    выжечь лимит боевыми попытками.
+    """
+    try:
+        _acme_issue(domain, token, staging=True)
+        _acme_say("проверочный выпуск удался — иду за боевым")
+        _acme_issue(domain, token, staging=False)
+        s = load_settings()
+        s["duckdns_domain"] = domain
+        s["duckdns_token"] = token
+        s["cert_mode"] = "acme"
+        save_settings(s)
+        _acme_say("готово, перезапускаю HTTPS")
+        _restart_server("0.0.0.0")
+        with _acme_lock:
+            _acme_state["done"] = True
+    except Exception as ex:
+        with _acme_lock:
+            _acme_state["error"] = str(ex)
+        print("ACME: ошибка — {}".format(ex))
+    finally:
+        with _acme_lock:
+            _acme_state["running"] = False
+
+
+def acme_start(domain, token):
+    with _acme_lock:
+        if _acme_state["running"]:
+            return False
+        _acme_state.update({"running": True, "step": "начинаю", "error": "", "done": False, "log": []})
+    threading.Thread(target=_acme_worker, args=(domain, token), daemon=True).start()
+    return True
+
+
+def acme_detach():
+    """Отвязка: возвращаемся на самоподписанную пару.
+
+    Файлы Let's Encrypt не удаляем — если передумать, достаточно снова
+    переключить режим, перевыпускать ничего не придётся. A-запись на DuckDNS
+    остаётся как есть: она безобидна и может пригодиться.
+    """
+    s = load_settings()
+    s["cert_mode"] = "self"
+    save_settings(s)
+    _generate_self_signed_cert()
+    _restart_server("0.0.0.0")
+    return True
+
+
+_duck_last_ip = ""
+
+
+def duckdns_sync_ip(force=False):
+    """Держит A-запись поддомена на текущем адресе этой машины.
+
+    Имя остаётся постоянным, а адрес за ним — нет: стоит ноутбуку переехать в
+    другую сеть, и запись указывает в пустоту, то есть возвращается ровно та
+    беда с origin установленной PWA, из-за которой всё и затевалось. Поэтому
+    адрес обновляется при запуске и дальше при каждой его смене.
+
+    Побочная польза: DuckDNS удаляет поддомены, которые подолгу не обновлялись,
+    а между перевыпусками сертификата проходит два месяца. Регулярное касание
+    записи домен не даёт протухнуть.
+    """
+    global _duck_last_ip
+    st = load_settings()
+    dom, tok = st.get("duckdns_domain"), st.get("duckdns_token")
+    if not dom or not tok:
+        return False
+    ip = get_local_ip()
+    if not ip or (ip == _duck_last_ip and not force):
+        return False
+    try:
+        import httpx
+        with httpx.Client() as c:
+            _duckdns(c, dom, tok, ip=ip)
+    except Exception as ex:
+        print("DuckDNS: не удалось обновить адрес — {}".format(ex))
+        return False
+    _duck_last_ip = ip
+    print("DuckDNS: {}.duckdns.org -> {}".format(dom, ip))
+    return True
+
+
+def cert_mode():
+    return (load_settings().get("cert_mode") or "self")
+
+
+def active_cert_pair():
+    """Пара, которая сейчас обслуживает HTTPS."""
+    if cert_mode() == "acme" and ACME_CERT_FILE.exists() and ACME_KEY_FILE.exists():
+        return ACME_CERT_FILE, ACME_KEY_FILE
+    return CERT_FILE, KEY_FILE
+
+
 class ReusableHTTPServer(HTTPServer):
     allow_reuse_address = True
 
@@ -16597,9 +17698,55 @@ def get_all_local_ips():
     return ips or ["127.0.0.1"]
 
 
+def _default_route_ip():
+    """IP того интерфейса, который держит маршрут по умолчанию.
+
+    Именно его видят соседи по сети. Спрашиваем систему, а не угадываем:
+    UDP-трюк с подключением к 8.8.8.8 на этой машине выбирал адрес моста Docker
+    (172.18.0.1) из-за постороннего маршрута через utun, а отбор по префиксу
+    192.168 не работает в гостевых и гостиничных сетях на 10.x и 172.16-31.x.
+    """
+    try:
+        sysname = platform.system()
+        if sysname == "Darwin":
+            out = subprocess.check_output(["route", "-n", "get", "default"],
+                                          stderr=subprocess.DEVNULL, timeout=5).decode()
+            m = re.search(r"interface:\s*(\S+)", out)
+            if m:
+                ifc = subprocess.check_output(["ifconfig", m.group(1)],
+                                              stderr=subprocess.DEVNULL, timeout=5).decode()
+                m2 = re.search(r"\binet (\d+\.\d+\.\d+\.\d+)", ifc)
+                if m2:
+                    return m2.group(1)
+        elif sysname == "Linux":
+            out = subprocess.check_output(["ip", "route", "get", "1.1.1.1"],
+                                          stderr=subprocess.DEVNULL, timeout=5).decode()
+            m = re.search(r"\bsrc (\d+\.\d+\.\d+\.\d+)", out)
+            if m:
+                return m.group(1)
+    except Exception:
+        pass
+    return None
+
+
 def get_local_ip():
+    """Адрес машины в текущей сети — тот, по которому её видят соседи."""
+    ip = _default_route_ip()
+    if ip and not ip.startswith("127."):
+        return ip
+    # Запасной путь: на Windows маршрут так не спросить, там это основной способ.
+    try:
+        sk = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            sk.connect(("8.8.8.8", 80))
+            ip = sk.getsockname()[0]
+        finally:
+            sk.close()
+        if ip and not ip.startswith("127."):
+            return ip
+    except Exception:
+        pass
     ips = get_all_local_ips()
-    # Prefer 192.168.x.x (WiFi) over 10.x.x.x (VPN/other)
     for ip in ips:
         if ip.startswith("192.168."):
             return ip
@@ -16656,6 +17803,12 @@ def get_lan_host_url():
     просто получит NXDOMAIN. В сертификат имя при этом кладётся всегда, чтобы
     адрес заработал сразу, если ответчик появится позже.
     """
+    # Сертификат Let's Encrypt выдан ровно на доменное имя. Заход по IP или по
+    # .local предъявит его же — и браузер справедливо ругнётся на несовпадение
+    # имени. Поэтому в этом режиме рекомендуем единственный подходящий адрес.
+    st = load_settings()
+    if (st.get("cert_mode") == "acme") and st.get("duckdns_domain"):
+        return "https://{}.duckdns.org:{}".format(st["duckdns_domain"], SERVER_PORT)
     global _mdns_resolve_cache
     host = get_mdns_hostname()
     if not host:
@@ -16702,9 +17855,10 @@ def _start_server(bind_addr):
         time.sleep(0.5)  # дать порту освободиться
         srv = ReusableHTTPServer((bind_addr, SERVER_PORT), Handler)
         # Wrap with SSL if HTTPS enabled, public mode, and cert exists
-        if _use_https and bind_addr == "0.0.0.0" and CERT_FILE.exists() and KEY_FILE.exists():
+        cert_f, key_f = active_cert_pair()
+        if _use_https and bind_addr == "0.0.0.0" and cert_f.exists() and key_f.exists():
             ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-            ctx.load_cert_chain(str(CERT_FILE), str(KEY_FILE))
+            ctx.load_cert_chain(str(cert_f), str(key_f))
             srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
         _server = srv
     _server_thread = threading.Thread(target=srv.serve_forever, daemon=True)
