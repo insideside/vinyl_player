@@ -5339,6 +5339,7 @@ html.ui-idle .radio-halo.on { animation-play-state: paused; }
         <button id="logOnBtn" class="folder-btn folder-btn-secondary" style="width:100%;font-size:12px;margin-top:6px" onclick="toggleLogOn()">Сбор журнала: вкл</button>
         <button id="scratchCtxBtn" class="folder-btn folder-btn-secondary" style="width:100%;font-size:12px;margin-top:6px" onclick="toggleScratchCtx()">Звук скретча: вкл</button>
         <button id="recoverBtn" class="folder-btn folder-btn-secondary" style="width:100%;font-size:12px;margin-top:6px" onclick="toggleRecover()">Пересборка при застревании: выкл</button>
+        <button id="acModeBtn" class="folder-btn folder-btn-secondary" style="width:100%;font-size:12px;margin-top:6px" onclick="toggleAcMode()" data-tip="«Держать» — живой плей с локскрина; «усыплять» — меньше заиканий в машине">Тракт во время игры: держать</button>
       </div>
     </div>
     <div style="display:flex;gap:8px;margin-top:16px;padding-top:12px;border-top:1px solid rgba(255,255,255,0.06)">
@@ -5786,6 +5787,42 @@ function acIdleArm() {
 
 var _acCallAt = 0;
 
+// Два требования конфликтуют, и это подтверждено логами с устройства:
+//   контекст работает во время игры -> плей с локскрина живой, CarPlay заикается;
+//   контекст спит во время игры      -> CarPlay чистый, плей с локскрина мёртв.
+// Поэтому режим переключаемый, по умолчанию прежнее поведение.
+//
+// В прошлой попытке усыпления была отдельная ошибка: правило «пока играет, не
+// будим» перекрывало вызов внутри обработчика ПАУЗЫ виджета — а он поднимает
+// контекст до audio.pause(), то есть ровно в ту секунду, когда сессия иначе
+// отпускается. В журнале это было видно как «ac:resume>hold ms:pause playing».
+// Здесь обработчики виджета и паузы из-под правила выведены.
+var _acKeepPlaying = true;
+try { _acKeepPlaying = localStorage.getItem('_vc_acplay') !== '0'; } catch (e) {}
+
+function acSuspendWhilePlaying() {
+  if (_acKeepPlaying) return;
+  if (!audioCtx || audioCtx.state !== 'running') return;
+  if (previewOwnsTransport()) return;     // отрывок звучит через тракт
+  if (isScratchPlaying) return;           // пластинку крутят прямо сейчас
+  try { audioCtx.suspend(); } catch (e) {}
+  mediaLog('ac:play>suspend');
+}
+
+function renderAcModeBtn() {
+  var b = document.getElementById('acModeBtn');
+  if (b) b.textContent = 'Тракт во время игры: ' + (_acKeepPlaying ? 'держать' : 'усыплять');
+}
+
+function toggleAcMode() {
+  _acKeepPlaying = !_acKeepPlaying;
+  lsSet('_vc_acplay', _acKeepPlaying ? '1' : '0');
+  mediaLog('ac:mode', _acKeepPlaying ? 'keep' : 'suspend');
+  if (_acKeepPlaying) acRevive('mode');
+  else acSuspendWhilePlaying();
+  renderAcModeBtn();
+}
+
 function acRevive(where) {
   if (!audioCtx || audioCtx.state === 'running') return;
   // Слот Now Playing система забирает в момент старта трека. Пока ничего не
@@ -5796,7 +5833,15 @@ function acRevive(where) {
   // что второй источник мешает CarPlay). Она сломала плей с локскрина — то
   // есть ровно то, ради чего живой контекст и заведён. Работающий контекст
   // держит аудиосессию, и во время воспроизведения он тоже нужен.
-  if (audio.paused && where !== 'ms:play' && where !== 'ms:pause' && where !== 'scratch') {
+  // Обработчики виджета и паузы не блокируем никогда: именно они поднимают
+  // контекст в момент, когда сессия иначе отпускается.
+  var decisive = (where === 'ms:play' || where === 'ms:pause' || where === 'pause'
+                  || where === 'scratch' || where === 'mode');
+  if (!_acKeepPlaying && !audio.paused && !decisive) {
+    mediaLog('ac:resume>hold', where + ' playing');
+    return;
+  }
+  if (audio.paused && !decisive) {
     mediaLog('ac:resume>hold', where);
     return;
   }
@@ -8410,7 +8455,8 @@ function initPlaybackContext() {
     _ctxPlayed = true;
     _ctxRestoring = false;
     acIdleCancel();
-    acRevive('playing');   // слот уже забран элементом — контекст можно будить
+    if (_acKeepPlaying) acRevive('playing');   // слот забран элементом — можно будить
+    else acSuspendWhilePlaying();
     syncPlaybackState();
     applyPendingSeek();   // preload may have stalled; the seek lands now
     if (!isPlaying) setPlayState(true);
@@ -8433,6 +8479,8 @@ function initPlaybackContext() {
     // иначе отложенное событие перепишет состояние виджета на «пауза», пока
     // отрывок звучит.
     if (previewOwnsTransport()) return;
+    // В режиме усыпления контекст поднимается здесь — в ту самую секунду.
+    if (!_acKeepPlaying) acRevive('pause');
     acIdleArm();
     // 'paused' rather than leaving it at 'none': it keeps the page registered as
     // a media session, which is what lets the lock screen resume us later.
@@ -10929,7 +10977,7 @@ function toggleMediaLog() {
   if (!box) return;
   var open = box.style.display === 'none';
   box.style.display = open ? 'block' : 'none';
-  if (open) { renderMediaLog(); renderLogOnBtn(); renderScratchBtn(); renderRecoverBtn(); }
+  if (open) { renderMediaLog(); renderLogOnBtn(); renderScratchBtn(); renderRecoverBtn(); renderAcModeBtn(); }
 }
 
 function copyMediaLog() {
