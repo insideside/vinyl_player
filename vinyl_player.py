@@ -5542,6 +5542,7 @@ function _pwaRecoverAudio() {
   // 2. Try silent AudioContext unlock (activates system audio session)
   // 3. If all fails, prompt user to open in Safari to fix audio session
   _pwaRecoverAttempts++;
+  if (!_recoverOn) { mediaLog('pwa:recover>off'); return; }
   if (_pwaRecoverAttempts <= 2) {
     // Attempt 1-2: recreate audio element + AudioContext unlock
     var parent = audio.parentNode;
@@ -6123,7 +6124,8 @@ function bindAudioEvents() {
       }, 350);
     }
   });
-  bindAudioLogging();   // журнал обязан пережить подмену элемента
+  bindAudioLogging();       // журнал обязан пережить подмену элемента
+  bindPlaybackHandlers();   // и обработчики воспроизведения тоже
   // Первая привязка — исходный элемент разметки, сообщать не о чем. Пишем
   // только пересборки: ctxb здесь сразу покажет, что обработчики play/pause
   // на новый элемент не переехали.
@@ -6863,13 +6865,6 @@ function selectTrack(i, autoplay) {
       console.error('play() failed:', err);
       showToast('Ошибка воспроизведения: ' + err.message);
     });
-    // Проверка застревания раньше стояла только в обработчике виджета, поэтому
-    // автопереход на следующий трек она не покрывала: в журнале видно, как
-    // трек «играет» (p=0, rs=4, буфер полон), а часы стоят на 0.0 четырнадцать
-    // секунд — пока пользователь не ткнул паузу и плей руками. Ровно это и
-    // делает recoverCycle, просто теперь само. В фоне чинить нечем, там
-    // позиция запомнится и починится при возврате экрана.
-    resumeWatch();
     setPlayState(true);
   }
 
@@ -8439,11 +8434,13 @@ function refreshNowPlaying() {
   syncPlaybackState();
 }
 
-function initPlaybackContext() {
-  // Метка ставится на сам элемент, а не в переменную: _pwaRecoverAudio создаёт
-  // новый <audio>, и эти обработчики на него не переносятся. Флаг едет в
-  // журнал полем ctxb= — потерю надо видеть прямо, а не выводить из того, что
-  // записи перестали появляться.
+// Обработчики, привязанные К ЭЛЕМЕНТУ. Вынесены отдельно и перевешиваются из
+// bindAudioEvents, потому что _pwaRecoverAudio заменяет <audio> целиком.
+// Раньше они на новый элемент не переносились, и после первой же пересборки
+// переставали работать isPlaying, состояние виджета и подъём AudioContext —
+// в журнале это видно как ctxb=0 и дальше шторм неудачных починок.
+function bindPlaybackHandlers() {
+  if (audio._vcCtxBound) return;   // на этом элементе уже висят
   audio._vcCtxBound = true;
   audio.addEventListener('loadedmetadata', applyPendingSeek);
 
@@ -8487,6 +8484,12 @@ function initPlaybackContext() {
     setMediaPlaybackState('paused');
     savePlaybackContext(true);
   });
+}
+
+// Остальное вешается один раз: document и window подмену элемента переживают,
+// а повторная регистрация копила бы обработчики.
+function initPlaybackContext() {
+  bindPlaybackHandlers();
 
   document.addEventListener('visibilitychange', function() {
     if (document.hidden) { savePlaybackContext(true); return; }
@@ -8858,15 +8861,7 @@ function initMediaLogging() {
   document.addEventListener('visibilitychange', function() {
     mediaLog(document.hidden ? 'page:hidden' : 'page:visible', mediaLogState());
     if (!document.hidden) acRevive('visible');
-    if (document.hidden) return;
-    if (_stuckAt < 0) {
-      // Замирание посреди трека раньше не покрывалось ничем: resumeWatch
-      // смотрит только первые 700 мс после запуска, а тут элемент встаёт
-      // спустя секунды. Проверяем на возврате экрана тем же механизмом —
-      // он и чинит, и работает только на переднем плане.
-      if (!audio.paused) resumeWatch();
-      return;
-    }
+    if (document.hidden || _stuckAt < 0) return;
     var t0 = _stuckAt;
     _stuckAt = -1;
     if (audio.paused || audio.currentTime > t0 + 0.05) return;   // ожило само
