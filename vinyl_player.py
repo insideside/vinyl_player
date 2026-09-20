@@ -6854,6 +6854,11 @@ function selectTrack(i, autoplay) {
           // «до неё не дошли».
           mediaLog(stuck ? 'pwa:stall' : 'pwa:stall>ok', mediaLogState());
           if (stuck) {
+            // Пауза имеет смысл только в паре с пересборкой. Раньше она
+            // стояла первой, и при выключенной пересборке трек глушился, а
+            // поднимать его было уже некому: в журнале pwa:recover>off сразу
+            // после audio:pause.
+            if (!_recoverOn) { mediaLog('pwa:stall>skip'); return; }
             setPlayState(false);
             audio.pause();
             _pwaRecoverAudio();
@@ -14976,7 +14981,12 @@ initBgCanvas();
 if(_isIOS){var vw=document.querySelector('.volume-wrap input[type=range]');if(vw)vw.style.display='none';var vs=document.querySelector('.volume-wrap span');if(vs)vs.style.display='none';}
 initMediaSession();
 initMediaLogging();
-initScratchSound();   // контекст нужен живым с самого старта, а не с первого касания
+// Контекст НЕ создаём здесь. На iOS созданный вне жеста рождается suspended,
+// и последующие resume() виснут без ответа: в журнале десяток
+// «ac:resume>call touch suspended» подряд, ни одного ac:running и act=0.0 за
+// весь сеанс. А без работающего контекста не держится аудиосессия, из-за чего
+// play() проходит, но часы стоят на нуле. Создание перенесено в обработчик
+// первого касания (unlock ниже) — там оно внутри жеста, как того и хочет iOS.
 mediaLog('app:start', (window.navigator.standalone ? 'pwa' : 'browser') + ' ' + mediaLogState());
 initPlaybackContext();
 initWidgetBridge();
