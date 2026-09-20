@@ -6843,7 +6843,7 @@ function selectTrack(i, autoplay) {
 
   function doPlay() {
     if (!autoplay) return;
-    var p = ourAudioPlay();
+    var p = playResilient(genAtLoad);
     if (p && p.then) p.then(function() {
       if (!_pwaAudioChecked && window.navigator.standalone) {
         _pwaAudioChecked = true;
@@ -6912,13 +6912,13 @@ function selectTrack(i, autoplay) {
         if (buf) {
           _blobUrlCache[t.file] = makeBlobUrl(buf, t.file);
           setAudioSrc(_blobUrlCache[t.file]);
-          if (autoplay) ourAudioPlay().catch(function(){});
+          if (autoplay) playResilient(genAtLoad);
           watchDuration(true);
         } else {
           delete cachedFiles[cacheKey(t.file)];
           if (!_isOffline) {
             setAudioSrc(streamUrl);
-            if (autoplay) ourAudioPlay().catch(function(){});
+            if (autoplay) playResilient(genAtLoad);
           }
         }
       });
@@ -8684,6 +8684,42 @@ function ourAudioPlay() {
       mediaLog('play>rej', ((err && err.name) || '?') + ' ' + mediaLogState());
     });
   }
+  return p;
+}
+
+// Запуск, переживающий подмену источника.
+//
+// selectTrack для кэшированного трека сначала ставит поток, а затем меняет
+// источник на блоб из кэша — и этим прерывает ещё не разрешившийся play():
+// браузер отклоняет его с AbortError. Это штатно и описано в заметках. Не
+// штатно другое: после подмены повторный запуск иногда не случается, и трек
+// остаётся полностью загруженным (rs=4, буфер в сотню секунд), но стоящим на
+// паузе — ни одного audio:play в журнале.
+//
+// Поэтому: при AbortError ждём готовности и пробуем ещё раз, ровно один раз и
+// только если за это время не сменили трек и пользователь не нажал паузу.
+function playResilient(gen) {
+  var p = ourAudioPlay();
+  if (!p || !p.then) return p;
+  p.then(null, function(err) {
+    if (!err || err.name !== 'AbortError') return;
+    if (gen !== _trackSrcGen) return;          // уже другой трек
+    if (!audio.paused) return;                 // всё-таки поехало
+    var done = false;
+    function retry(why) {
+      if (done) return;
+      done = true;
+      audio.removeEventListener('canplay', onReady);
+      if (gen !== _trackSrcGen || !audio.paused) return;
+      mediaLog('play>retry', why + ' ' + mediaLogState());
+      ourAudioPlay();
+    }
+    function onReady() { retry('canplay'); }
+    if (audio.readyState >= 3) { retry('ready'); return; }
+    audio.addEventListener('canplay', onReady);
+    // Страховка: canplay мог прийти до того, как мы подписались.
+    setTimeout(function() { if (audio.readyState >= 3) retry('timeout'); }, 700);
+  });
   return p;
 }
 
