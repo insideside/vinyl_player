@@ -6899,34 +6899,35 @@ function selectTrack(i, autoplay) {
     doPlay();
     watchDuration(true);
   } else if (isTrackCached(t.file)) {
-    // iOS requires play() synchronously within MediaSession/gesture callback.
-    // Start with stream URL (or silent placeholder offline) to keep audio session,
-    // then swap to blob when IDB read completes.
-    setAudioSrc(_isOffline ? _silentBlobUrl : streamUrl);
-    doPlay();
-    // Skip the async blob swap when locked/backgrounded and streaming is
-    // available: swapping src pauses playback and the re-play() runs outside the
-    // MediaSession gesture, which iOS blocks on the lock screen / CarPlay — the
-    // track would switch visually but stay silent until you reopen the app.
-    // The blob is still warmed by prepareNearbyBlobs for the next switch.
-    if (document.hidden && !_isOffline) {
-      prepareBlobUrl(t.file);
-    } else {
+    // Источник НЕ подменяем на ходу, пока играем по сети.
+    //
+    // Раньше здесь ставился поток, синхронно в жесте звался play(), а следом
+    // асинхронно подменялся источник на блоб из кэша. Подмена прерывала тот
+    // самый запуск (AbortError), и повторный шёл уже из колбэка — вне жеста.
+    // На холодном старте PWA iOS такой запуск не принимает, и получался
+    // тупик: элемент стоит на паузе, аудиосессия не поднимается, контекст не
+    // будится (он ждёт, пока что-нибудь заиграет), а заиграть нечему. В
+    // журнале это p=1, act=0.0 и вереница play>rej AbortError.
+    //
+    // Теперь запуск из жеста доживает до конца, а блоб греется на следующий
+    // раз: при следующем выборе этого трека сработает ветка выше и поставит
+    // его единственным источником, без всякой подмены.
+    if (_isOffline) {
+      // Без сети играть нечем, кроме блоба, — здесь подмена вынужденная.
+      setAudioSrc(_silentBlobUrl);
+      doPlay();
       getCachedAudio(t.file, function(buf) {
         if (genAtLoad !== _trackSrcGen) return;
-        if (buf) {
-          _blobUrlCache[t.file] = makeBlobUrl(buf, t.file);
-          setAudioSrc(_blobUrlCache[t.file]);
-          if (autoplay) playResilient(genAtLoad);
-          watchDuration(true);
-        } else {
-          delete cachedFiles[cacheKey(t.file)];
-          if (!_isOffline) {
-            setAudioSrc(streamUrl);
-            if (autoplay) playResilient(genAtLoad);
-          }
-        }
+        if (!buf) { delete cachedFiles[cacheKey(t.file)]; return; }
+        _blobUrlCache[t.file] = makeBlobUrl(buf, t.file);
+        setAudioSrc(_blobUrlCache[t.file]);
+        if (autoplay) playResilient(genAtLoad);
+        watchDuration(true);
       });
+    } else {
+      setAudioSrc(streamUrl);
+      doPlay();
+      prepareBlobUrl(t.file);   // греем на следующий раз, источник не трогаем
     }
   } else {
     setAudioSrc(streamUrl);
