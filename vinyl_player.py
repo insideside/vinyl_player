@@ -5510,7 +5510,6 @@ html.ui-idle .radio-halo.on { animation-play-state: paused; }
   </div>
 </div>
 <audio id="audioEl"></audio>
-<audio id="previewEl" preload="none"></audio>
 
 <!-- Track context menu -->
 <div class="ctx-menu" id="ctxMenu"></div>
@@ -7030,7 +7029,7 @@ function previewSkip(step) {
 }
 
 function previewOwnsTransport() {
-  return _previewMode && !!(previewAudio.currentSrc || previewAudio.src);
+  return _previewMode && !!previewAudio && !!(previewAudio.currentSrc || previewAudio.src);
 }
 
 function togglePlay() {
@@ -8889,17 +8888,6 @@ function bindAudioLogging() {
 // refreshNowPlaying и acRevive срабатывали бы пачкой на каждую разблокировку,
 // а это прямой путь к мигающему виджету.
 function initMediaLogging() {
-  if (typeof previewAudio !== 'undefined' && previewAudio) {
-    var pevs = ['play', 'pause', 'ended', 'error'];
-    for (var k = 0; k < pevs.length; k++) {
-      (function(name) {
-        previewAudio.addEventListener(name, function() {
-          if (_logOn) mediaLog('prev:' + name, mediaLogState());
-          syncPlaybackState();
-        });
-      })(pevs[k]);
-    }
-  }
   document.addEventListener('visibilitychange', function() {
     mediaLog(document.hidden ? 'page:hidden' : 'page:visible', mediaLogState());
     if (!document.hidden) acRevive('visible');
@@ -12233,15 +12221,48 @@ function relSaveStarredLocal() {
 // Отдельный audio-элемент: в основном живёт контекст воспроизведения (текущий
 // трек, позиция, Now Playing), и подменять в нём src ради 30-секундного отрывка
 // значило бы этот контекст потерять.
-var previewAudio = document.getElementById('previewEl');
+// Элемент отрывков DROPS создаётся ЛЕНИВО и удаляется после отрывка — ровно
+// как вспомогательный элемент кроссфейда (см. tailEl()). Это не оптимизация.
+//
+// Раньше он постоянно висел в разметке, и обработчик play основного элемента
+// на КАЖДОМ старте музыки звал stopPreview(), а тот делал ему pause(),
+// removeAttribute('src') и load(). По спецификации pause() на элементе с
+// пустым networkState запускает выбор ресурса, а load() — полный алгоритм
+// загрузки медиа. То есть второй медиа-элемент дёргался ровно в тот момент,
+// когда iOS решает, кому принадлежит аудиосессия.
+//
+// Той же болезнью болел третий элемент, для кроссфейда: «постоянно висящий в
+// разметке третий <audio> ломал на iPhone возобновление с локскрина — после
+// паузы трек „играл“ с идущим временем, но беззвучно». Его тогда сделали
+// ленивым и вылечили, а этот оставили постоянным.
+var previewAudio = null;
+
+function previewEl() {
+  if (previewAudio) return previewAudio;
+  var el = document.createElement('audio');
+  el.id = 'previewEl';
+  el.preload = 'none';
+  document.body.appendChild(el);
+  previewAudio = el;
+  bindPreviewEvents(el);
+  return el;
+}
+
+// Пока отрывков не играли, медиа-элемент на странице должен быть ровно один.
+function previewDispose() {
+  if (!previewAudio) return;
+  var el = previewAudio;
+  previewAudio = null;                 // до операций: обработчики увидят «уже нет»
+  try { el.pause(); } catch (e) {}
+  try { el.removeAttribute('src'); el.load(); } catch (e) {}
+  try { if (el.parentNode) el.parentNode.removeChild(el); } catch (e) {}
+}
 var _previewKey = null;        // ключ развёрнутого релиза (source:rid)
 var _previewTrack = -1;        // играющий трек внутри релиза
 var _previewTracks = [];
 
 function stopPreview() {
-  try { previewAudio.pause(); } catch (e) {}
-  previewAudio.removeAttribute('src');
-  try { previewAudio.load(); } catch (e) {}   // без load() currentSrc не очистится
+  previewDispose();
   _previewTrack = -1;
   paintPreviewState();
 }
@@ -12274,7 +12295,7 @@ function togglePreview(key, autoplay) {
   if (_previewKey === key) {
     if (!autoplay) { closePreview(); return; }          // клик по карточке — свернуть
 
-    if (_previewTrack >= 0 && !previewAudio.paused) { stopPreview(); return; }
+    if (_previewTrack >= 0 && previewAudio && !previewAudio.paused) { stopPreview(); return; }
     if (_previewTracks.length) playPreview(_previewTrack >= 0 ? _previewTrack : 0);
     return;
   }
@@ -12305,7 +12326,7 @@ function togglePreview(key, autoplay) {
   // после fetch, а play() за пределами жеста браузер отклоняет (на iOS —
   // всегда). Проигрываем тишину сейчас, подменим src, когда придут треки.
   try {
-    previewAudio.src = _silentBlobUrl;
+    previewEl().src = _silentBlobUrl;
     var warm = previewAudio.play();
     if (warm && warm.catch) warm.catch(function(){});
   } catch (e) {}
@@ -12396,15 +12417,13 @@ function enterPreviewPlayerUI(rel, tr) {
     if (ccov) { ccov.src = src; ccov.style.display = ''; if (cph) cph.style.display = 'none'; }
   }
   syncPreviewChrome();
-  setPlayState(!previewAudio.paused);
+  setPlayState(!!previewAudio && !previewAudio.paused);
 }
 
 function exitPreviewPlayerUI(silent) {
   if (!_previewMode) return;
   _previewMode = false;
-  try { previewAudio.pause(); } catch (e) {}
-  previewAudio.removeAttribute('src');
-  try { previewAudio.load(); } catch (e) {}   // иначе транспорт остаётся за отрывком
+  previewDispose();   // иначе транспорт остаётся за отрывком
   _previewTrack = -1;
   // silent — нас позвали из selectTrack, и метаданные поставит он. Иначе
   // сюда уехал бы прежний трек, а его асинхронная обложка затёрла бы новый.
@@ -12421,13 +12440,13 @@ function exitPreviewPlayerUI(silent) {
 function playPreview(n) {
   var t = _previewTracks[n];
   if (!t) return;
-  if (_previewTrack === n && !previewAudio.paused) { stopPreview(); return; }
+  if (_previewTrack === n && previewAudio && !previewAudio.paused) { stopPreview(); return; }
   // Останавливаем основной плеер до превью. setPlayState(false) сначала —
   // иначе обработчик pause посчитает это системным прерыванием.
   if (!audio.paused) { setPlayState(false); audio.pause(); }
   _previewTrack = n;
   // Через свой сервер: он исправляет Content-Type, который у Apple нестандартный
-  previewAudio.src = '/api/releases/preview?u=' + encodeURIComponent(t.preview);
+  previewEl().src = '/api/releases/preview?u=' + encodeURIComponent(t.preview);
   var rel = findRelease(_previewKey);
   if (rel) enterPreviewPlayerUI(rel, t);
   var p = previewAudio.play();
@@ -12455,39 +12474,54 @@ function paintPreviewState() {
   var all = document.querySelectorAll('#newList .rel-btn-prev');
   for (var j = 0; j < all.length; j++) {
     var isOpen = all[j].getAttribute('data-key') === _previewKey;
-    var playing = isOpen && _previewTrack >= 0 && !previewAudio.paused;
+    var playing = isOpen && _previewTrack >= 0 && previewAudio && !previewAudio.paused;
     all[j].classList.toggle('rel-playing', playing);
     var want = playing ? REL_ICON_PAUSE : REL_ICON_PLAY;
     if (all[j].innerHTML !== want) all[j].innerHTML = want;
   }
 }
 
-previewAudio.addEventListener('timeupdate', function() {
-  if (_previewTrack < 0 || !previewAudio.duration) return;
-  var row = document.querySelector('#newList .rel-track[data-n="' + _previewTrack + '"] .rel-track-bar');
-  if (row) row.style.width = (previewAudio.currentTime / previewAudio.duration * 100) + '%';
-});
-previewAudio.addEventListener('play', function(){
-  paintPreviewState();
-  if (previewOwnsTransport()) setPlayState(true);
-});
-previewAudio.addEventListener('pause', function(){
-  paintPreviewState();
-  // Только пока отрывок действительно ведёт плеер. Обработчик play основного
-  // элемента зовёт stopPreview(), тот ставит превью на паузу, и это событие
-  // прилетало уже ПОСЛЕ setPlayState(true) — состояние сбрасывалось обратно
-  // на каждом запуске музыки.
-  if (previewOwnsTransport()) setPlayState(false);
-});
-previewAudio.addEventListener('ended', function() {
-  // Дослушали отрывок — идём к следующему треку релиза, как в обычном плеере
-  if (_previewTrack >= 0 && _previewTrack + 1 < _previewTracks.length) playPreview(_previewTrack + 1);
-  else { stopPreview(); if (_previewMode) setPlayState(false); }
-});
-previewAudio.addEventListener('error', function() {
-  if (_previewTrack < 0) return;
-  _previewTrack = -1; paintPreviewState();
-});
+// Слушатели вешаются на элемент при его создании: он теперь появляется только
+// на время отрывка и после исчезает.
+function bindPreviewEvents(el) {
+  el.addEventListener('timeupdate', function() {
+    if (_previewTrack < 0 || !el.duration) return;
+    var row = document.querySelector('#newList .rel-track[data-n="' + _previewTrack + '"] .rel-track-bar');
+    if (row) row.style.width = (el.currentTime / el.duration * 100) + '%';
+  });
+  el.addEventListener('play', function(){
+    paintPreviewState();
+    if (previewOwnsTransport()) setPlayState(true);
+  });
+  el.addEventListener('pause', function(){
+    paintPreviewState();
+    // Только пока отрывок действительно ведёт плеер. Обработчик play основного
+    // элемента зовёт stopPreview(), тот ставит превью на паузу, и это событие
+    // прилетало уже ПОСЛЕ setPlayState(true) — состояние сбрасывалось обратно
+    // на каждом запуске музыки.
+    if (previewOwnsTransport()) setPlayState(false);
+  });
+  el.addEventListener('ended', function() {
+    // Дослушали отрывок — идём к следующему треку релиза, как в обычном плеере
+    if (_previewTrack >= 0 && _previewTrack + 1 < _previewTracks.length) playPreview(_previewTrack + 1);
+    else { stopPreview(); if (_previewMode) setPlayState(false); }
+  });
+  el.addEventListener('error', function() {
+    if (_previewTrack < 0) return;
+    _previewTrack = -1; paintPreviewState();
+  });
+  // Записи журнала по отрывку — здесь же: раньше они висели в initMediaLogging,
+  // которая выполняется один раз на старте, когда элемента ещё нет.
+  var pevs = ['play', 'pause', 'ended', 'error'];
+  for (var k = 0; k < pevs.length; k++) {
+    (function(name) {
+      el.addEventListener(name, function() {
+        if (_logOn) mediaLog('prev:' + name, mediaLogState());
+        syncPlaybackState();
+      });
+    })(pevs[k]);
+  }
+}
 
 function previewTracksHtml(owned, starred) {
   var cls = 'rel-tracks' + (starred ? ' starred' : (owned ? ' owned' : ' missing'));
