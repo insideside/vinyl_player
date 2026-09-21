@@ -7158,6 +7158,9 @@ function syncShuffleUI() {
 }
 
 function playFromList(trackIdx) {
+  mediaLog('tap:list', 'idx=' + trackIdx + ' '
+           + (tracks[trackIdx] ? (tracks[trackIdx].file || '').slice(0, 40) : '?')
+           + ' cached=' + (tracks[trackIdx] && isTrackCached(tracks[trackIdx].file) ? 1 : 0));
   stopRadio();          // выбрали трек руками — станция больше не ведёт
   // Build queue from current visible list respecting cachedOnly filter
   var indices = getVisibleIndices();
@@ -8777,6 +8780,10 @@ function mediaLogState() {
     // обработчики play/pause из initPlaybackContext. ctxb=0 означает, что
     // состояние виджета и mediaSession больше никто не обновляет.
     + ' el=' + (_audioElGen || 0) + ' ctxb=' + (audio._vcCtxBound ? 1 : 0)
+    // off=1 означает режим офлайна: там некэшированные строки списка теряют
+    // обработчик клика и pointer-events, то есть тап по ним не делает ничего
+    // и никак это не объясняет.
+    + ' off=' + (_isOffline ? 1 : 0)
     // buf — на сколько секунд вперёд есть данные. У blob-источника он всегда
     // большой, и если при полном буфере звук всё равно рвётся, виновата не
     // подача данных, а маршрут звука. rate и net отделяют замедление
