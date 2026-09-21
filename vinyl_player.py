@@ -6523,6 +6523,7 @@ function fmtBadgeHtml(t) {
 }
 
 function renderTracks() {
+  logCacheCoverage();   // список мог приехать позже индекса кэша
   var html = '';
   var indices = getVisibleIndices();
   for (var ii = 0; ii < indices.length; ii++) {
@@ -6879,6 +6880,32 @@ function selectTrack(i, autoplay) {
     setPlayState(true);
   }
 
+  // Ждём, пока элемент действительно поедет, а не только получит play().
+  // Пока часы стоят, жест ещё не «потрачен» на настоящее воспроизведение, и
+  // подмена источника его просто отменит. Потолок нужен обязательно: если
+  // запуск так и не состоялся, подменить всё равно лучше, чем оставить
+  // тишину — хотя бы следующее нажатие попадёт в тёплый блоб.
+  function whenRolling(fn) {
+    if (!autoplay) { fn('noplay'); return; }
+    if (!audio.paused && audio.currentTime > 0) { fn('was'); return; }
+    var done = false;
+    var tm = 0;
+    function go(how) {
+      if (done) return;
+      done = true;
+      audio.removeEventListener('playing', onPlaying);
+      audio.removeEventListener('timeupdate', onPlaying);
+      clearTimeout(tm);
+      fn(how);
+    }
+    function onPlaying() { go('rolling'); }
+    audio.addEventListener('playing', onPlaying);
+    // Ещё и timeupdate: на iOS 'playing' у беззвучного блоба иногда не
+    // приходит вовсе, а часы при этом идут.
+    audio.addEventListener('timeupdate', onPlaying);
+    tm = setTimeout(function() { go('timeout'); }, 1500);
+  }
+
   function watchDuration(isBlob) {
     if (!isBlob) return;
     setTimeout(function() {
@@ -6920,15 +6947,30 @@ function selectTrack(i, autoplay) {
     // его единственным источником, без всякой подмены.
     if (_isOffline) {
       // Без сети играть нечем, кроме блоба, — здесь подмена вынужденная.
+      // Но подменять можно только после того, как разблокирующее
+      // воспроизведение РЕАЛЬНО началось. IndexedDB отвечает за считанные
+      // миллисекунды и успевала оборвать его раньше, чем iOS засчитает
+      // жест: элемент так и не трогался с места, а повторный play() шёл уже
+      // вне жеста и отклонялся. Отсюда «трек из списка не запускается, пока
+      // не переключить туда-сюда» — со второго раза блоб тёплый, и работает
+      // ветка выше, где подмены нет вовсе.
+      var startedAt = Date.now();
       setAudioSrc(_silentBlobUrl);
       doPlay();
       getCachedAudio(t.file, function(buf) {
         if (genAtLoad !== _trackSrcGen) return;
         if (!buf) { delete cachedFiles[cacheKey(t.file)]; return; }
-        _blobUrlCache[t.file] = makeBlobUrl(buf, t.file);
-        setAudioSrc(_blobUrlCache[t.file]);
-        if (autoplay) playResilient(genAtLoad);
-        watchDuration(true);
+        var url = makeBlobUrl(buf, t.file);
+        _blobUrlCache[t.file] = url;
+        whenRolling(function(how) {
+          if (genAtLoad !== _trackSrcGen) return;
+          if (typeof mediaLog === 'function') {
+            mediaLog('off:swap', how + ' +' + (Date.now() - startedAt) + 'ms');
+          }
+          setAudioSrc(url);
+          if (autoplay) playResilient(genAtLoad);
+          watchDuration(true);
+        });
       });
     } else {
       setAudioSrc(streamUrl);
@@ -14525,7 +14567,9 @@ function refreshCachedList() {
           _audioKeyIndex[ak] = k;
         }
       }
+      _cacheIndexReady = true;
       if (typeof renderTracks === 'function') renderTracks();
+      logCacheCoverage();
       prepareNearbyBlobs();
       backfillMissingCovers();
     };
@@ -14533,6 +14577,25 @@ function refreshCachedList() {
 }
 
 function isTrackCached(file) { return !!cachedFiles[cacheKey(file)]; }
+
+// Состав IndexedDB из журнала не виден, а от полноты кэша зависит разбор:
+// офлайн-ветка selectTrack ведёт себя иначе для кэшированного и
+// некэшированного трека. Пишем один раз за запуск, когда готовы обе половины
+// — список треков и индекс кэша; порядок их готовности не фиксирован.
+var _cacheIndexReady = false;
+var _cacheCoverageLogged = false;
+function logCacheCoverage() {
+  if (_cacheCoverageLogged || !_cacheIndexReady) return;
+  if (typeof tracks === 'undefined' || !tracks || !tracks.length) return;
+  if (typeof mediaLog !== 'function') return;
+  _cacheCoverageLogged = true;
+  var n = 0;
+  for (var i = 0; i < tracks.length; i++) {
+    if (isTrackCached(tracks[i].file)) n++;
+  }
+  mediaLog('cache:cover', 'в кэше ' + n + ' из ' + tracks.length
+           + ' off=' + (_isOffline ? 1 : 0));
+}
 
 // Каталог кэшируется пачкой, и зелёные точки раньше появлялись только когда
 // очередь заканчивалась целиком: cacheNextInQueue после успеха не трогал
