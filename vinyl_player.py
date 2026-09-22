@@ -5979,6 +5979,10 @@ var currentArmAngle = ARM_REST;
 
 // Vinyl drag-to-seek state
 var isDragging = false;
+// Палец, которым начали кручение. Слушатель движения висит на document (иначе
+// не поймать палец, ушедший за край пластинки), поэтому без сверки сюда
+// попадало бы любое чужое касание.
+var _dragTouchId = null;
 var dragStartAngle = 0;
 var dragStartTime = 0;
 var dragVelocity = 0;
@@ -6188,6 +6192,7 @@ vinylRec.addEventListener('mousedown', function(e) {
   dragVelocity = 0;
   lastDragTime = performance.now();
   vinylRec.classList.add('grabbing');
+  mediaLog('drag:start', 'mouse');
   dragStartAngle = getAngleFromCenter(vinylRec, e.clientX, e.clientY);
   dragStartTime = audio.currentTime;
   vinylSpeed = 0;
@@ -6224,17 +6229,37 @@ document.addEventListener('mousemove', function(e) {
   startScratch(delta);
 });
 
-document.addEventListener('mouseup', function() {
+// Отпускание и отмена жеста — одно действие, но touchcancel до сих пор не
+// слушали вовсе. А iOS отменяет касание охотно: системный жест от края, Пункт
+// управления, уведомление, уход в фон. После такой отмены isDragging оставался
+// true НАВСЕГДА — и дальше каждый touchmove по странице (обычная прокрутка
+// списка) крутил пластинку, потому что слушатель движения висит на document, а
+// угол считается от центра винила. В журнале это выглядит как «плеер сам
+// скретчит»: вереница seeking/seeked с currentTime, гуляющим туда-сюда, при
+// том что пластинку никто не трогал. Мышь страдает тем же: кнопку можно
+// отпустить за пределами окна, и mouseup не придёт — поэтому ещё и blur.
+function dragRelease(why) {
   if (!isDragging) return;
   isDragging = false;
+  _dragTouchId = null;
   vinylRec.classList.remove('grabbing');
-  // Apply inertia if velocity is significant
-  if (Math.abs(dragVelocity) > 0.3 && audio.duration) {
+  mediaLog('drag:end', why);
+  // Инерцию продолжаем только после нормального отпускания. Отмена жеста —
+  // это не бросок пластинки, и раскручивать её там нечему.
+  var normal = (why === 'touchend' || why === 'mouseup');
+  if (normal && Math.abs(dragVelocity) > 0.3 && audio.duration) {
     inertiaActive = true;
     applyInertia();
   } else {
+    dragVelocity = 0;
     stopScratch();
   }
+}
+
+document.addEventListener('mouseup', function() { dragRelease('mouseup'); });
+window.addEventListener('blur', function() { dragRelease('blur'); });
+document.addEventListener('visibilitychange', function() {
+  if (document.hidden) dragRelease('hidden');
 });
 
 // Touch support for vinyl drag
@@ -6246,6 +6271,8 @@ vinylRec.addEventListener('touchstart', function(e) {
   dragVelocity = 0;
   lastDragTime = performance.now();
   var t = e.touches[0];
+  _dragTouchId = t.identifier;
+  mediaLog('drag:start', 'touch');
   dragStartAngle = getAngleFromCenter(vinylRec, t.clientX, t.clientY);
   dragStartTime = audio.currentTime;
   vinylSpeed = 0;
@@ -6254,6 +6281,8 @@ vinylRec.addEventListener('touchstart', function(e) {
 document.addEventListener('touchmove', function(e) {
   if (!isDragging || e.touches.length !== 1) return;
   var t = e.touches[0];
+  // Ведём ровно тот палец, которым начали.
+  if (_dragTouchId !== null && t.identifier !== _dragTouchId) return;
   var angle = getAngleFromCenter(vinylRec, t.clientX, t.clientY);
   var delta = angle - dragStartAngle;
   if (delta > 180) delta -= 360;
@@ -6277,16 +6306,8 @@ document.addEventListener('touchmove', function(e) {
   startScratch(delta);
 }, {passive: false});
 
-document.addEventListener('touchend', function() {
-  if (!isDragging) return;
-  isDragging = false;
-  if (Math.abs(dragVelocity) > 0.3 && audio.duration) {
-    inertiaActive = true;
-    applyInertia();
-  } else {
-    stopScratch();
-  }
-});
+document.addEventListener('touchend', function() { dragRelease('touchend'); });
+document.addEventListener('touchcancel', function() { dragRelease('cancel'); });
 
 function applyInertia() {
   if (!inertiaActive || isDragging) { inertiaActive = false; stopScratch(); return; }
