@@ -5786,6 +5786,8 @@ function acIdleArm() {
 }
 
 var _acCallAt = 0;
+var _acResumePending = false;
+var _acPendingTimer = null;
 
 // По умолчанию контекст во время воспроизведения СПИТ.
 //
@@ -5860,20 +5862,34 @@ function acRevive(where) {
     mediaLog('ac:resume>hold', where);
     return;
   }
+  // Пока предыдущий resume() не ответил, новых не шлём. На маршруте CarPlay
+  // контекст уходит в interrupted, и там resume() висит без ответа: скретч по
+  // пластинке зовёт acRevive на каждом кадре, и за несколько секунд копились
+  // десятки висящих промисов — в журнале вереница `ac:resume>call ...
+  // suspended`, а при возврате на передний план тридцать `ac:resume>ok`
+  // подряд. Клапан на 3 секунды обязателен: без него зависший промис запер бы
+  // побудку навсегда, а она нужна для плея с локскрина.
+  if (_acResumePending) return;
   var now = Date.now();
   if (now - _acCallAt < 50) { mediaLog('ac:resume>dup', where); return; }
   _acCallAt = now;
   var ctx = audioCtx;
   var p = null;
+  function acPendingClear() {
+    _acResumePending = false;
+    if (_acPendingTimer) { clearTimeout(_acPendingTimer); _acPendingTimer = null; }
+  }
+  _acResumePending = true;
+  _acPendingTimer = setTimeout(function() { _acPendingTimer = null; _acResumePending = false; }, 3000);
   try { p = ctx.resume(); }
-  catch (e) { mediaLog('ac:resume>throw', where + ' ' + ((e && e.name) || '?')); return; }
+  catch (e) { acPendingClear(); mediaLog('ac:resume>throw', where + ' ' + ((e && e.name) || '?')); return; }
   // Промис resume() резолвится не сразу, поэтому снимок пишем и синхронно:
   // иначе хронология в журнале врёт на секунды.
   mediaLog('ac:resume>call', where + ' ' + ctx.state);
   if (p && p.then) {
-    p.then(function() { mediaLog('ac:resume>ok', where + ' ' + ctx.state); },
-           function(e) { mediaLog('ac:resume>rej', where + ' ' + ((e && e.name) || '?')); });
-  }
+    p.then(function() { acPendingClear(); mediaLog('ac:resume>ok', where + ' ' + ctx.state); },
+           function(e) { acPendingClear(); mediaLog('ac:resume>rej', where + ' ' + ((e && e.name) || '?')); });
+  } else { acPendingClear(); }
 }
 
 function scratchCtxRelease() {
@@ -6796,11 +6812,22 @@ function prepareNearbyBlobs() {
     var nf = tracks[playQueue[np]] ? tracks[playQueue[np]].file : null;
     if (nf) nearSet[nf] = true;
   }
+  // Играющий трек вытеснять нельзя НИКОГДА. nearSet строится от playQueuePos,
+  // а selectTrack его не трогает — его выставляют вызывающие. На восстановлении
+  // контекста после перезапуска очередь ещё не та, и текущий трек в nearSet не
+  // попадал: через 200 мс после selectTrack (setTimeout ниже по тексту) у
+  // элемента из-под ног отзывался его собственный blob-URL. В журнале это
+  // «play>rej AbortError ... rs=0 net=3 buf=0.0», следом audio:abort и
+  // audio:emptied, а музыка просто не начиналась.
+  if (currentIdx >= 0 && tracks[currentIdx]) nearSet[tracks[currentIdx].file] = true;
   Object.keys(_blobUrlCache).forEach(function(f) {
-    if (!nearSet[f]) {
-      try { URL.revokeObjectURL(_blobUrlCache[f]); } catch(e) {}
-      delete _blobUrlCache[f];
-    }
+    if (nearSet[f]) return;
+    // Страховка поверх учёта очереди: что бы ни думал nearSet, ссылку,
+    // которую элемент держит прямо сейчас, не отзываем.
+    var u = _blobUrlCache[f];
+    if (u && (u === audio.currentSrc || u === audio.src)) return;
+    try { URL.revokeObjectURL(u); } catch(e) {}
+    delete _blobUrlCache[f];
   });
   // Prepare current + 2 next + 1 prev
   for (var d = 0; d <= 3; d++) {
@@ -8945,6 +8972,24 @@ function freezeCheck() {
 // Диагностика обязана пережить подмену — иначе журнал замолкает ровно там, где
 // начинается интересное. Зовётся из bindAudioEvents, то есть и при пересборке.
 // emptied и abort добавлены сюда же: это следы самой подмены источника.
+// Перемотка кручением пластинки идёт покадрово: каждое присваивание
+// currentTime даёт пару seeking+seeked, то есть до 120 записей в секунду. Шесть
+// секунд скретча выносили весь журнал (250 записей) целиком, и разбирать в нём
+// было уже нечего — ровно это и случилось с логом от 22.09. Вдобавок lsSet
+// сериализует весь массив на КАЖДУЮ запись, то есть это ещё и десятки
+// килобайт работы на главном потоке в секунду прямо во время воспроизведения.
+// Поэтому перемотки склеиваем: одна запись в секунду, с числом съеденных.
+var SEEK_LOG_MS = 1000;
+var _seekLogAt = 0, _seekLogSkipped = 0;
+function logSeekEvent(name) {
+  var now = Date.now();
+  if (now - _seekLogAt < SEEK_LOG_MS) { _seekLogSkipped++; return; }
+  _seekLogAt = now;
+  var pre = _seekLogSkipped ? ('+' + _seekLogSkipped + ' ') : '';
+  _seekLogSkipped = 0;
+  mediaLog('audio:' + name, pre + mediaLogState());
+}
+
 function bindAudioLogging() {
   var evs = ['play', 'pause', 'playing', 'waiting', 'stalled', 'suspend', 'ended', 'error',
              'emptied', 'abort', 'seeking', 'seeked', 'ratechange', 'canplay', 'loadeddata'];
@@ -8952,6 +8997,7 @@ function bindAudioLogging() {
     (function(name) {
       audio.addEventListener(name, function() {
         if (!_logOn) return;
+        if (name === 'seeking' || name === 'seeked') { logSeekEvent(name); return; }
         var extra = mediaLogState();
         if (name === 'error' && audio.error) extra = 'code=' + audio.error.code + ' ' + extra;
         var tag = 'audio:' + name;
