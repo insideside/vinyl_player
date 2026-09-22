@@ -5809,6 +5809,14 @@ try { _acKeepPlaying = localStorage.getItem('_vc_acplay') === '1'; } catch (e) {
 
 function acSuspendWhilePlaying() {
   if (_acKeepPlaying) return;
+  // Усыпление во время игры — мера ЧИСТО ДЛЯ iOS: второй работающий источник
+  // звука рвал маршрут CarPlay. На десктопе CarPlay нет, а цена видна сразу:
+  // разбуженный контекст заново поднимает выходное устройство, и скретч от
+  // пластинки звучит с заметной задержкой после первого движения мышью.
+  // Экономии здесь тоже нет — пока музыка играет, тракт поднят в любом случае.
+  // Паузу это не трогает: там по-прежнему усыпляет acIdleArm, и вот та
+  // экономия настоящая.
+  if (!_isIOS) return;
   if (!audioCtx || audioCtx.state !== 'running') return;
   if (previewOwnsTransport()) return;     // отрывок звучит через тракт
   if (isScratchPlaying) return;           // пластинку крутят прямо сейчас
@@ -6152,6 +6160,13 @@ function getAngleFromCenter(el, clientX, clientY) {
 vinylRec.addEventListener('mousedown', function(e) {
   if (!audio.duration) return;
   e.preventDefault();
+  // Будим тракт на нажатии, а не на первом движении. resume() асинхронный, и
+  // если контекст спал (долгая пауза — acIdleArm), первые миллисекунды
+  // скретча уходят в тишину. Здесь у него есть фора, пока рука не сдвинулась.
+  // Для касаний такого нет намеренно: touchstart WebKit жестом не считает,
+  // resume() с него висит пустышкой (см. раздел про iOS в CLAUDE.md).
+  if (!audioCtx) initScratchSound();
+  acRevive('scratch');
   isDragging = true;
   inertiaActive = false;
   dragVelocity = 0;
