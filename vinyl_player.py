@@ -5340,6 +5340,7 @@ html.ui-idle .radio-halo.on { animation-play-state: paused; }
         <button id="scratchCtxBtn" class="folder-btn folder-btn-secondary" style="width:100%;font-size:12px;margin-top:6px" onclick="toggleScratchCtx()">Звук скретча: вкл</button>
         <button id="recoverBtn" class="folder-btn folder-btn-secondary" style="width:100%;font-size:12px;margin-top:6px" onclick="toggleRecover()">Пересборка при застревании: выкл</button>
         <button id="acModeBtn" class="folder-btn folder-btn-secondary" style="width:100%;font-size:12px;margin-top:6px" onclick="toggleAcMode()" data-tip="«Держать» — живой плей с локскрина; «усыплять» — меньше заиканий в машине">Тракт во время игры: держать</button>
+        <button id="wgBtnMode" class="folder-btn folder-btn-secondary" style="width:100%;font-size:12px;margin-top:6px" onclick="toggleWgBtnMode()" data-tip="«Стрелки» — работают кнопки на руле и наушниках; «перемотка» — на виджете есть полоса прокрутки. Может понадобиться перезапуск приложения">Кнопки виджета: стрелки</button>
       </div>
     </div>
     <div style="display:flex;gap:8px;margin-top:16px;padding-top:12px;border-top:1px solid rgba(255,255,255,0.06)">
@@ -5808,6 +5809,34 @@ var _acPendingTimer = null;
 // отпускается. Здесь обработчики виджета и паузы из-под правила выведены.
 var _acKeepPlaying = false;
 try { _acKeepPlaying = localStorage.getItem('_vc_acplay') === '1'; } catch (e) {}
+
+// Вид кнопок виджета выбирает СИСТЕМА по составу зарегистрированных команд, и
+// этим же составом решается, дойдут ли до нас кнопки руля и наушников: они
+// шлют previoustrack/nexttrack. Разом получить и стрелки, и полосу прокрутки
+// нельзя, поэтому выбор отдан пользователю. По умолчанию — стрелки: молчащие
+// кнопки на руле в машине хуже, чем отсутствие полосы на локскрине.
+var _wgNav = true;
+try { _wgNav = localStorage.getItem('_vc_wgbtn') !== 'seek'; } catch (e) {}
+
+function renderWgBtnMode() {
+  var b = document.getElementById('wgBtnMode');
+  if (b) b.textContent = 'Кнопки виджета: ' + (_wgNav ? 'стрелки' : 'перемотка');
+}
+
+function toggleWgBtnMode() {
+  _wgNav = !_wgNav;
+  lsSet('_vc_wgbtn', _wgNav ? 'nav' : 'seek');
+  mediaLog('ms:btnmode', _wgNav ? 'nav' : 'seek');
+  renderWgBtnMode();
+  // Снимаем прежний набор целиком: iOS перечитывает состав команд при
+  // разблокировке, и оставшийся обработчик удержал бы старый вид виджета.
+  var all = ['previoustrack', 'nexttrack', 'seekbackward', 'seekforward'];
+  for (var i = 0; i < all.length; i++) setMediaAction(all[i], null);
+  initMediaSession();
+  showToast(_wgNav
+    ? 'Стрелки треков: заработают кнопки на руле и наушниках'
+    : 'Перемотка ±15 с: вернётся полоса прокрутки');
+}
 
 function acSuspendWhilePlaying() {
   if (_acKeepPlaying) return;
@@ -9220,7 +9249,38 @@ function initMediaSession() {
   // чтобы виджет в PWA остался прежним. Перемотку на десктопе при этом не
   // вешаем: кнопка «назад на 10 секунд» в панели браузера двигала бы не
   // время, а трек.
-  if (_isIOS) {
+  // Дополнение 25.09: кнопки на руле и на наушниках шлют ровно
+  // previoustrack/nexttrack — ту же пару, что медиа-клавиши Mac. Пока на iOS
+  // их не регистрировали, руль и наушники молчали, хотя виджет CarPlay работал
+  // (он шлёт как раз seekforward, в журнале это видно как ms:seekfwd с
+  // переключением трека). Отсюда переключатель `_vc_wgbtn`: выбирать между
+  // работающим рулём и полосой прокрутки на виджете приходится вручную,
+  // потому что состав команд решает и то, и другое разом.
+  if (_isIOS && !_wgNav) {
+    setMediaAction('seekbackward', function() {
+      mediaLog('ms:seekback');
+      if (previewSkip(-1)) return;
+      prevTrack();
+    });
+    setMediaAction('seekforward', function() {
+      mediaLog('ms:seekfwd');
+      if (previewSkip(1)) return;
+      nextTrack();
+    });
+  } else if (_isIOS) {
+    // Режим «стрелки»: навигация плюс перемотка. Вид виджета всё равно
+    // определяют навигационные команды, а seek оставляем на случай устройств,
+    // которые шлют именно его.
+    setMediaAction('previoustrack', function() {
+      mediaLog('ms:prev', mediaLogState());
+      if (previewSkip(-1)) return;
+      prevTrack();
+    });
+    setMediaAction('nexttrack', function() {
+      mediaLog('ms:next', mediaLogState());
+      if (previewSkip(1)) return;
+      nextTrack();
+    });
     setMediaAction('seekbackward', function() {
       mediaLog('ms:seekback');
       if (previewSkip(-1)) return;
@@ -11232,7 +11292,7 @@ function toggleMediaLog() {
   if (!box) return;
   var open = box.style.display === 'none';
   box.style.display = open ? 'block' : 'none';
-  if (open) { renderMediaLog(); renderLogOnBtn(); renderScratchBtn(); renderRecoverBtn(); renderAcModeBtn(); }
+  if (open) { renderMediaLog(); renderLogOnBtn(); renderScratchBtn(); renderRecoverBtn(); renderAcModeBtn(); renderWgBtnMode(); }
 }
 
 function copyMediaLog() {
