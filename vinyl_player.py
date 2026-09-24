@@ -6995,51 +6995,48 @@ function selectTrack(i, autoplay) {
     doPlay();
     watchDuration(true);
   } else if (isTrackCached(t.file)) {
-    // Источник НЕ подменяем на ходу, пока играем по сети.
+    // Трек есть в кэше — играем ИЗ КЭША, сеть не трогаем вовсе. Наличие связи
+    // тут ни при чём: зачем тянуть по сотовой то, что лежит на устройстве.
     //
-    // Раньше здесь ставился поток, синхронно в жесте звался play(), а следом
-    // асинхронно подменялся источник на блоб из кэша. Подмена прерывала тот
-    // самый запуск (AbortError), и повторный шёл уже из колбэка — вне жеста.
-    // На холодном старте PWA iOS такой запуск не принимает, и получался
-    // тупик: элемент стоит на паузе, аудиосессия не поднимается, контекст не
-    // будится (он ждёт, пока что-нибудь заиграет), а заиграть нечему. В
-    // журнале это p=1, act=0.0 и вереница play>rej AbortError.
+    // Так было не всегда, и на этом обожглись. Чиня AbortError, я развёл
+    // ветки по `_isOffline`: офлайн — блоб, онлайн — поток, «а блоб погреется
+    // на следующий раз». Пока сервер был доступен только из домашней сети,
+    // в машине связи не было и ветка не работала. С появлением DuckDNS связь
+    // в машине появилась — и каждый закэшированный трек поехал через сотовую.
+    // В журнале это `tap:list … cached=1`, следом `http`, `audio:waiting`,
+    // `audio:stalled` через 3.2 с и вереница GLITCH. То есть заикание в
+    // CarPlay я этой правкой сам себе и сделал.
     //
-    // Теперь запуск из жеста доживает до конца, а блоб греется на следующий
-    // раз: при следующем выборе этого трека сработает ветка выше и поставит
-    // его единственным источником, без всякой подмены.
-    if (_isOffline) {
-      // Без сети играть нечем, кроме блоба, — здесь подмена вынужденная.
-      // Но подменять можно только после того, как разблокирующее
-      // воспроизведение РЕАЛЬНО началось. IndexedDB отвечает за считанные
-      // миллисекунды и успевала оборвать его раньше, чем iOS засчитает
-      // жест: элемент так и не трогался с места, а повторный play() шёл уже
-      // вне жеста и отклонялся. Отсюда «трек из списка не запускается, пока
-      // не переключить туда-сюда» — со второго раза блоб тёплый, и работает
-      // ветка выше, где подмены нет вовсе.
-      var startedAt = Date.now();
-      setAudioSrc(_silentBlobUrl);
-      doPlay();
-      getCachedAudio(t.file, function(buf) {
+    // Подмена источника здесь вынужденная (синхронно блоб не прочитать), но
+    // подменять можно только после того, как разблокирующее воспроизведение
+    // РЕАЛЬНО началось: IndexedDB отвечает за считанные миллисекунды и
+    // успевала оборвать его раньше, чем iOS засчитает жест — элемент не
+    // трогался с места, а повторный play() шёл уже вне жеста и отклонялся
+    // (`play>rej AbortError`, `p=1`, `act=0.0`). Этим занимается whenRolling.
+    var startedAt = Date.now();
+    setAudioSrc(_silentBlobUrl);
+    doPlay();
+    getCachedAudio(t.file, function(buf) {
+      if (genAtLoad !== _trackSrcGen) return;
+      // Запись пропала или битая — честно падаем обратно на сеть, иначе
+      // останется играть тишина.
+      if (!buf) {
+        delete cachedFiles[cacheKey(t.file)];
+        mediaLog('cache:miss', (t.file || '').slice(0, 40));
+        setAudioSrc(streamUrl);
+        if (autoplay) playResilient(genAtLoad);
+        return;
+      }
+      var url = makeBlobUrl(buf, t.file);
+      _blobUrlCache[t.file] = url;
+      whenRolling(function(how) {
         if (genAtLoad !== _trackSrcGen) return;
-        if (!buf) { delete cachedFiles[cacheKey(t.file)]; return; }
-        var url = makeBlobUrl(buf, t.file);
-        _blobUrlCache[t.file] = url;
-        whenRolling(function(how) {
-          if (genAtLoad !== _trackSrcGen) return;
-          if (typeof mediaLog === 'function') {
-            mediaLog('off:swap', how + ' +' + (Date.now() - startedAt) + 'ms');
-          }
-          setAudioSrc(url);
-          if (autoplay) playResilient(genAtLoad);
-          watchDuration(true);
-        });
+        mediaLog('cache:swap', how + ' +' + (Date.now() - startedAt) + 'ms');
+        setAudioSrc(url);
+        if (autoplay) playResilient(genAtLoad);
+        watchDuration(true);
       });
-    } else {
-      setAudioSrc(streamUrl);
-      doPlay();
-      prepareBlobUrl(t.file);   // греем на следующий раз, источник не трогаем
-    }
+    });
   } else {
     setAudioSrc(streamUrl);
     doPlay();
