@@ -5897,6 +5897,10 @@ function scratchCtxRelease() {
   try { audioCtx.close(); } catch (e) {}
   audioCtx = null; scratchGain = null; scratchFilter = null; scratchNoise = null;
   isScratchPlaying = false;
+  // Промис закрытого контекста не разрешится никогда — снимаем флаг сами,
+  // иначе следующая побудка окажется заперта навсегда.
+  _acResumePending = false;
+  acCloseCancel();
   if (typeof mediaLog === 'function') mediaLog('ac:closed');
 }
 
@@ -5932,9 +5936,10 @@ function initScratchSound() {
 }
 
 function startScratch(speed) {
+  acCloseCancel();
   if (!audioCtx) initScratchSound();
   acRevive('scratch');
-  if (_scratchOff) return;          // глушим звук, но контекст оставляем жить
+  if (_scratchOff) return;          // глушим звук, контекст закроется сам
   if (!scratchGain || !scratchFilter) return;
   var vol = Math.min(Math.abs(speed) * 0.15, 0.35);
   scratchFilter.frequency.value = 600 + Math.abs(speed) * 200;
@@ -5942,26 +5947,49 @@ function startScratch(speed) {
   isScratchPlaying = true;
 }
 
-// Поднимаем AudioContext на любом касании, а не однократно. Замерено: контекст
-// рождается suspended, и resume() в том же тике, что и конструктор, его не
-// запускает — он оставался suspended с act=0.0 до настоящего скретча. А
-// рендерящий контекст — это то, что держит аудиосессию живой и позволяет
-// возобновить воспроизведение с экрана блокировки.
-(function() {
-  function unlock() {
-    if (!audioCtx) initScratchSound();
-    acRevive('touch');
-  }
-  // Именно touchend и click WebKit считает жестом; touchstart — нет, и
-  // resume() с него висел «пустышкой» до ближайшей смены видимости.
-  document.addEventListener('touchend', unlock, true);
-  document.addEventListener('click', unlock, true);
-})();
+// Контекст существует ТОЛЬКО пока крутят пластинку, и закрывается после.
+//
+// Раньше он создавался на первом же касании экрана (слушатель на touchend и
+// click) и жил до конца сеанса. Усыпление не спасало: дело не в том, рендерит
+// ли он сэмплы, а в том, что живой AudioContext держит настроенной общую
+// AVAudioSession. На маршруте CarPlay это ломает звук всей системе — после
+// нашего приложения заикаться начинали и чужие плееры, и лечилось это только
+// переподключением CarPlay. Такого главный поток сделать не может, это
+// системная аудиосессия.
+//
+// Числа сошлись с прежним замером про держание контекста: провалы 0.35–0.50 с
+// и 0.80–1.00 с при полном буфере и источнике blob. Тогда сравнивали только
+// «работает» против «спит» и решили, что виноват рендеринг. Вариант «контекста
+// нет вовсе» не проверяли ни разу — а до DROPS так и было: до первого скретча
+// контекст не создавался.
+//
+// Плата: на первом кручении звук скретча может опоздать на пару десятков
+// миллисекунд, пока контекст поднимается. Скретч — украшение, маршрут CarPlay
+// — нет.
+var SCRATCH_CLOSE_MS = 3000;
+var _acCloseTimer = null;
+
+function acCloseCancel() {
+  if (_acCloseTimer) { clearTimeout(_acCloseTimer); _acCloseTimer = null; }
+}
+
+function acCloseArm() {
+  acCloseCancel();
+  _acCloseTimer = setTimeout(function() {
+    _acCloseTimer = null;
+    if (!audioCtx) return;
+    // Пластинку всё ещё крутят или доигрывает инерция — ждём дальше.
+    if (isScratchPlaying || isDragging || inertiaActive) { acCloseArm(); return; }
+    if (previewOwnsTransport()) { acCloseArm(); return; }
+    scratchCtxRelease();
+  }, SCRATCH_CLOSE_MS);
+}
 
 function stopScratch() {
   if (!audioCtx || !isScratchPlaying) return;
   scratchGain.gain.setTargetAtTime(0, audioCtx.currentTime, 0.05);
   isScratchPlaying = false;
+  acCloseArm();
 }
 
 // Vinyl rotation state (JS-controlled)
@@ -6180,11 +6208,11 @@ function getAngleFromCenter(el, clientX, clientY) {
 vinylRec.addEventListener('mousedown', function(e) {
   if (!audio.duration) return;
   e.preventDefault();
-  // Будим тракт на нажатии, а не на первом движении. resume() асинхронный, и
-  // если контекст спал (долгая пауза — acIdleArm), первые миллисекунды
-  // скретча уходят в тишину. Здесь у него есть фора, пока рука не сдвинулась.
-  // Для касаний такого нет намеренно: touchstart WebKit жестом не считает,
-  // resume() с него висит пустышкой (см. раздел про iOS в CLAUDE.md).
+  // Поднимаем тракт на нажатии, а не на первом движении: resume()
+  // асинхронный, и между кручениями контекста может уже не быть — он
+  // закрывается через SCRATCH_CLOSE_MS. Здесь у него есть фора, пока рука не
+  // сдвинулась.
+  acCloseCancel();
   if (!audioCtx) initScratchSound();
   acRevive('scratch');
   isDragging = true;
@@ -6273,6 +6301,10 @@ vinylRec.addEventListener('touchstart', function(e) {
   var t = e.touches[0];
   _dragTouchId = t.identifier;
   mediaLog('drag:start', 'touch');
+  // Создаём контекст здесь, внутри касания: рождённый вне жеста приходит
+  // suspended, и resume() с него виснет пустышкой.
+  acCloseCancel();
+  if (!audioCtx) initScratchSound();
   dragStartAngle = getAngleFromCenter(vinylRec, t.clientX, t.clientY);
   dragStartTime = audio.currentTime;
   vinylSpeed = 0;
@@ -8765,7 +8797,8 @@ function toggleScratchCtx() {
   _scratchOff = !_scratchOff;
   lsSet('_vc_noctx', _scratchOff ? '1' : '0');
   mediaLog('ac:' + (_scratchOff ? 'muted' : 'unmuted'));
-  if (!_scratchOff) { initScratchSound(); acRevive('toggle'); }
+  // Контекст не поднимаем: он родится при первом же кручении пластинки.
+  if (_scratchOff) scratchCtxRelease();
   renderScratchBtn();
 }
 
