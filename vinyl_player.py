@@ -6793,16 +6793,37 @@ function showTab(tab) {
 
 // ── Blob URL pre-cache (keeps ready-to-use blob URLs in memory for instant playback) ──
 // Tiny silent WAV used as bridge src to keep iOS audio session alive during async IDB load
+// Секунда тишины, а не один сэмпл.
+//
+// Прежний блоб был WAV длиной 1/44100 секунды, и WebKit на iOS отвечал на него
+// MEDIA_ERR_DECODE: в журнале `audio:error code=3` сразу после каждого
+// `audio:play`. То есть разблокирующее воспроизведение не начиналось ВООБЩЕ —
+// а на нём держится весь запуск трека из жеста. whenRolling не дожидался ни
+// `playing`, ни `timeupdate` и каждый раз выжидал свой потолок: в журнале
+// `cache:swap timeout +2559ms` на КАЖДОМ старте, то есть две с половиной
+// секунды тишины перед музыкой. Тем же блобом разблокируются отрывки DROPS.
+//
+// 8 кГц, 8 бит, моно — 8 КБ на секунду; на слух это ничего, потому что подмена
+// на настоящий источник происходит по первому же признаку движения часов.
 var _silentBlobUrl = (function() {
-  var h = new Uint8Array([
-    0x52,0x49,0x46,0x46, 0x25,0x00,0x00,0x00, 0x57,0x41,0x56,0x45,
-    0x66,0x6d,0x74,0x20, 0x10,0x00,0x00,0x00, 0x01,0x00,0x01,0x00,
-    0x44,0xac,0x00,0x00, 0x44,0xac,0x00,0x00, 0x01,0x00,0x08,0x00,
-    0x64,0x61,0x74,0x61, 0x01,0x00,0x00,0x00, 0x80
-  ]);
-  return URL.createObjectURL(new Blob([h], {type:'audio/wav'}));
+  var rate = 8000, n = rate;               // одна секунда
+  var b = new Uint8Array(44 + n);
+  function str(off, s) { for (var i = 0; i < s.length; i++) b[off + i] = s.charCodeAt(i); }
+  function u32(off, v) { b[off] = v & 255; b[off+1] = (v >> 8) & 255; b[off+2] = (v >> 16) & 255; b[off+3] = (v >> 24) & 255; }
+  function u16(off, v) { b[off] = v & 255; b[off+1] = (v >> 8) & 255; }
+  str(0, 'RIFF');  u32(4, 36 + n);  str(8, 'WAVE');
+  str(12, 'fmt '); u32(16, 16); u16(20, 1); u16(22, 1);
+  u32(24, rate);   u32(28, rate); u16(32, 1); u16(34, 8);
+  str(36, 'data'); u32(40, n);
+  // 8 бит без знака: тишина — это 128, а не 0.
+  for (var i = 0; i < n; i++) b[44 + i] = 128;
+  return URL.createObjectURL(new Blob([b], {type: 'audio/wav'}));
 })();
 var _blobUrlCache = {}; // file -> blob URL
+// Пауза между прогревами и отсрочка перед первым: провалы звука приходились
+// ровно на первые полторы секунды трека, и лезть туда с чтением файлов нельзя.
+var WARM_GAP_MS = 400;
+var WARM_DELAY_MS = 2500;
 
 function makeBlobUrl(buf, file) {
   var ext = file.split('.').pop().toLowerCase();
@@ -6810,12 +6831,37 @@ function makeBlobUrl(buf, file) {
   return URL.createObjectURL(new Blob([buf], {type: mimeMap[ext] || 'audio/mpeg'}));
 }
 
-function prepareBlobUrl(file) {
-  if (_blobUrlCache[file] || !isTrackCached(file)) return;
+// Прогрев блобов идёт ПО ОДНОМУ и с паузой.
+//
+// Каждый прогрев — это чтение файла на 5–10 МБ из IndexedDB и создание блоба.
+// Раньше `prepareNearbyBlobs` запускала четыре таких чтения разом, через 200 мс
+// после старта трека. В журнале это видно построчно: GLITCH ровно на `t=0.3` и
+// `t=1.5` (провалы 0.5 и 1.0 с), а дальше `tick tu=17` — то есть всё ровно.
+// Иначе говоря, «заикание» приходилось на первые полторы секунды каждого
+// трека и было нашей собственной работой, а не сетью: источник `blob`, буфер
+// полный. Это же и память — в том логе PWA трижды за четыре минуты выгружалась
+// системой (`page:pagehide`, следом холодный `app:start`).
+var _warmQueue = [], _warmBusy = false;
+
+function warmNext() {
+  if (_warmBusy) return;
+  var file = _warmQueue.shift();
+  if (!file) return;
+  if (_blobUrlCache[file] || !isTrackCached(file)) { warmNext(); return; }
+  _warmBusy = true;
   getCachedAudio(file, function(buf) {
-    if (!buf) { delete cachedFiles[cacheKey(file)]; return; }
-    _blobUrlCache[file] = makeBlobUrl(buf, file);
+    _warmBusy = false;
+    if (!buf) delete cachedFiles[cacheKey(file)];
+    else _blobUrlCache[file] = makeBlobUrl(buf, file);
+    if (_warmQueue.length) setTimeout(warmNext, WARM_GAP_MS);
   });
+}
+
+function prepareBlobUrl(file) {
+  if (!file || _blobUrlCache[file] || !isTrackCached(file)) return;
+  for (var i = 0; i < _warmQueue.length; i++) if (_warmQueue[i] === file) return;
+  _warmQueue.push(file);
+  warmNext();
 }
 
 function prepareNearbyBlobs() {
@@ -7041,7 +7087,8 @@ function selectTrack(i, autoplay) {
     setAudioSrc(streamUrl);
     doPlay();
   }
-  setTimeout(prepareNearbyBlobs, 200);
+  // Прогрев — после того, как музыка разойдётся: см. WARM_DELAY_MS.
+  setTimeout(prepareNearbyBlobs, WARM_DELAY_MS);
   var titleEl = document.getElementById('trackTitle');
   var artistEl = document.getElementById('trackArtist');
   // Fade out, swap text, fade in
@@ -7196,7 +7243,7 @@ function buildDefaultQueue() {
   playQueue = getVisibleIndices();
   playQueuePos = -1;
   if (isShuffled) shuffleArray(playQueue);
-  setTimeout(prepareNearbyBlobs, 100);
+  setTimeout(prepareNearbyBlobs, WARM_DELAY_MS);
 }
 
 function shuffleArray(arr) {
