@@ -9233,7 +9233,15 @@ function initMediaSession() {
   });
   setMediaAction('seekto', function(d) {
     mediaLog('ms:seekto', (d && d.seekTime !== undefined ? d.seekTime.toFixed(1) : '?'));
-    if (d.seekTime !== undefined && audio.duration) audio.currentTime = d.seekTime;
+    if (!d || d.seekTime === undefined) return;
+    // Транспорт может принадлежать отрывку DROPS — тогда полоса двигает его, а
+    // не спрятанный библиотечный трек. Остальные обработчики виджета это уже
+    // спрашивают, seekto был единственным, кто не спрашивал.
+    if (previewOwnsTransport()) {
+      if (previewAudio.duration) previewAudio.currentTime = d.seekTime;
+      return;
+    }
+    if (audio.duration) audio.currentTime = d.seekTime;
   });
   // Навигация разведена по платформам, и это вынужденно.
   //
@@ -12794,7 +12802,15 @@ function bindPreviewEvents(el) {
   el.addEventListener('ended', function() {
     // Дослушали отрывок — идём к следующему треку релиза, как в обычном плеере
     if (_previewTrack >= 0 && _previewTrack + 1 < _previewTracks.length) playPreview(_previewTrack + 1);
-    else { stopPreview(); if (_previewMode) setPlayState(false); }
+    else {
+      stopPreview();
+      // Отрывки кончились — транспорт и метаданные обязаны вернуться основному
+      // плееру. Раньше здесь звался только stopPreview(), а он `_previewMode`
+      // не сбрасывает: виджет продолжал показывать релиз, и «плей» с локскрина
+      // запускал библиотечный трек под чужими названием и обложкой. Чинилось
+      // это лишь возвратом на экран (refreshNowPlaying) или выбором трека.
+      if (_previewMode) { setPlayState(false); exitPreviewPlayerUI(); }
+    }
   });
   el.addEventListener('error', function() {
     if (_previewTrack < 0) return;
