@@ -6014,6 +6014,46 @@ function acCloseArm() {
   }, SCRATCH_CLOSE_MS);
 }
 
+// Контекст живёт ещё и НА ВРЕМЯ ПАУЗЫ — это его вторая и последняя работа.
+//
+// Пока страница в фоне и элемент на паузе, слышимых сессий не остаётся: iOS
+// снимает категорию и отпускает аудиосессию. Следующий play() с локскрина
+// тогда оставляет элемент в состоянии «играю, а часы стоят» — в журнале это
+// `ms:play>ok`, а следом `resume:stuck`, и лечится только возвратом в
+// приложение. Живой AudioContext этот провал закрывает.
+//
+// Закрытие контекста (053a7b5) вылечило маршрут CarPlay и ровно этим сломало
+// плей с локскрина: в журнале `ac=-` во всех строках. Поэтому теперь контекст
+// не держится постоянно и не отсутствует постоянно, а СОЗДАЁТСЯ В МОМЕНТ
+// ПАУЗЫ и закрывается по первому же `timeupdate` после возобновления. Первый
+// timeupdate — это доказательство, что часы действительно пошли: пока элемент
+// стоит, событие не приходит вовсе. Во время игры контекста снова нет, то
+// есть условие, портившее CarPlay, не возвращается.
+var _acPauseHold = false;
+
+function acHoldForPause() {
+  acCloseCancel();
+  _acPauseHold = true;
+  // Обработчики паузы виджета исполняются с правами жеста — здесь контекст
+  // можно и создать, а рождённый вне жеста пришёл бы suspended навсегда.
+  if (!audioCtx) initScratchSound();
+  acRevive('pause');
+}
+
+function acReleaseAfterResume() {
+  if (!_acPauseHold) return;
+  _acPauseHold = false;
+  if (!audioCtx) return;
+  // Пластинку крутят или звучит отрывок — там контекст нужен сам по себе,
+  // отдаём его обычному таймеру закрытия.
+  if (isScratchPlaying || isDragging || inertiaActive || previewOwnsTransport()) {
+    acCloseArm();
+    return;
+  }
+  mediaLog('ac:pause>release');
+  scratchCtxRelease();
+}
+
 function stopScratch() {
   if (!audioCtx || !isScratchPlaying) return;
   scratchGain.gain.setTargetAtTime(0, audioCtx.currentTime, 0.05);
@@ -8713,7 +8753,7 @@ function bindPlaybackHandlers() {
     // отрывок звучит.
     if (previewOwnsTransport()) return;
     // В режиме усыпления контекст поднимается здесь — в ту самую секунду.
-    if (!_acKeepPlaying) acRevive('pause');
+    if (!_acKeepPlaying) acHoldForPause();
     acIdleArm();
     // 'paused' rather than leaving it at 'none': it keeps the page registered as
     // a media session, which is what lets the lock screen resume us later.
@@ -9202,7 +9242,9 @@ function initMediaSession() {
   if (!('mediaSession' in navigator)) return;
   setMediaAction('play', function() {
     mediaLog('ms:play', mediaLogState());
-    acRevive('ms:play');
+    // Контекст обязан дожить до того, как часы реально пойдут: сессию сейчас
+    // держит он, а не элемент. Отпустит его первый timeupdate.
+    acHoldForPause();
     if (previewOwnsTransport()) {
       mediaLog('ms:play>preview');
       var pp = previewAudio.play();
@@ -9229,7 +9271,7 @@ function initMediaSession() {
   });
   setMediaAction('pause', function() {
     mediaLog('ms:pause', mediaLogState());
-    acRevive('ms:pause');
+    acHoldForPause();
     _stuckAt = -1;
     if (previewOwnsTransport()) {
       mediaLog('ms:pause>preview');
@@ -9328,6 +9370,8 @@ function initMediaSession() {
 
 // Update position state for lock screen progress bar
 function onTimeUpdate() {
+  // Часы пошли — значит сессия уже за элементом, контекст больше не нужен.
+  if (_acPauseHold && !audio.paused) acReleaseAfterResume();
   var _t0 = _logOn ? (window.performance ? performance.now() : Date.now()) : 0;
   if (_logOn && !audio.paused && Date.now() - _mediaTickAt > 5000) {
     _mediaTickAt = Date.now();
