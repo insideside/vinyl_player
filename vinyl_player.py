@@ -9179,9 +9179,20 @@ function reloadCurrentKeepingPos() {
 
 // Регистрация обработчиков виджета молчала в try/catch: отказ iOS выглядел бы
 // как отсутствие кнопок, и причину было бы не отличить от чего угодно ещё.
+// Набор команд, который реально принял браузер. Он же — то, что WebKit
+// заявляет системе: по исходникам RemoteCommandListenerCocoa, если страница
+// зарегистрировала хоть один обработчик, системе уходит РОВНО набор
+// зарегистрированных действий плюс play/pause, и ничего больше. А вид кнопок
+// виджета и доходят ли до нас кнопки руля решает именно этот набор — значит
+// в журнале он и должен быть виден, а не выводиться из кода по памяти.
+var _msRegistered = [];
+
 function setMediaAction(name, fn) {
   try {
     navigator.mediaSession.setActionHandler(name, fn);
+    var i = _msRegistered.indexOf(name);
+    if (fn) { if (i < 0) _msRegistered.push(name); }
+    else if (i >= 0) { _msRegistered.splice(i, 1); }
   } catch (e) {
     mediaLog('ms:reject', name + ' ' + ((e && e.name) || '?'));
   }
@@ -9312,7 +9323,7 @@ function initMediaSession() {
     });
   }
   if (_scratchOff) mediaLog('ac:muted');   // звук скретча выключен, контекст жив
-  mediaLog('ms:register');
+  mediaLog('ms:register', _msRegistered.join(','));
 }
 
 // Update position state for lock screen progress bar
