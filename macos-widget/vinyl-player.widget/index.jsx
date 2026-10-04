@@ -4,7 +4,7 @@
 //   • toggle the app on/off (starts/stops the background process)
 //   • when on, shows the current track and play/pause/prev/next controls
 //   • opens the player in the browser
-// Themes: auto (follows system) / dark / light / transparent — cycle with
+// Themes: gradient (app colours) / dark / light / transparent — cycle with
 // the small circle button in the header. Choice is remembered.
 //
 // Install: copy/symlink this `.widget` folder into
@@ -89,10 +89,13 @@ const sendCmd = (proto, c) =>
 const openBrowser = () => run(`/usr/bin/open ${LOCAL}`);
 
 // ─────────── theme handling ───────────
-const THEMES = ["auto", "dark", "light", "transparent"];
+// градиент в цветах приложения, нейтральная тёмная, светлая, прозрачная. «Авто» убрано:
+// в тёмной системе оно совпадало с тёмной, и кнопку приходилось нажимать дважды
+const THEMES = ["gradient", "dark", "light", "transparent"];
+const THEME_NAMES = { gradient: "градиент", dark: "тёмная", light: "светлая", transparent: "прозрачная" };
 const readTheme = () => {
-  try { return localStorage.getItem("vinylWidgetTheme") || "auto"; }
-  catch (e) { return "auto"; }
+  try { const t = localStorage.getItem("vinylWidgetTheme"); return THEMES.includes(t) ? t : "gradient"; }
+  catch (e) { return "gradient"; }
 };
 const applyTheme = (t) => {
   try { localStorage.setItem("vinylWidgetTheme", t); } catch (e) {}
@@ -181,7 +184,7 @@ export const render = ({ output }) => {
         <span className="vw-name">insideside music</span>
         <span
           className="vw-theme"
-          title={"Тема: " + theme}
+          title={"Тема: " + THEME_NAMES[theme] + " (нажмите - следующая)"}
           onClick={cycleTheme}
         />
         <div
@@ -263,6 +266,11 @@ export const className = `
     user-select: none;
   }
 
+  /* градиент в цветах приложения: малиновый, как пластинка */
+  .vw-root.theme-gradient {
+    --bg: linear-gradient(150deg, rgba(58, 18, 34, 0.93) 0%, rgba(30, 16, 34, 0.93) 55%, rgba(14, 12, 20, 0.93) 100%);
+    --border: rgba(233, 69, 96, 0.18);
+  }
   /* Light theme */
   .vw-root.theme-light {
     --bg: rgba(250, 250, 252, 0.95);
@@ -286,18 +294,6 @@ export const className = `
     text-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
   }
 
-  /* Auto — follow the system appearance */
-  @media (prefers-color-scheme: light) {
-    .vw-root.theme-auto {
-      --bg: rgba(250, 250, 252, 0.95);
-      --fg: #1c1c20;
-      --muted: rgba(28, 28, 32, 0.5);
-      --border: rgba(0, 0, 0, 0.08);
-      --btn: rgba(0, 0, 0, 0.05);
-      --btn-hover: rgba(0, 0, 0, 0.12);
-      --shadow: 0 8px 30px rgba(0, 0, 0, 0.18);
-    }
-  }
 
   .vw-header {
     display: flex;
