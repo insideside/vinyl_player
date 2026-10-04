@@ -11427,6 +11427,10 @@ function renderJackettSettings(j) {
     h += '<label class="perf-row" style="margin-top:8px"><input type="checkbox"' + (j.enabled ? ' checked' : '') + ' onchange="jackettAutostart(this.checked)">'
       + '<span><b>Запускать вместе с сервером</b><i>И останавливать при выходе, если им не пользуются другие приложения insideside.</i></span></label>';
   }
+  if (j.libtorrent) {
+    h += '<label class="perf-row" style="margin-top:8px"><input type="checkbox"' + (j.bypass_vpn ? ' checked' : '') + ' onchange="torBypassVpn(this.checked)">'
+      + '<span><b>Раздачи в обход VPN</b><i>Треки качаются через Wi-Fi/Ethernet мимо VPN (многие VPN режут торренты), поиск идёт через VPN. Пиры увидят ваш настоящий IP.</i></span></label>';
+  }
   box.innerHTML = h;
 }
 
@@ -11439,6 +11443,15 @@ function jackettInstall() {
     showToast('Jackett установлен и запущен');
     renderJackettSettings(d.status);
   });
+}
+
+function torBypassVpn(on) {
+  fetch('/api/torrents/bypass_vpn', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({on: !!on})})
+  .then(function(r){return r.json()}).then(function(d) {
+    if (!d.ok) { showToast(d.error || 'Не удалось'); return; }
+    showToast(on ? 'Раздачи качаются мимо VPN' : 'Раздачи снова через VPN');
+    renderJackettSettings(d.status);
+  }).catch(function(){ showToast('Сервер недоступен'); });
 }
 
 function jackettAutostart(on) {
@@ -16956,6 +16969,7 @@ def jk_status():
         "installing": _jk_state["installing"], "error": _jk_state["error"], "enabled": jk_enabled(),
         "shared_with": others, "platform": "{} {}".format(_pf.system(), _pf.machine()),
         "version": _jk_manifest().get("version"),
+        "bypass_vpn": bool(load_settings().get("torrent_bypass_vpn")),
     }
 
 
@@ -17049,8 +17063,44 @@ _tor = {}            # ih -> {"h": handle, "name", "files": [...], "error", "use
 _tor_dl = {}         # dl_id -> {"ih", "idx", "name", "state", "progress", "error", "user", "folder", "meta"}
 
 
+_tor_net = {"t": 0.0, "iface": None}
+
+
+def _physical_iface():
+    """Интерфейс маршрута по умолчанию (en0...). VPN в режиме TUN заворачивает трафик маршрутами 0/1 и 128/1,
+    а default остаётся на физическом интерфейсе. Только macOS: на других системах привязку не делаем."""
+    if sys.platform != "darwin":
+        return ""
+    try:
+        out = subprocess.run(["/sbin/route", "-n", "get", "default"], stdin=subprocess.DEVNULL,
+                             capture_output=True, text=True, timeout=5).stdout
+    except Exception:
+        return ""
+    m = re.search(r"interface:\s*(\S+)", out)
+    return m.group(1) if m and not m.group(1).startswith(("utun", "ppp", "ipsec")) else ""
+
+
+def _tor_net_settings():
+    """«Раздачи в обход VPN» (как в cinema): исходящие TCP к пирам - через Wi-Fi/Ethernet, поиск (Jackett) остаётся
+    через VPN. UDP (DHT, uTP) так мимо VPN не провести - macOS шлёт его в туннель, поэтому uTP выключаем: через
+    VPN он рвётся. Полностью мимо VPN - исключение процесса в самом VPN-клиенте."""
+    iface = _physical_iface() if load_settings().get("torrent_bypass_vpn") else ""
+    _tor_net.update(t=time.time(), iface=iface)
+    return {"outgoing_interfaces": iface, "enable_outgoing_utp": not iface, "enable_incoming_utp": not iface}
+
+
+def tor_apply_network():
+    if _tor_ses is not None:
+        _tor_ses.apply_settings(_tor_net_settings())
+
+
 def _tor_session():
     global _tor_ses
+    if _tor_ses is not None and time.time() - _tor_net["t"] > 60:
+        try:
+            tor_apply_network()         # сменилась сеть (Wi-Fi/Ethernet) - привязка следует за ней
+        except Exception:
+            pass
     if _tor_ses is None:
         _tor_ses = lt.session({
             "listen_interfaces": "0.0.0.0:{0},[::]:{0}".format(TORRENT_PORT),
@@ -17059,6 +17109,7 @@ def _tor_session():
             "user_agent": "insideside-music/1.0 libtorrent/" + lt.__version__,
             "max_web_seed_connections": 8, "urlseed_max_request_bytes": 2 * 1024 * 1024,
             "request_timeout": 10, "piece_timeout": 10,
+            **_tor_net_settings(),
         })
         for r in (("router.bittorrent.com", 6881), ("dht.transmissionbt.com", 6881)):
             _tor_ses.add_dht_node(r)
@@ -18877,6 +18928,18 @@ class Handler(BaseHTTPRequestHandler):
                 self._respond_json({"ok": True, "status": jk_status()})
             except Exception as e:
                 self._respond_json({"ok": False, "error": "Не удалось установить Jackett: " + str(e)[:150]})
+
+        elif path == "/api/torrents/bypass_vpn":
+            if not udata.get("is_admin"):
+                self._respond_json({"ok": False, "error": "Только для администратора"})
+                return
+            s = load_settings(); s["torrent_bypass_vpn"] = bool(data.get("on")); save_settings(s)
+            if HAS_LIBTORRENT:
+                try:
+                    tor_apply_network()
+                except Exception:
+                    pass
+            self._respond_json({"ok": True, "status": jk_status()})
 
         elif path == "/api/jackett/autostart":
             if not udata.get("is_admin"):
