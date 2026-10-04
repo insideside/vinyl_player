@@ -15,6 +15,36 @@
 // global. Without this import, click handlers throw ReferenceError silently.
 import { run } from "uebersicht";
 
+// ── общая раскладка виджетов: столбик с одинаковыми отступами ──
+// Виджеты Übersicht живут в одном документе. Каждый помечает свой корень data-ins-stack="<порядок>",
+// и любой из них раскладывает всех сверху вниз с равным зазором. Высота виджета меняется (трек,
+// задача, выключен) — ResizeObserver сразу пересчитывает. Код одинаковый во всех виджетах
+// (vk-music, cinema, photo-gallery, transkribator, trainer): меняете раскладку — меняйте везде.
+const insStack = () => {
+  if (typeof window === "undefined" || typeof document === "undefined") return;
+  const TOP = 40, LEFT = 40, GAP = 16;
+  const layout = () => {
+    const roots = [...document.querySelectorAll("[data-ins-stack]")]
+      .sort((a, b) => Number(a.dataset.insStack) - Number(b.dataset.insStack));
+    let y = TOP;
+    for (const r of roots) {
+      // обёртка виджета, которую Übersicht позиционирует абсолютно
+      let box = r.parentElement;
+      while (box && box !== document.body && getComputedStyle(box).position === "static") box = box.parentElement;
+      if (!box || box === document.body) continue;
+      box.style.top = y + "px";
+      box.style.left = LEFT + "px";
+      y += r.offsetHeight + GAP;
+    }
+  };
+  if (!window.__insStack) window.__insStack = { ro: new ResizeObserver(() => layout()), seen: new WeakSet() };
+  const st = window.__insStack;
+  document.querySelectorAll("[data-ins-stack]").forEach((r) => {
+    if (!st.seen.has(r)) { st.seen.add(r); st.ro.observe(r); }
+  });
+  requestAnimationFrame(layout);
+};
+
 // ─────────── config — edit these paths if your setup differs ───────────
 const PY   = "/usr/bin/python3";
 const APP  = "/Users/insideside/vk-music/vinyl_player.py";
@@ -87,8 +117,32 @@ const I_PLAY = "M8 5v14l11-7z";
 const I_PAUSE = "M6 19h4V5H6zm8-14v14h4V5z";
 const I_EXT = "M14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3zM19 19H5V5h7V3H5a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7h-2z";
 
+// пластинка: бороздки, наклейка, блик; играет - крутится, по краю идёт прогресс трека
+const VR = 7.6, VC = 2 * Math.PI * VR;
+const Record = ({ running, playing, frac }) => (
+  <span className={"vw-rec " + (running ? "on" : "off") + (playing ? " play" : "")}
+    title={!running ? "Сервер выключен" : playing ? "Играет" : "Сервер работает"}>
+    <svg width="18" height="18" viewBox="0 0 18 18">
+      <circle className="vw-rec-disc" cx="9" cy="9" r="7" />
+      {running ? (
+        <g className="vw-rec-spin">
+          <circle className="vw-rec-groove" cx="9" cy="9" r="5" />
+          <path className="vw-rec-shine" d="M9 3.6a5.4 5.4 0 0 1 4.7 2.7" />
+          <circle className="vw-rec-label" cx="9" cy="9" r="2.3" />
+          <circle className="vw-rec-hole" cx="9" cy="9" r="0.6" />
+        </g>
+      ) : null}
+      {playing && frac > 0 ? (
+        <circle className="vw-rec-arc" cx="9" cy="9" r={VR}
+          strokeDasharray={(VC * frac).toFixed(2) + " " + VC.toFixed(2)} transform="rotate(-90 9 9)" />
+      ) : null}
+    </svg>
+  </span>
+);
+
 // ─────────── render ───────────
 export const render = ({ output }) => {
+  insStack();
   let data = {};
   try { data = JSON.parse(output); } catch (e) { data = {}; }
 
@@ -120,9 +174,10 @@ export const render = ({ output }) => {
   }
 
   return (
-    <div id="vinyl-widget-root" className={"vw-root theme-" + theme}>
+    <div id="vinyl-widget-root" data-ins-stack="1" className={"vw-root theme-" + theme}>
       <div className="vw-header">
-        <span className={"vw-dot " + (running ? "on" : "off")} />
+        <Record running={running} playing={playing}
+          frac={live && st.duration > 0 ? Math.min(1, (st.position || 0) / st.duration) : 0} />
         <span className="vw-name">insideside music</span>
         <span
           className="vw-theme"
@@ -250,12 +305,20 @@ export const className = `
     gap: 8px;
     margin-bottom: 12px;
   }
-  .vw-dot {
-    width: 8px; height: 8px; border-radius: 50%;
-    flex: 0 0 auto;
-  }
-  .vw-dot.on  { background: #34c759; box-shadow: 0 0 8px rgba(52,199,89,0.8); }
-  .vw-dot.off { background: var(--muted); }
+  .vw-rec { width: 18px; height: 18px; flex: 0 0 auto; display: inline-flex; }
+  .vw-rec svg { display: block; overflow: visible; }
+  .vw-rec-disc { fill: #15151b; stroke: var(--accent); stroke-width: 1.4; }
+  .vw-rec.off .vw-rec-disc { fill: none; stroke: var(--muted); opacity: 0.45; stroke-dasharray: 2.2 2.2; }
+  .vw-rec.play .vw-rec-disc { stroke-opacity: 0.35; }
+  .vw-rec-groove { fill: none; stroke: rgba(255,255,255,0.22); stroke-width: 0.6; }
+  .vw-rec-shine { fill: none; stroke: rgba(255,255,255,0.55); stroke-width: 0.9; stroke-linecap: round; }
+  .vw-rec-label { fill: var(--accent); }
+  .vw-rec-hole { fill: #15151b; }
+  .vw-rec-spin { transform-origin: 9px 9px; }
+  /* 33⅓ об/мин - честные 1,8 с на оборот */
+  .vw-rec.play .vw-rec-spin { animation: vw-spin 1.8s linear infinite; }
+  @keyframes vw-spin { to { transform: rotate(360deg); } }
+  .vw-rec-arc { fill: none; stroke: var(--accent); stroke-width: 1.8; stroke-linecap: round; transition: stroke-dasharray 0.6s ease; }
 
   .vw-name {
     font-size: 13px; font-weight: 600; letter-spacing: 0.2px;
