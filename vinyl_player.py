@@ -4033,6 +4033,16 @@ html.perf-radiostatic .radio-halo.on { animation: none; }
   font-size: 10px; font-weight: 600; letter-spacing: 0.06em; cursor: pointer;
   transition: color 0.2s, border-color 0.2s, background 0.2s;
 }
+#relSearch { display: none; }
+#newList.rel-search-on > #relSearch { display: block; }
+#newList.rel-search-on > :not(#relSearch) { display: none !important; }
+.ds-bar { display: flex; gap: 6px; padding: 8px 8px 4px; }
+.tor-play-sq { width: 30px; height: 30px; padding: 0; flex-shrink: 0; font-size: 12px; line-height: 1;
+  display: inline-flex; align-items: center; justify-content: center; }
+.ds-fmt { font-size: 9px; font-weight: 600; letter-spacing: 0.3px; color: rgba(255,255,255,0.6); border: 1px solid rgba(255,255,255,0.25);
+  border-radius: 4px; padding: 1px 4px; margin-left: 6px; flex-shrink: 0; }
+.ds-saved { font-size: 9px; color: #e94560; border: 1px solid rgba(233,69,96,0.5); border-radius: 4px; padding: 1px 4px; }
+.ds-info { font-size: 11px; color: rgba(255,255,255,0.45); padding: 6px 10px 2px; }
 .rel-subtab.active {
   color: #e94560; border-color: rgba(233,69,96,0.5); background: rgba(233,69,96,0.1);
 }
@@ -4226,6 +4236,22 @@ html.perf-radiostatic .radio-halo.on { animation: none; }
   display: flex; align-items: center; justify-content: center; transition: color 0.15s;
 }
 .track-edit-btn:hover { color: rgba(255,255,255,0.5); }
+/* Кэширование трека: кольцо с процентом вместо стрелки; без Content-Length - крутящаяся дуга */
+.track-edit-btn.caching svg { display: none; }
+.track-edit-btn.caching::before {
+  content: ''; width: 14px; height: 14px; border-radius: 50%;
+  background: conic-gradient(#52b788 calc(var(--p, 0) * 1%), rgba(255,255,255,0.15) 0);
+  -webkit-mask: radial-gradient(circle, transparent 4px, #000 4.5px); mask: radial-gradient(circle, transparent 4px, #000 4.5px);
+}
+.track-edit-btn.caching.indet::before { --p: 25; animation: cacheSpin 0.9s linear infinite; }
+@keyframes cacheSpin { to { transform: rotate(360deg); } }
+#cacheBtn { position: relative; }
+#cacheBtn.active::after {
+  content: ''; position: absolute; inset: -3px; border-radius: 50%; pointer-events: none;
+  background: conic-gradient(#52b788 calc(var(--p, 0) * 1%), rgba(255,255,255,0.12) 0);
+  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 2.5px), #000 calc(100% - 2px));
+  mask: radial-gradient(farthest-side, transparent calc(100% - 2.5px), #000 calc(100% - 2px));
+}
 
 /* ── Cover Flow ── */
 .coverflow-wrap {
@@ -4907,6 +4933,7 @@ html.ui-idle .radio-halo.on { animation-play-state: paused; }
       <div id="relSubTabs" style="display:none;gap:4px">
         <button class="rel-subtab active" id="relTabNew" onclick="showRelTab('new')">NEW</button>
         <button class="rel-subtab" id="relTabFy" onclick="showRelTab('foryou')">4YOU</button>
+        <button class="rel-subtab" id="relTabSearch" onclick="showRelSearch()">SEARCH</button>
       </div>
       <button class="shuffle-btn" id="shuffleListBtn" onclick="toggleShuffleFromList()" data-tip="Перемешать"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M10.59 9.17L5.41 4 4 5.41l5.17 5.17 1.42-1.41zM14.5 4l2.04 2.04L4 18.59 5.41 20 17.96 7.46 20 9.5V4h-5.5zm.33 9.41l-1.41 1.41 3.13 3.13L14.5 20H20v-5.5l-2.04 2.04-3.13-3.13z"/></svg></button>
       <button class="shuffle-btn" id="editBtn" onclick="startEdit()" data-tip="Редактировать порядок" style="display:none"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 000-1.41l-2.34-2.34a1 1 0 00-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg></button>
@@ -5028,28 +5055,17 @@ html.ui-idle .radio-halo.on { animation-play-state: paused; }
     </div>
     <!-- Source tabs -->
     <div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:8px;flex-shrink:0">
-      <button class="folder-btn folder-btn-secondary imp-tab active" onclick="showImpTab('vk')" id="impTabVk" style="flex:1;padding:6px 4px;font-size:11px;min-width:60px">VK</button>
-      <button class="folder-btn folder-btn-secondary imp-tab" onclick="showImpTab('yandex')" id="impTabYandex" style="flex:1;padding:6px 4px;font-size:11px;min-width:60px">Яндекс</button>
-      <button class="folder-btn folder-btn-secondary imp-tab" onclick="showImpTab('spotify')" id="impTabSpotify" style="flex:1;padding:6px 4px;font-size:11px;min-width:60px">Spotify</button>
-      <button class="folder-btn folder-btn-secondary imp-tab" onclick="showImpTab('apple')" id="impTabApple" style="flex:1;padding:6px 4px;font-size:11px;min-width:60px">Apple</button>
-      <button class="folder-btn folder-btn-secondary imp-tab" onclick="showImpTab('soundcloud')" id="impTabSoundcloud" style="flex:1;padding:6px 4px;font-size:11px;min-width:60px">SoundCloud</button>
-      <button class="folder-btn folder-btn-secondary imp-tab" onclick="showImpTab('search')" id="impTabSearch" style="flex:1;padding:6px 4px;font-size:11px;min-width:60px">Поиск</button>
-      <button class="folder-btn folder-btn-secondary imp-tab" onclick="showImpTab('torrents')" id="impTabTorrents" style="flex:1;padding:6px 4px;font-size:11px;min-width:60px">Раздачи</button>
+      <button class="folder-btn folder-btn-secondary imp-tab active" onclick="showImpTab('local')" id="impTabLocal" style="flex:1;padding:6px 4px;font-size:11px;min-width:60px">Локально</button>
+      <button class="folder-btn folder-btn-secondary imp-tab" onclick="showImpTab('torrents')" id="impTabTorrents" style="flex:1;padding:6px 4px;font-size:11px;min-width:60px">Торрент</button>
+      <button class="folder-btn folder-btn-secondary imp-tab" onclick="showImpTab('vk')" id="impTabVk" style="flex:1;padding:6px 4px;font-size:11px;min-width:60px">VK</button>
+      <button class="folder-btn folder-btn-secondary imp-tab" onclick="showImpTab('streams')" id="impTabStreams" style="flex:1;padding:6px 4px;font-size:11px;min-width:60px">Стриминги</button>
     </div>
     <div style="flex:1;overflow-y:auto;min-height:0">
-    <!-- VK Playlists -->
-    <div id="impVk">
-      <div id="vkFolderHint" style="font-size:11px;color:rgba(255,255,255,0.3);margin-bottom:6px"></div>
-      <textarea id="vkUrls" style="width:100%;height:60px;padding:8px;border-radius:8px;border:1px solid rgba(255,255,255,0.12);background:rgba(255,255,255,0.06);color:#eee;font-size:11px;resize:vertical;outline:none;font-family:inherit" placeholder="Ссылки на VK плейлисты (по одной на строку)"></textarea>
-      <div style="display:flex;gap:6px;margin:6px 0;font-size:11px">
-        <select id="vkMode" class="folder-select" style="flex:1;padding:6px 24px 6px 8px;font-size:11px"><option value="prepend">В начало</option><option value="append">В конец</option></select>
-        <select id="vkOrder" class="folder-select" style="flex:1;padding:6px 24px 6px 8px;font-size:11px"><option value="normal">Как в плейлисте</option><option value="reverse">Обратный</option></select>
-      </div>
-      <label style="display:flex;align-items:center;gap:5px;color:rgba(255,255,255,0.4);cursor:pointer;font-size:11px;margin-bottom:6px"><input type="checkbox" id="vkRunMeta" style="accent-color:#e94560"> Meta-данные после загрузки</label>
-      <button class="folder-btn folder-btn-primary" style="width:100%;font-size:12px" onclick="startVkDownload()">Загрузить VK плейлисты</button>
-      <!-- Local file import (localhost only) -->
-      <div id="localImportBlock" style="display:none;margin-top:10px;padding-top:10px;border-top:1px solid rgba(255,255,255,0.08)">
-        <div style="font-size:11px;color:rgba(255,255,255,0.4);margin-bottom:6px">Добавить треки с этого компьютера:</div>
+    <!-- Local: files from the computer running the server (moved out of the VK tab) -->
+    <div id="impLocal">
+      <div id="localImportNote" style="display:none;font-size:11px;color:rgba(255,255,255,0.4)">Файлы с компьютера добавляются только из браузера на том компьютере, где работает сервер. Отсюда можно загрузить из раздачи, VK или стримингов.</div>
+      <div id="localImportBlock" style="display:none">
+        <div style="font-size:11px;color:rgba(255,255,255,0.4);margin-bottom:6px">Добавить треки с этого компьютера в открытую папку:</div>
         <div style="display:flex;gap:6px;margin-bottom:6px;font-size:11px">
           <select id="localMode" class="folder-select" style="flex:1;padding:6px 24px 6px 8px;font-size:11px" onchange="updateLocalPosVis()"><option value="prepend">В начало</option><option value="append">В конец</option><option value="position">На позицию №</option></select>
           <input type="number" id="localPos" min="1" value="1" style="display:none;width:70px;padding:6px 8px;border-radius:8px;border:1px solid rgba(255,255,255,0.12);background:rgba(255,255,255,0.06);color:#eee;font-size:11px;outline:none" placeholder="№">
@@ -5058,8 +5074,22 @@ html.ui-idle .radio-halo.on { animation-play-state: paused; }
         <button class="folder-btn folder-btn-secondary" style="width:100%;font-size:12px" onclick="pickLocalFiles()">Загрузить из локального хранилища</button>
       </div>
     </div>
+    <!-- VK Playlists -->
+    <div id="impVk" style="display:none">
+      <div id="vkFolderHint" style="font-size:11px;color:rgba(255,255,255,0.3);margin-bottom:6px"></div>
+      <textarea id="vkUrls" style="width:100%;height:60px;padding:8px;border-radius:8px;border:1px solid rgba(255,255,255,0.12);background:rgba(255,255,255,0.06);color:#eee;font-size:11px;resize:vertical;outline:none;font-family:inherit" placeholder="Ссылки на VK плейлисты (по одной на строку)"></textarea>
+      <div style="display:flex;gap:6px;margin:6px 0;font-size:11px">
+        <select id="vkMode" class="folder-select" style="flex:1;padding:6px 24px 6px 8px;font-size:11px"><option value="prepend">В начало</option><option value="append">В конец</option></select>
+        <select id="vkOrder" class="folder-select" style="flex:1;padding:6px 24px 6px 8px;font-size:11px"><option value="normal">Как в плейлисте</option><option value="reverse">Обратный</option></select>
+      </div>
+      <label style="display:flex;align-items:center;gap:5px;color:rgba(255,255,255,0.4);cursor:pointer;font-size:11px;margin-bottom:6px"><input type="checkbox" id="vkRunMeta" style="accent-color:#e94560"> Meta-данные после загрузки</label>
+      <button class="folder-btn folder-btn-primary" style="width:100%;font-size:12px" onclick="startVkDownload()">Загрузить VK плейлисты</button>
+    </div>
     <!-- External: Yandex/Spotify/Apple/SoundCloud -->
     <div id="impExternal" style="display:none">
+      <select id="impStreamSel" class="folder-select" style="width:100%;padding:6px 24px 6px 8px;font-size:11px;margin-bottom:6px" onchange="impStreamPick(this.value)">
+        <option value="yandex">Яндекс Музыка</option><option value="spotify">Spotify</option><option value="apple">Apple Music</option><option value="soundcloud">SoundCloud</option>
+      </select>
       <div style="display:flex;gap:6px;margin-bottom:8px">
         <input type="text" id="impExtUrl" class="folder-path-input" style="flex:1;font-size:11px" placeholder="Ссылка на публичный плейлист...">
         <button class="folder-btn folder-btn-primary" style="padding:6px 12px;font-size:11px" onclick="importExternal()">Искать</button>
@@ -5114,6 +5144,7 @@ html.ui-idle .radio-halo.on { animation-play-state: paused; }
           <div id="torTracks" style="max-height:34vh;overflow-y:auto;border-radius:8px"></div>
         </div>
         <div id="torDownloads" style="margin-top:8px"></div>
+        <div id="torCacheBox" style="margin-top:8px"></div>
       </div>
     </div>
     </div>
@@ -6152,14 +6183,16 @@ function animationLoop(ts) {
   // кадры считаются. Это была самая большая постоянная нагрузка на процессор.
   // Вид не меняется — пропускаются только кадры, в которых нечего менять.
   if (!_uiActive) { requestAnimationFrame(animationLoop); return; }
+  // full torrent track plays in previewEl: arm, bar and clock follow it, not the hidden library track
+  var _tp = tpEl();
 
   // Цель тонарма считаем ДО решения о простое: она зависит от позиции в треке,
   // и если решать раньше, стрелка замирала бы, не доехав до места.
   var targetArm = ARM_REST;
-  if (isPlaying && (!audio.duration || isNaN(audio.duration))) {
+  if (isPlaying && (!_tp.duration || isNaN(_tp.duration))) {
     targetArm = ARM_START;
-  } else if (audio.duration && !isNaN(audio.duration) && (isPlaying || audio.currentTime > 0)) {
-    targetArm = ARM_START + (ARM_END - ARM_START) * (audio.currentTime / audio.duration);
+  } else if (_tp.duration && !isNaN(_tp.duration) && (isPlaying || _tp.currentTime > 0)) {
+    targetArm = ARM_START + (ARM_END - ARM_START) * (_tp.currentTime / _tp.duration);
   }
   _armAtRest = Math.abs(targetArm - currentArmAngle) < 0.05;
 
@@ -6191,7 +6224,7 @@ function animationLoop(ts) {
     var spoolR = document.getElementById('cassetteSpoolR');
     var cWin = reelL ? reelL.parentElement : null;
     if (reelL && reelR && cWin) {
-      var tPct = (audio.duration && !isNaN(audio.duration)) ? audio.currentTime / audio.duration : 0;
+      var tPct = (_tp.duration && !isNaN(_tp.duration)) ? _tp.currentTime / _tp.duration : 0;
       // Use window HEIGHT for circle sizing (prevents oval)
       var winH = cWin.offsetHeight;
       var reelPx = winH * 0.6;
@@ -6224,9 +6257,9 @@ function animationLoop(ts) {
   // нарисованным и трогаем DOM, только когда значение действительно другое.
   // Запись textContent тянет за собой пересчёт разметки, и делать её впустую
   // шестьдесят раз в секунду дороже всего остального в этом цикле.
-  if (audio.duration && !isDragging) {
-    var pctBar = audio.currentTime / audio.duration * 100;
-    var timeText = formatTime(audio.currentTime);
+  if (_tp.duration && !isDragging) {
+    var pctBar = _tp.currentTime / _tp.duration * 100;
+    var timeText = formatTime(_tp.currentTime);
     if (Math.abs(pctBar - _lastBarPct) > 0.05) {
       _lastBarPct = pctBar;
       document.getElementById('progressFill').style.width = pctBar + '%';
@@ -6237,7 +6270,7 @@ function animationLoop(ts) {
       document.getElementById('timeCurrent').textContent = timeText;
       if (_playerMode === 'ipod') {
         document.getElementById('ipodTimeCur').textContent = timeText;
-        document.getElementById('ipodTimeDur').textContent = formatTime(audio.duration);
+        document.getElementById('ipodTimeDur').textContent = formatTime(_tp.duration);
       }
     }
   }
@@ -6298,7 +6331,7 @@ function getAngleFromCenter(el, clientX, clientY) {
 }
 
 vinylRec.addEventListener('mousedown', function(e) {
-  if (!audio.duration) return;
+  if (!tpEl().duration) return;
   e.preventDefault();
   // Поднимаем тракт на нажатии, а не на первом движении: resume()
   // асинхронный, и между кручениями контекста может уже не быть — он
@@ -6314,7 +6347,7 @@ vinylRec.addEventListener('mousedown', function(e) {
   vinylRec.classList.add('grabbing');
   mediaLog('drag:start', 'mouse');
   dragStartAngle = getAngleFromCenter(vinylRec, e.clientX, e.clientY);
-  dragStartTime = audio.currentTime;
+  dragStartTime = tpEl().currentTime;
   vinylSpeed = 0;
 });
 
@@ -6337,10 +6370,10 @@ document.addEventListener('mousemove', function(e) {
 
   var secPerRevolution = 60 / 33;
   var timeDelta = (delta / 360) * secPerRevolution;
-  var newTime = Math.max(0, Math.min(audio.currentTime + timeDelta, audio.duration - 0.5));
-  audio.currentTime = newTime;
+  var newTime = Math.max(0, Math.min(tpEl().currentTime + timeDelta, tpEl().duration - 0.5));
+  tpEl().currentTime = newTime;
 
-  var pct = newTime / audio.duration;
+  var pct = newTime / tpEl().duration;
   currentArmAngle = ARM_START + (ARM_END - ARM_START) * pct;
   tonearmEl.style.transform = 'rotate(' + currentArmAngle + 'deg)';
   document.getElementById('progressFill').style.width = (pct * 100) + '%';
@@ -6367,7 +6400,7 @@ function dragRelease(why) {
   // Инерцию продолжаем только после нормального отпускания. Отмена жеста —
   // это не бросок пластинки, и раскручивать её там нечему.
   var normal = (why === 'touchend' || why === 'mouseup');
-  if (normal && Math.abs(dragVelocity) > 0.3 && audio.duration) {
+  if (normal && Math.abs(dragVelocity) > 0.3 && tpEl().duration) {
     inertiaActive = true;
     applyInertia();
   } else {
@@ -6384,7 +6417,7 @@ document.addEventListener('visibilitychange', function() {
 
 // Touch support for vinyl drag
 vinylRec.addEventListener('touchstart', function(e) {
-  if (!audio.duration || e.touches.length !== 1) return;
+  if (!tpEl().duration || e.touches.length !== 1) return;
   e.preventDefault();
   isDragging = true;
   inertiaActive = false;
@@ -6398,7 +6431,7 @@ vinylRec.addEventListener('touchstart', function(e) {
   acCloseCancel();
   if (!audioCtx) initScratchSound();
   dragStartAngle = getAngleFromCenter(vinylRec, t.clientX, t.clientY);
-  dragStartTime = audio.currentTime;
+  dragStartTime = tpEl().currentTime;
   vinylSpeed = 0;
 }, {passive: false});
 
@@ -6420,9 +6453,9 @@ document.addEventListener('touchmove', function(e) {
   lastDragTime = now;
   var secPerRevolution = 60 / 33;
   var timeDelta = (delta / 360) * secPerRevolution;
-  var newTime = Math.max(0, Math.min(audio.currentTime + timeDelta, audio.duration - 0.5));
-  audio.currentTime = newTime;
-  var pct = newTime / audio.duration;
+  var newTime = Math.max(0, Math.min(tpEl().currentTime + timeDelta, tpEl().duration - 0.5));
+  tpEl().currentTime = newTime;
+  var pct = newTime / tpEl().duration;
   currentArmAngle = ARM_START + (ARM_END - ARM_START) * pct;
   tonearmEl.style.transform = 'rotate(' + currentArmAngle + 'deg)';
   document.getElementById('progressFill').style.width = (pct * 100) + '%';
@@ -6442,11 +6475,11 @@ function applyInertia() {
 
   var secPerRevolution = 60 / 33;
   var timeDelta = (dragVelocity / 360) * secPerRevolution;
-  var newTime = audio.currentTime + timeDelta;
-  newTime = Math.max(0, Math.min(newTime, audio.duration - 0.5));
-  audio.currentTime = newTime;
+  var newTime = tpEl().currentTime + timeDelta;
+  newTime = Math.max(0, Math.min(newTime, tpEl().duration - 0.5));
+  tpEl().currentTime = newTime;
 
-  var pct = newTime / audio.duration;
+  var pct = newTime / tpEl().duration;
   currentArmAngle = ARM_START + (ARM_END - ARM_START) * pct;
   tonearmEl.style.transform = 'rotate(' + currentArmAngle + 'deg)';
   document.getElementById('progressFill').style.width = (pct * 100) + '%';
@@ -6464,7 +6497,7 @@ function applyInertia() {
     return Math.atan2(cy - (r.top + r.height/2), cx - (r.left + r.width/2)) * 180 / Math.PI;
   }
   function hubDown(e) {
-    if (!audio.duration || _playerMode !== 'cassette') return;
+    if (!tpEl().duration || _playerMode !== 'cassette') return;
     e.preventDefault();
     hubDragging = true;
     var hub = e.currentTarget;
@@ -6472,7 +6505,7 @@ function applyInertia() {
     var cx = e.clientX || (e.touches && e.touches[0].clientX);
     var cy = e.clientY || (e.touches && e.touches[0].clientY);
     hubStartAngle = hubAngle(hub, cx, cy);
-    hubStartTime = audio.currentTime;
+    hubStartTime = tpEl().currentTime;
   }
   function hubMove(e) {
     if (!hubDragging) return;
@@ -6485,7 +6518,7 @@ function applyInertia() {
     if (delta < -180) delta += 360;
     hubStartAngle = angle;
     var secPerRev = 60 / 33;
-    audio.currentTime = Math.max(0, Math.min(audio.duration, audio.currentTime + (delta / 360) * secPerRev));
+    tpEl().currentTime = Math.max(0, Math.min(tpEl().duration, tpEl().currentTime + (delta / 360) * secPerRev));
   }
   function hubUp() {
     if (!hubDragging) return;
@@ -6711,7 +6744,7 @@ function renderTracks() {
           : '<img src="/api/cover/' + encodeURIComponent(t.file) + '" loading="lazy" onerror="loadCachedImg(this,\'' + encodeURIComponent(t.file).replace(/'/g,"\\'") + '\')">')
       : '';
     if (isEditMode) {
-      html += '<div class="playlist-item' + (i === currentIdx ? ' active' : '') + '" data-idx="' + i + '"'
+      html += '<div class="playlist-item' + (i === currentIdx && !_previewMode ? ' active' : '') + '" data-idx="' + i + '"'
         + ' draggable="true" ondragstart="onDragStart(event,' + i + ')" ondragend="onDragEnd(event)"'
         + ' ondragover="onDragOver(event,' + i + ')" ondrop="onDrop(event,' + i + ')"'
         + ' ontouchstart="onTouchDragStart(event,' + i + ')">'
@@ -6721,7 +6754,7 @@ function renderTracks() {
         + '<div class="artist">' + esc(t.artist) + '</div></div></div>';
     } else if (selectionMode) {
       var selOn = !!selectedFiles[t.file];
-      html += '<div class="playlist-item' + (i === currentIdx ? ' active' : '') + (selOn ? ' selected' : '') + '"'
+      html += '<div class="playlist-item' + (i === currentIdx && !_previewMode ? ' active' : '') + (selOn ? ' selected' : '') + '"'
         + ' onclick="toggleSelect(' + i + ')"'
         + ' oncontextmenu="event.preventDefault();showCtxMenu(event,' + i + ')"'
         + ' data-longpress="' + i + '">'
@@ -6732,7 +6765,7 @@ function renderTracks() {
     } else {
       var offDisabled = _isOffline && !isTrackCached(t.file);
       var queuedNext = (t.file === _forceNextFile);
-      html += '<div class="playlist-item' + (i === currentIdx ? ' active' : '') + (offDisabled ? ' disabled' : '')
+      html += '<div class="playlist-item' + (i === currentIdx && !_previewMode ? ' active' : '') + (offDisabled ? ' disabled' : '')
         + (queuedNext ? ' queued-next' : '') + '"'
         + (offDisabled ? '' : ' onclick="playFromList(' + i + ')"')
         + (offDisabled ? ' style="opacity:0.3;pointer-events:none"' : '')
@@ -6744,7 +6777,7 @@ function renderTracks() {
         + '<div class="artist">' + esc(t.artist) + '</div></div>'
         + (isTrackCached(t.file)
           ? '<span style="width:6px;height:6px;border-radius:50%;background:#52b788;flex-shrink:0" data-tip="В кэше"></span>'
-          : (!offDisabled ? '<button class="track-edit-btn" onclick="event.stopPropagation();cacheTrack(\'' + esc(t.file).replace(/'/g,"\\'") + '\',function(ok){if(ok)renderTracks()})" data-tip="Кэшировать"><svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg></button>' : ''))
+          : (!offDisabled ? '<button class="track-edit-btn' + cachingRowClass(t.file) + '" onclick="event.stopPropagation();cacheOneTrack(\'' + esc(t.file).replace(/'/g,"\\'") + '\')" data-tip="Кэшировать"' + cachingRowStyle(t.file) + '><svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg></button>' : ''))
         + (!offDisabled && userRole !== 'demo' ? '<button class="track-edit-btn" onclick="event.stopPropagation();openTrackEdit(' + i + ')" data-tip="Сведения о треке"><svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z"/></svg></button>' : '')
         + '</div>';
     }
@@ -6812,7 +6845,7 @@ function renderAlbums() {
       var idx = alb.tracks[ti];
       var t = tracks[idx];
       var cachedDot = isTrackCached(t.file) ? '<span style="width:6px;height:6px;border-radius:50%;background:#52b788;flex-shrink:0;margin-left:auto" data-tip="В кэше"></span>' : '';
-      html += '<div class="playlist-item' + (idx === currentIdx ? ' active' : '') + '" onclick="event.stopPropagation();playFromAlbum(' + a + ',' + idx + ')" style="padding-left:36px">'
+      html += '<div class="playlist-item' + (idx === currentIdx && !_previewMode ? ' active' : '') + '" onclick="event.stopPropagation();playFromAlbum(' + a + ',' + idx + ')" style="padding-left:36px">'
         + '<div class="info"><div class="name">' + esc(t.title) + '</div></div>' + cachedDot + '</div>';
     }
     html += '</div>';
@@ -8233,15 +8266,15 @@ function buildContinuation(pool, variety) {
   }
   function preview(pct) {
     document.getElementById('progressFill').style.width = (pct * 100) + '%';
-    document.getElementById('timeCurrent').textContent = formatTime(pct * audio.duration);
+    document.getElementById('timeCurrent').textContent = formatTime(pct * tpEl().duration);
   }
   function commit(pct) {
-    if (!audio.duration || isNaN(audio.duration)) return;
-    audio.currentTime = pct * audio.duration;
+    if (!tpEl().duration || isNaN(tpEl().duration)) return;
+    tpEl().currentTime = pct * tpEl().duration;
   }
 
   wrap.addEventListener('pointerdown', function(e) {
-    if (!audio.duration || isNaN(audio.duration)) return;
+    if (!tpEl().duration || isNaN(tpEl().duration)) return;
     seeking = true;
     wrap.classList.add('dragging');
     try { wrap.setPointerCapture(e.pointerId); } catch (err) {}
@@ -8272,16 +8305,20 @@ function setVolume(v) {
   // Двинули ползунок посреди затухания — слушаем человека, а не рампу.
   if (_fadeTimer) fadeCancel(false);
   audio.volume = _userVolume;
+  if (previewAudio) { try { previewAudio.volume = _userVolume; } catch (e) {} }
 }
 
 function updateActiveHighlight() {
   // Remove old active
   var old = document.querySelectorAll('.playlist-item.active');
   for (var i = 0; i < old.length; i++) old[i].classList.remove('active');
+  // While a torrent track or a DROPS preview plays, the library track is not playing: no row lit
+  if (_previewMode) return;
   // Find new active by onclick attribute containing the current index
   var all = document.querySelectorAll('.playlist-item');
   for (var j = 0; j < all.length; j++) {
     var onclick = all[j].getAttribute('onclick') || '';
+    if (onclick.indexOf('tor') === 0 || onclick.indexOf('ds') === 0) continue;   // torrent result rows, not library
     if (onclick.indexOf('(' + currentIdx + ')') >= 0 || onclick.indexOf(',' + currentIdx + ')') >= 0) {
       all[j].classList.add('active');
     }
@@ -9567,14 +9604,25 @@ function widgetPublish() {
   // анимации. Плюс каждый запрос занимал однопоточный сервер.
   if (!isLocal || !widgetPossible) return;
   try {
-    var dur = (audio && audio.duration && !isNaN(audio.duration)) ? audio.duration : 0;
-    var pos = (audio && audio.currentTime) ? audio.currentTime : 0;
+    var el = audio, wt = _widgetTrack, playing = !!isPlaying;
+    // Транспорт у отрывка DROPS или трека раздачи: виджет показывает то, что звучит, а не
+    // спрятанный трек библиотеки (кнопки виджета и так уходят к превью через togglePlay/nextTrack)
+    if (previewOwnsTransport()) {
+      var pt = (_previewTracks && _previewTracks[_previewTrack]) || null;
+      var rel = findRelease(_previewKey) || {};
+      el = previewAudio;
+      playing = !previewAudio.paused;
+      wt = {title: (pt && pt.title) || rel.title || '', artist: rel.artist || (pt ? rel.title || '' : ''),
+            album: pt && rel.artist ? rel.title || '' : '', file: ''};
+    }
+    var dur = (el && el.duration && isFinite(el.duration)) ? el.duration : 0;
+    var pos = (el && el.currentTime) ? el.currentTime : 0;
     var payload = JSON.stringify({
-      playing: !!isPlaying,
-      title: _widgetTrack.title || '',
-      artist: _widgetTrack.artist || '',
-      album: _widgetTrack.album || '',
-      file: _widgetTrack.file || '',
+      playing: playing,
+      title: wt.title || '',
+      artist: wt.artist || '',
+      album: wt.album || '',
+      file: wt.file || '',
       position: Math.round(pos),
       duration: Math.round(dur)
     });
@@ -10808,7 +10856,9 @@ function openVkModal() {
     hint.textContent = 'Сначала выберите каталог';
   }
   // Local import is only meaningful when the browser runs on the server machine
-  document.getElementById('localImportBlock').style.display = (isLocal && userRole !== 'demo') ? '' : 'none';
+  var canLocal = isLocal && userRole !== 'demo';
+  document.getElementById('localImportBlock').style.display = canLocal ? '' : 'none';
+  document.getElementById('localImportNote').style.display = canLocal ? 'none' : '';
   updateLocalPosVis();
   if (vkPolling) pollVk();
 }
@@ -10959,19 +11009,37 @@ function cancelVkDownload() {
 }
 
 // ── VK Tabs & Search ──
+// Tabs: Локально (default) · Торрент · VK · Стриминги (one tab, service picked in the list).
+// The old VK track search pane (impSearch) stays in the markup hidden: the VK queue code still writes to it.
+var IMP_STREAMS = {yandex: 'Ссылка на плейлист Яндекс Музыки...', spotify: 'Ссылка на публичный плейлист Spotify...',
+                   apple: 'Ссылка на плейлист Apple Music...', soundcloud: 'Ссылка на плейлист SoundCloud...'};
+function impStreamPick(v) {
+  if (!IMP_STREAMS[v]) v = 'yandex';
+  var sel = document.getElementById('impStreamSel');
+  if (sel && sel.value !== v) sel.value = v;
+  var inp = document.getElementById('impExtUrl');
+  if (inp) inp.placeholder = IMP_STREAMS[v];
+  lsSet('_vc_impstream', v);
+}
 function showImpTab(tab) {
+  if (IMP_STREAMS[tab]) { impStreamPick(tab); tab = 'streams'; }      // old names: showImpTab('yandex') etc.
+  if (tab === 'search') tab = 'torrents';                               // the search tab is gone
+  var ids = {local: 'impTabLocal', torrents: 'impTabTorrents', vk: 'impTabVk', streams: 'impTabStreams'};
+  if (!ids[tab]) tab = 'local';
   var tabs = document.querySelectorAll('.imp-tab');
   for (var i = 0; i < tabs.length; i++) tabs[i].classList.remove('active');
-  var btn = document.getElementById('impTab' + tab.charAt(0).toUpperCase() + tab.slice(1));
+  var btn = document.getElementById(ids[tab]);
   if (btn) btn.classList.add('active');
+  document.getElementById('impLocal').style.display = tab === 'local' ? '' : 'none';
   document.getElementById('impVk').style.display = tab === 'vk' ? '' : 'none';
-  document.getElementById('impExternal').style.display = (tab !== 'vk' && tab !== 'search' && tab !== 'torrents') ? '' : 'none';
-  document.getElementById('impSearch').style.display = tab === 'search' ? '' : 'none';
+  document.getElementById('impExternal').style.display = tab === 'streams' ? '' : 'none';
+  document.getElementById('impSearch').style.display = 'none';
   document.getElementById('impTorrents').style.display = tab === 'torrents' ? '' : 'none';
+  if (tab === 'streams') impStreamPick(localStorage.getItem('_vc_impstream') || 'yandex');
   if (tab === 'torrents') torOpenTab();
 }
 // Keep old name for compat
-function showVkTab(t) { showImpTab(t === 'playlist' ? 'vk' : 'search'); }
+function showVkTab(t) { showImpTab(t === 'playlist' ? 'vk' : 'torrents'); }
 
 // ---------- Torrents: search via Jackett, listen first, download one track ----------
 // Long server jobs (Jackett search takes up to a minute) run in the background:
@@ -11006,18 +11074,72 @@ function torOpenTab() {
     else if (!j.installed) warn = 'Для поиска раздач нужен Jackett. ' + (isAdmin ? 'Установите его в Профиль &rarr; Поиск раздач.' : 'Попросите администратора установить его.');
     else if (!j.running) warn = 'Jackett не запущен. ' + (isAdmin ? 'Запустите его в Профиль &rarr; Поиск раздач.' : '');
     else if (!j.api_key) warn = 'Jackett ещё запускается - попробуйте через несколько секунд.';
-    if (warn) {
-      st.innerHTML = '<span style="color:#e94560">' + warn + '</span>';
-      document.getElementById('torSearchBox').style.display = 'none';
-      return;
-    }
-    st.innerHTML = '<span style="color:rgba(255,255,255,0.3)">Ищет по трекерам, подключённым в Jackett. Найденное слушается сразу, скачивается по одному треку.</span>';
-    document.getElementById('torSearchBox').style.display = '';
-    torPollDownloads();
+    torJkOk = !warn;
+    torSyncCache(function() {
+      // без Jackett (и без сервера) поиск всё равно работает по сохранённым раздачам
+      if (warn) {
+        st.innerHTML = '<span style="color:#e94560">' + warn + '</span>'
+          + (torCache.items.length ? '<br><span style="color:rgba(255,255,255,0.3)">Поиск - по сохранённым раздачам (' + torCache.items.length + ').</span>' : '');
+        document.getElementById('torSearchBox').style.display = torCache.items.length ? '' : 'none';
+      } else {
+        st.innerHTML = '<span style="color:rgba(255,255,255,0.3)">Ищет по трекерам, подключённым в Jackett, и по сохранённым раздачам. Найденное слушается сразу, скачивается по одному треку.</span>';
+        document.getElementById('torSearchBox').style.display = '';
+      }
+      renderTorCacheBox();
+      if (!warn) torPollDownloads();
+    });
   });
 }
 
-var torSearchSeq = 0, torTrackers = [], torSearching = false;
+// ---------- кэш раздач: зашли в раздачу - её .torrent и треки сохранены на сервере ----------
+// Зеркало списка (вместе с .torrent) лежит в IndexedDB: поиск по сохранённым работает и без Jackett,
+// и без сервера. Сервер - источник истины: его список целиком заменяет зеркало, поэтому очистка
+// с одного устройства доходит до всех при следующей синхронизации.
+var torCache = {gen: 0, items: []}, torJkOk = false, torCacheLoaded = false;
+
+function torSyncCache(cb) {
+  var done = function() { torCacheLoaded = true; if (cb) cb(); };
+  fetch('/api/torrents/cache').then(function(r){return r.json()}).then(function(d) {
+    if (!d || !d.items) throw new Error('offline');
+    torCache = {gen: d.gen || 0, items: d.items};
+    relDbSet('torCache', torCache);
+    done();
+    if (typeof syncNewTabVisibility === 'function') syncNewTabVisibility();
+  }).catch(function() {
+    relDbGet('torCache', function(m) { if (m && m.items) torCache = m; done(); if (typeof syncNewTabVisibility === 'function') syncNewTabVisibility(); });
+  });
+}
+
+function torCachedMatches(q) {
+  var words = q.toLowerCase().split(/\s+/).filter(function(w){return w});
+  return torCache.items.filter(function(it) {
+    var hay = ((it.title || '') + ' ' + (it.name || '') + ' ' + (it.files || []).map(function(f){return f.path}).join(' ')).toLowerCase();
+    return words.every(function(w){ return hay.indexOf(w) >= 0; });
+  });
+}
+
+function renderTorCacheBox() {
+  var box = document.getElementById('torCacheBox');
+  if (!box) return;
+  var n = torCache.items.length;
+  box.innerHTML = n ? '<button class="folder-btn folder-btn-secondary" style="width:100%;font-size:11px;padding:6px" onclick="torClearCache()">Очистить кэш раздач (' + n + ')</button>'
+    + '<div style="font-size:10px;color:rgba(255,255,255,0.3);margin-top:4px">Раздачи, в которые вы заходили, сохраняются и открываются без повторного поиска - и на других ваших устройствах.</div>' : '';
+}
+
+function torClearCache() {
+  if (!confirm('Удалить все сохранённые раздачи? Найти их можно будет только новым поиском. Очистка дойдёт до всех ваших устройств.')) return;
+  fetch('/api/torrents/cache/clear', {method:'POST', headers:{'Content-Type':'application/json'}, body: '{}'})
+  .then(function(r){return r.json()}).then(function(d) {
+    if (!d.ok) { showToast(d.error === 'offline' ? 'Очистка - через сервер, он сейчас недоступен' : (d.error || 'Ошибка')); return; }
+    torCache = {gen: d.gen || 0, items: d.items || []};
+    relDbSet('torCache', torCache);
+    renderTorCacheBox();
+    if (document.getElementById('torResults').style.display !== 'none' && document.getElementById('torQuery').value.trim()) renderTorResults();
+    showToast('Кэш раздач очищен');
+  }).catch(function(){ showToast('Нет связи с сервером'); });
+}
+
+var torSearchSeq = 0, torTrackers = [], torSearching = false, torLocal = [];
 
 // Results grow as trackers answer: the server asks each Jackett tracker separately
 // and accumulates; we poll the job and redraw only when something changed.
@@ -11026,9 +11148,12 @@ function torSearch() {
   if (!q) return;
   torBack();
   var my = ++torSearchSeq;
-  torResults = []; torTrackers = []; torSearching = true;
+  torResults = []; torTrackers = []; torSearching = torJkOk;
+  torLocal = torCachedMatches(q);
   var box = document.getElementById('torResults');
-  box.innerHTML = '<div style="padding:12px;color:rgba(255,255,255,0.3);text-align:center">Ищу по трекерам...</div>';
+  if (!torJkOk) { renderTorResults(); return; }       // Jackett недоступен - только сохранённые
+  if (torLocal.length) renderTorResults();
+  else box.innerHTML = '<div style="padding:12px;color:rgba(255,255,255,0.3);text-align:center">Ищу по трекерам...</div>';
   fetch('/api/torrents/search', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({q: q})})
   .then(function(r){return r.json()}).then(function(d) {
     if (!d.ok) { box.innerHTML = ''; showToast(d.error || 'Ошибка поиска'); return; }
@@ -11068,8 +11193,21 @@ function torStatusHtml() {
 function renderTorResults() {
   // keep the "not answered" list open across redraws
   var badOpen = document.getElementById('torBad') && document.getElementById('torBad').style.display !== 'none';
-  var html = torStatusHtml();
-  if (!torResults.length) html += '<div style="padding:12px;color:rgba(255,255,255,0.3);text-align:center">' + (torSearching ? 'Ищу по трекерам...' : 'Ничего не нашлось') + '</div>';
+  var html = '';
+  if (torLocal.length) {
+    html += '<div style="font-size:11px;color:rgba(255,255,255,0.4);margin:2px 0 4px">Сохранённые раздачи: ' + torLocal.length + '</div>';
+    for (var c = 0; c < torLocal.length; c++) {
+      var it = torLocal[c];
+      var cm = [torSize(it.size), (it.files || []).length + ' файлов', it.tracker].filter(function(x){return x}).join(' · ');
+      html += '<div class="playlist-item" style="cursor:pointer" onclick="torOpenCached(' + c + ')">'
+        + '<div class="info" style="flex:1;min-width:0"><div class="name">' + esc(it.title || it.name) + '</div>'
+        + '<div class="artist">' + esc(cm) + '</div></div>'
+        + '<div style="font-size:9px;color:#e94560;border:1px solid rgba(233,69,96,0.5);border-radius:4px;padding:1px 4px;flex-shrink:0">сохранено</div>'
+        + '<div style="color:rgba(255,255,255,0.3);font-size:14px;flex-shrink:0">&#8250;</div></div>';
+    }
+  }
+  if (torJkOk) html += torStatusHtml();
+  if (!torResults.length && !torLocal.length) html += '<div style="padding:12px;color:rgba(255,255,255,0.3);text-align:center">' + (torSearching ? 'Ищу по трекерам...' : 'Ничего не нашлось') + '</div>';
   for (var i = 0; i < torResults.length; i++) {
     var r = torResults[i];
     var meta = [torSize(r.size), 'сиды ' + (r.seeders || 0), r.tracker].filter(function(x){return x}).join(' · ');
@@ -11097,9 +11235,30 @@ function torOpen(i) {
   document.getElementById('torRelTitle').textContent = r.title;
   document.getElementById('torTracks').innerHTML = '<div style="padding:12px;color:rgba(255,255,255,0.3);text-align:center">Получаю список треков...</div>';
   torRelName = r.title;
-  fetch('/api/torrents/open', {method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({torrent_url: r.torrent_url, magnet: r.magnet})})
+  torOpenSend({torrent_url: r.torrent_url, magnet: r.magnet, title: r.title, tracker: r.tracker, size: r.size, seeders: r.seeders});
+}
+
+// Сохранённая раздача: сервер берёт .torrent из кэша - без Jackett и трекера. Без сервера - список
+// треков из зеркала (слушать и качать раздачу может только сервер)
+function torOpenCached(c) {
+  var it = torLocal[c];
+  if (!it) return;
+  document.getElementById('torResults').style.display = 'none';
+  document.getElementById('torRelease').style.display = '';
+  document.getElementById('torRelTitle').textContent = it.title || it.name;
+  torRelName = it.title || it.name;
+  if (_isOffline) {
+    torIh = it.ih; torFiles = it.files || []; renderTorTracks(true);
+    return;
+  }
+  document.getElementById('torTracks').innerHTML = '<div style="padding:12px;color:rgba(255,255,255,0.3);text-align:center">Открываю сохранённую раздачу...</div>';
+  torOpenSend({ih: it.ih, title: it.title, tracker: it.tracker, size: it.size, seeders: it.seeders, torrent_url: it.torrent_url, magnet: it.magnet}, it);
+}
+
+function torOpenSend(body, cachedItem) {
+  fetch('/api/torrents/open', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)})
   .then(function(x){return x.json()}).then(function(d) {
+    if (d.error === 'offline' && cachedItem) { torIh = cachedItem.ih; torFiles = cachedItem.files || []; renderTorTracks(true); return; }
     if (!d.ok) { showToast(d.error || 'Ошибка'); torBack(); return; }
     torPollJob(d.job, function(err, ih) {
       if (err) { showToast('Раздача не открылась: ' + err); torBack(); return; }
@@ -11123,28 +11282,36 @@ function torLoadInfo(tries) {
     }
     torFiles = d.files || [];
     renderTorTracks();
+    // сервер сохраняет раздачу, как только виден список треков - подтягиваем её в зеркало
+    setTimeout(function(){ torSyncCache(renderTorCacheBox); }, 1500);
   });
+}
+
+// MP3, FLAC... - по расширению файла
+function torFormat(f) {
+  var m = /\.([0-9a-z]{2,5})$/i.exec(f.name || f.path || '');
+  return m ? m[1].toUpperCase() : '';
 }
 
 function torTrackTitle(f) {
   return f.name.replace(/\.[^.]+$/, '').replace(/^\s*\d{1,3}\s*[-._)]\s*/, '');
 }
 
-function renderTorTracks() {
+function renderTorTracks(offline) {
   // only playable tracks take part in listening; their position is data-n for the preview player
-  var playable = [], html = '';
-  _extReleases['tor:' + torIh] = {title: torRelName, artist: '', art: '', badge: 'РАЗДАЧА'};
+  var playable = [], html = offline ? '<div style="font-size:10px;color:#e94560;padding:4px 8px">Нет связи с сервером: список треков из сохранённой раздачи, слушать и скачивать - когда сервер будет доступен</div>' : '';
+  _extReleases['tor:' + torIh] = {title: torRelName, artist: '', art: '', badge: 'РАЗДАЧА', full: true};
   for (var i = 0; i < torFiles.length; i++) {
     var f = torFiles[i];
     var n = -1;
-    if (f.playable) { n = playable.length; playable.push({title: torTrackTitle(f), src: '/api/torrent/stream/' + torIh + '/' + f.idx}); }
+    if (f.playable && !offline) { n = playable.length; playable.push({title: torTrackTitle(f), src: '/api/torrent/stream/' + torIh + '/' + f.idx}); }
     var dir = f.path.indexOf('/') >= 0 ? f.path.replace(/\/[^\/]*$/, '') : '';
     var note = f.image ? 'образ диска - по трекам не скачать' : (!f.playable ? 'формат не играет в браузере' : torSize(f.size));
-    html += '<div class="rel-track"' + (n >= 0 ? ' data-n="' + n + '"' : '') + ' style="display:flex;align-items:center;gap:6px;padding:6px 8px;position:relative' + (f.playable ? '' : ';opacity:0.45') + '">'
-      + (f.playable ? '<button class="folder-btn folder-btn-secondary tor-play" style="padding:3px 8px;font-size:11px;flex-shrink:0;min-width:30px" onclick="torPlay(' + n + ')" title="Послушать">&#9654;</button>' : '<span style="width:30px"></span>')
+    html += '<div class="rel-track"' + (n >= 0 ? ' data-n="' + n + '"' : '') + ' style="display:flex;align-items:center;gap:6px;padding:6px 8px;position:relative' + (f.playable && !offline ? '' : ';opacity:0.45') + '">'
+      + (f.playable && !offline ? '<button class="folder-btn folder-btn-secondary tor-play tor-play-sq" onclick="torPlay(' + n + ')" title="Послушать">&#9654;</button>' : '<span style="width:30px"></span>')
       + '<div style="flex:1;min-width:0"><div style="font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + esc(torTrackTitle(f)) + '</div>'
       + '<div style="font-size:10px;color:rgba(255,255,255,0.35);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + esc([dir, note].filter(function(x){return x}).join(' · ')) + '</div></div>'
-      + (f.playable ? '<button class="folder-btn folder-btn-secondary" style="padding:3px 8px;font-size:11px;flex-shrink:0" onclick="torDownload(' + f.idx + ')" title="Скачать трек в открытую папку">&#8595;</button>' : '')
+      + (f.playable && !offline ? '<button class="folder-btn folder-btn-secondary" style="padding:3px 8px;font-size:11px;flex-shrink:0" onclick="torDownload(' + f.idx + ')" title="Скачать трек в открытую папку">&#8595;</button>' : '')
       + '<div class="rel-track-bar" style="position:absolute;left:0;bottom:0;height:2px;background:#e94560;width:0"></div>'
       + '</div>';
   }
@@ -11178,32 +11345,47 @@ function torCancel(id) {
   .then(function(){ torPollDownloads(); });
 }
 
+// «Загрузка»: только то, что качается прямо сейчас, с прогрессом. Закончилось, сорвалось или отменено -
+// строка уходит, итог - коротким сообщением (готовый трек сразу появляется в открытой папке)
+var torDlSeen = {};
 function torPollDownloads() {
   clearTimeout(torDlTimer);
   fetch('/api/torrents/downloads').then(function(r){return r.json()}).then(function(d) {
     var items = d.items || [];
-    var active = false, html = '';
-    var labels = {downloading: 'качается', importing: 'добавляю в папку', done: 'готово', error: 'ошибка', cancelled: 'отменено'};
-    for (var i = 0; i < items.length && i < 12; i++) {
+    var html = '', live = 0;
+    var labels = {queued: 'в очереди', downloading: 'качается', importing: 'добавляю в папку'};
+    for (var i = 0; i < items.length; i++) {
       var it = items[i];
-      if (it.state === 'downloading' || it.state === 'importing') active = true;
-      // a fresh "done" refreshes the catalog so the track shows up at once
-      if (it.state === 'done' && !torLastDone[it.id]) {
-        torLastDone[it.id] = true;
-        if (_curFolder) loadFolder(_curFolder);
+      var activeNow = it.state === 'queued' || it.state === 'downloading' || it.state === 'importing';
+      if (!activeNow) {
+        // итог показываем один раз и только для загрузок, которые этот клиент видел идущими
+        if (torDlSeen[it.id] && !torLastDone[it.id]) {
+          torLastDone[it.id] = true;
+          var nm = torTrackTitle({name: it.name});
+          if (it.state === 'done') { showToast('Трек добавлен в папку: ' + nm); if (_curFolder) loadFolder(_curFolder); }
+          else if (it.state === 'error') showToast('Не скачалось: ' + nm + (it.error ? ' - ' + it.error : ''));
+          else if (it.state === 'cancelled') showToast('Загрузка отменена: ' + nm);
+        }
+        continue;
       }
+      torDlSeen[it.id] = true;
+      delete torLastDone[it.id];
+      live++;
       var pct = Math.round((it.progress || 0) * 100);
       html += '<div class="playlist-item" style="padding:6px 8px">'
         + '<div class="info" style="flex:1;min-width:0"><div class="name" style="font-size:12px">' + esc(torTrackTitle({name: it.name})) + '</div>'
-        + '<div class="artist" style="font-size:10px">' + esc((labels[it.state] || it.state) + (it.state === 'downloading' ? ' ' + pct + '%' : '') + (it.error ? ': ' + it.error : '') + (it.size ? ' · ' + torSize(it.size) : '')) + '</div>'
-        + (it.state === 'downloading' ? '<div class="meta-bar" style="margin-top:4px"><div class="meta-bar-fill" style="width:' + pct + '%"></div></div>' : '')
+        + '<div class="artist" style="font-size:10px">' + esc(labels[it.state] + (it.state === 'downloading' ? ' ' + pct + '%' : '') + (it.size ? ' · ' + torSize(it.size) : '')) + '</div>'
+        + '<div class="meta-bar" style="margin-top:4px"><div class="meta-bar-fill" style="width:' + (it.state === 'importing' ? 100 : pct) + '%"></div></div>'
         + '</div>'
-        + (it.state === 'downloading' ? '<button class="folder-btn folder-btn-secondary" style="padding:3px 8px;font-size:11px;flex-shrink:0" onclick="torCancel(\'' + it.id + '\')">&#10005;</button>' : '')
+        + (it.state !== 'importing' ? '<button class="folder-btn folder-btn-secondary" style="padding:3px 8px;font-size:11px;flex-shrink:0" onclick="torCancel(\'' + it.id + '\')" title="Отменить">&#10005;</button>' : '')
         + '</div>';
     }
+    var dlHtml = live ? '<div style="font-size:11px;color:rgba(255,255,255,0.3);margin-bottom:4px">Загрузка</div>' + html : '';
     var box = document.getElementById('torDownloads');
-    if (box) box.innerHTML = items.length ? '<div style="font-size:11px;color:rgba(255,255,255,0.3);margin-bottom:4px">Загрузки на сервер</div>' + html : '';
-    if (active) torDlTimer = setTimeout(torPollDownloads, 1500);
+    if (box) box.innerHTML = dlHtml;
+    var box2 = document.getElementById('dsDownloads');       // the same block under DROPS -> SEARCH
+    if (box2) box2.innerHTML = dlHtml;
+    if (live) torDlTimer = setTimeout(torPollDownloads, 1500);
   }).catch(function(){});
 }
 
@@ -11906,6 +12088,7 @@ function relSpinner() {
   document.getElementById('newList').innerHTML =
     '<div style="display:flex;flex-direction:column;align-items:center;padding:40px 20px;color:rgba(255,255,255,0.3)">'
     + '<div class="loading-spinner"></div><div style="margin-top:12px;font-size:13px">Собираю новинки...</div></div>';
+  relSearchReattach();
 }
 
 // Лента из зеркала: у копии нет прогресса проверки, всё остальное — как у
@@ -11974,6 +12157,7 @@ function loadReleases(silent, tab) {
           '<div class="rel-note" style="text-align:center;padding:32px 20px">Сервер недоступен, '
           + 'а сохранённой копии дропов ещё нет.<br><button class="folder-btn folder-btn-primary" '
           + 'style="margin-top:14px;font-size:12px" onclick="refreshReleases()">Проверить через iTunes</button></div>';
+        relSearchReattach();
       }
       syncNewTabVisibility();
     });
@@ -11998,6 +12182,11 @@ function relInvalidate(exceptTab) {
 // превью останавливаем; узлы карточек у лент раздельные, так что возврат
 // назад уже не грузит обложки заново.
 function showRelTab(tab) {
+  if (_relSearchOn && relFeeds[tab]) {
+    // SEARCH is not a feed: leaving it just uncovers the feed underneath
+    relSearchShow(false);
+    if (tab === _relTab) { syncRelHeader(); if (relF().data) renderReleases(); else loadReleases(); return; }
+  }
   if (tab === _relTab || !relFeeds[tab]) return;
   stopPreview();
   _relTab = tab;
@@ -12006,7 +12195,7 @@ function showRelTab(tab) {
   if (scroller) scroller.scrollTop = 0;
   syncRelHeader();
   if (relF().data) renderReleases();
-  else { if (scroller) scroller.innerHTML = ''; loadReleases(); }
+  else { if (scroller) { scroller.innerHTML = ''; relSearchReattach(); } loadReleases(); }
 }
 
 // Заголовок строки: количество слева, подвкладки справа.
@@ -12016,8 +12205,11 @@ function syncRelHeader() {
   document.getElementById('playlistHeader').textContent =
     d ? (n + ' ' + relPlural(n, 'дроп', 'дропа', 'дропов')) : 'Дропы';
   var btnNew = document.getElementById('relTabNew'), btnFy = document.getElementById('relTabFy');
-  if (btnNew) btnNew.className = 'rel-subtab' + (_relTab === 'new' ? ' active' : '');
-  if (btnFy) btnFy.className = 'rel-subtab' + (_relTab === 'foryou' ? ' active' : '');
+  if (btnNew) btnNew.className = 'rel-subtab' + (!_relSearchOn && _relTab === 'new' ? ' active' : '');
+  if (btnFy) btnFy.className = 'rel-subtab' + (!_relSearchOn && _relTab === 'foryou' ? ' active' : '');
+  var btnS = document.getElementById('relTabSearch');
+  if (btnS) btnS.className = 'rel-subtab' + (_relSearchOn ? ' active' : '');
+  if (_relSearchOn) document.getElementById('playlistHeader').textContent = 'Поиск по раздачам';
 }
 
 // Раздел живёт только онлайн: данные приходят с сервера, а офлайн вкладка
@@ -12026,7 +12218,8 @@ function syncNewTabVisibility() {
   var tab = document.getElementById('tabNew');
   if (!tab) return;
   // Вкладку прячем только если и сервера нет, и показать нечего.
-  var keep = !_isOffline || relFeeds['new'].hasMirror || relFeeds['foryou'].hasMirror;
+  var keep = !_isOffline || relFeeds['new'].hasMirror || relFeeds['foryou'].hasMirror
+    || (typeof torCache !== 'undefined' && torCache.items.length > 0);      // SEARCH over saved releases
   tab.style.display = keep ? '' : 'none';
   if (!keep) {
     if (typeof stopPreview === 'function') stopPreview();
@@ -12100,6 +12293,7 @@ function renderReleases() {
   // заново на каждый тик.
   if (!document.getElementById('relCards')) {
     box.innerHTML = '<div id="relStatus"></div><div id="relCards"></div><div id="relFooter"></div>';
+    relSearchReattach();
   }
   var statusEl = document.getElementById('relStatus');
   var cardsEl = document.getElementById('relCards');
@@ -12468,11 +12662,8 @@ function getRelease(key) {
     showToast('Сначала выберите каталог');
     return;
   }
-  openVkModal();
-  showImpTab('search');
-  var input = document.getElementById('vkSearchQuery');
-  input.value = it.artist + ' ' + it.title;
-  vkSearchTracks();
+  // Не покидая DROPS: подвкладка SEARCH ищет этот релиз по раздачам
+  showRelSearch(it.artist + ' ' + it.title);
 }
 
 // ── Автономный режим «Новинок» ──
@@ -12912,6 +13103,7 @@ function previewEl() {
   var el = document.createElement('audio');
   el.id = 'previewEl';
   el.preload = 'none';
+  try { el.volume = _userVolume; } catch (e) {}     // torrent tracks follow the volume slider
   document.body.appendChild(el);
   previewAudio = el;
   bindPreviewEvents(el);
@@ -13026,6 +13218,10 @@ function togglePreview(key, autoplay) {
 // но показывать отрывок должен обычный плеер: обложка релиза, название, бейдж
 // и рабочие кнопки. Возврат к обычному виду — при первом же треке из библиотеки.
 var _previewMode = false;
+// Полный трек из раздачи (не 30-секундный отрывок DROPS): у него есть перемотка и громкость,
+// полоса, часы и тонарм идут по нему - tpEl() отдаёт звучащий элемент.
+var _previewFull = false;
+function tpEl() { return (_previewFull && previewOwnsTransport()) ? previewAudio : audio; }
 
 function previewArtSrc(rel) {
   if (!rel || !rel.art) return '';
@@ -13036,10 +13232,11 @@ function previewArtSrc(rel) {
 // громкостью он не управляется. Обе панели гасим и возвращаем здесь, в одном
 // месте — иначе легко оставить путь, на котором вернулось только одно.
 function syncPreviewChrome() {
+  var cut = _previewMode && !_previewFull;     // трек из раздачи - полный: перемотка и громкость есть
   var pw = document.getElementById('progressWrap');
-  if (pw) pw.classList.toggle('no-seek', _previewMode);
+  if (pw) pw.classList.toggle('no-seek', cut);
   var vw = document.querySelector('.volume-wrap');
-  if (vw) vw.classList.toggle('no-volume', _previewMode);
+  if (vw) vw.classList.toggle('no-volume', cut);
 }
 
 function enterPreviewPlayerUI(rel, tr) {
@@ -13048,6 +13245,7 @@ function enterPreviewPlayerUI(rel, tr) {
   // чужого воспроизведения.
   stopRadio();
   _previewMode = true;
+  _previewFull = !!rel.full;
   var titleEl = document.getElementById('trackTitle');
   var artistEl = document.getElementById('trackArtist');
   titleEl.textContent = (tr && tr.title) || rel.title || '';
@@ -13088,16 +13286,51 @@ function enterPreviewPlayerUI(rel, tr) {
     if (ph) ph.style.display = 'none';
     var ccov = document.getElementById('cassetteCover'), cph = document.getElementById('cassetteCoverPh');
     if (ccov) { ccov.src = src; ccov.style.display = ''; if (cph) cph.style.display = 'none'; }
+  } else if (img) {
+    // No art (torrent release): a placeholder, not the library track's cover spinning under someone else's music
+    img.onload = null;
+    img.style.display = 'none';
+    if (ph) ph.style.display = '';
+    var ccov2 = document.getElementById('cassetteCover'), cph2 = document.getElementById('cassetteCoverPh');
+    if (ccov2) { ccov2.style.display = 'none'; if (cph2) cph2.style.display = ''; }
+  }
+  if (_previewFull) {
+    // the clock shows the torrent track from its own element (animationLoop reads tpEl())
+    document.getElementById('timeCurrent').textContent = '0:00';
+    document.getElementById('timeDuration').textContent = previewAudio && previewAudio.duration ? formatTime(previewAudio.duration) : '0:00';
+    _lastBarPct = -1; _lastTimeText = '';
   }
   syncPreviewChrome();
+  updateActiveHighlight();     // the library row must not look like it is playing
   setPlayState(!!previewAudio && !previewAudio.paused);
 }
 
 function exitPreviewPlayerUI(silent) {
   if (!_previewMode) return;
+  var wasFull = _previewFull;
   _previewMode = false;
+  _previewFull = false;
   previewDispose();   // иначе транспорт остаётся за отрывком
   _previewTrack = -1;
+  // Back to the library track: its cover and clock (selectTrack sets its own when silent)
+  if (!silent && currentIdx >= 0 && currentIdx < tracks.length) {
+    var ct0 = tracks[currentIdx];
+    var vimg = document.getElementById('vinylCover'), vph = document.getElementById('vinylPlaceholder');
+    if (vimg) { vimg.onload = function(){ extractColor(vimg); vimg.onload = null; }; setCoverSrc(vimg, ct0.file, ct0.has_cover, vph); }
+    var cc0 = document.getElementById('cassetteCover');
+    if (cc0) setCoverSrc(cc0, ct0.file, ct0.has_cover, document.getElementById('cassetteCoverPh'));
+  }
+  if (wasFull) {
+    _lastBarPct = -1; _lastTimeText = '';
+    document.getElementById('timeDuration').textContent = audio.duration ? formatTime(audio.duration) : '0:00';
+    // the lock screen bar was the torrent track's: hand it back (a paused main element sends no timeupdate)
+    if ('mediaSession' in navigator) {
+      try {
+        if (audio.duration && isFinite(audio.duration)) navigator.mediaSession.setPositionState({duration: audio.duration, playbackRate: audio.playbackRate || 1, position: Math.min(audio.currentTime, audio.duration)});
+        else navigator.mediaSession.setPositionState();
+      } catch (e) {}
+    }
+  }
   // silent — нас позвали из selectTrack, и метаданные поставит он. Иначе
   // сюда уехал бы прежний трек, а его асинхронная обложка затёрла бы новый.
   if (!silent && currentIdx >= 0 && currentIdx < tracks.length) {
@@ -13107,13 +13340,20 @@ function exitPreviewPlayerUI(silent) {
   var badge = document.getElementById('trackTitleBadge');
   if (badge) badge.style.display = 'none';
   syncPreviewChrome();
+  updateActiveHighlight();
   paintPreviewState();
 }
 
 function playPreview(n) {
   var t = _previewTracks[n];
   if (!t) return;
-  if (_previewTrack === n && previewAudio && !previewAudio.paused) { stopPreview(); return; }
+  if (_previewTrack === n && previewAudio && !previewAudio.paused) {
+    // A torrent track is a full track: stop means back to the library one (its cover, clock and seeking);
+    // a DROPS clip keeps the release on screen as before
+    if (_previewFull) exitPreviewPlayerUI();
+    stopPreview();
+    return;
+  }
   // Останавливаем основной плеер до превью. setPlayState(false) сначала —
   // иначе обработчик pause посчитает это системным прерыванием.
   if (!audio.paused) { setPlayState(false); audio.pause(); }
@@ -13129,10 +13369,24 @@ function playPreview(n) {
     // про формат, она сбивает с толку.
     showToast(err && err.name === 'NotAllowedError'
       ? 'Нажмите ещё раз, чтобы включить звук'
-      : 'Не удалось воспроизвести отрывок');
+      : (_previewFull ? 'Не удалось воспроизвести трек' : 'Не удалось воспроизвести отрывок'));
     _previewTrack = -1; paintPreviewState();
   });
   paintPreviewState();
+}
+
+// Rows are numbered per release, so the number alone is not enough: DROPS -> SEARCH lives inside
+// #newList next to the (hidden) feed cards, and the download window has its own torrent list.
+function previewRowMine(row) {
+  if (row.closest('#relSearch')) return _previewKey === 'tor:' + dsIh;
+  if (row.closest('#torTracks')) return _previewKey === 'tor:' + torIh;
+  return !!_previewKey && _previewKey.indexOf('tor:') !== 0;
+}
+
+function previewBarRow() {
+  var rows = document.querySelectorAll('#newList .rel-track[data-n="' + _previewTrack + '"], #torTracks .rel-track[data-n="' + _previewTrack + '"]');
+  for (var i = 0; i < rows.length; i++) if (previewRowMine(rows[i])) return rows[i].querySelector('.rel-track-bar');
+  return null;
 }
 
 // Точечная перерисовка строк — полный renderReleases на каждом тике прогресса
@@ -13140,7 +13394,7 @@ function playPreview(n) {
 function paintPreviewState() {
   var rows = document.querySelectorAll('#newList .rel-track, #torTracks .rel-track');
   for (var i = 0; i < rows.length; i++) {
-    var on = parseInt(rows[i].getAttribute('data-n'), 10) === _previewTrack;
+    var on = parseInt(rows[i].getAttribute('data-n'), 10) === _previewTrack && previewRowMine(rows[i]);
     rows[i].classList.toggle('playing', on);
     var bar = rows[i].querySelector('.rel-track-bar');
     if (bar && !on) bar.style.width = '0';
@@ -13170,10 +13424,16 @@ function paintPreviewState() {
 // Слушатели вешаются на элемент при его создании: он теперь появляется только
 // на время отрывка и после исчезает.
 function bindPreviewEvents(el) {
+  el.addEventListener('loadedmetadata', function() {
+    if (_previewFull && previewOwnsTransport() && el.duration) document.getElementById('timeDuration').textContent = formatTime(el.duration);
+  });
   el.addEventListener('timeupdate', function() {
     if (_previewTrack < 0 || !el.duration) return;
-    var row = document.querySelector('#newList .rel-track[data-n="' + _previewTrack + '"] .rel-track-bar')
-      || document.querySelector('#torTracks .rel-track[data-n="' + _previewTrack + '"] .rel-track-bar');
+    // Full torrent track: the lock screen bar follows it, not the paused library track
+    if (_previewFull && previewOwnsTransport() && 'mediaSession' in navigator && isFinite(el.duration)) {
+      try { navigator.mediaSession.setPositionState({duration: el.duration, playbackRate: el.playbackRate || 1, position: Math.min(el.currentTime, el.duration)}); } catch (e) {}
+    }
+    var row = previewBarRow();
     if (row) row.style.width = (el.currentTime / el.duration * 100) + '%';
   });
   el.addEventListener('play', function(){
@@ -13237,6 +13497,308 @@ function previewTracksHtml(owned, starred) {
        + '</div>';
   }
   return h + '</div>';
+}
+
+// ── DROPS → SEARCH: раздачи прямо в DROPS ──
+// Не лента: у неё нет зеркала в relFeeds, поэтому это отдельный флаг, а _relTab остаётся последней
+// лентой (relF() по-прежнему отдаёт настоящую). Панель #relSearch живёт внутри #newList и
+// возвращается на место после каждой перезаписи ленты (relSearchReattach); лента под ней не трогается.
+// Ищет по сохранённым раздачам (зеркало torCache - работает и без сервера) и через Jackett.
+// Открытая раздача сохраняется сервером (tc_save), слушается через плеер отрывков (полный трек),
+// трек качается в открытую папку - как во вкладке «Торрент» окна загрузки.
+var _relSearchOn = false, _dsNode = null;
+var dsLocal = [], dsResults = [], dsTrackers = [], dsSearching = false, dsSeq = 0, dsJk = null;
+var dsOpen = null, dsIh = null, dsFiles = [], dsPlayable = [], dsInfo = null, dsInfoTimer = null, dsOffline = false;
+
+function dsEnsureNode() {
+  if (!_dsNode) {
+    _dsNode = document.createElement('div');
+    _dsNode.id = 'relSearch';
+    _dsNode.innerHTML = '<div class="ds-bar">'
+      + '<input type="text" id="dsQuery" class="folder-path-input" style="flex:1;font-size:12px" placeholder="Артист, альбом - по раздачам" onkeydown="if(event.key===\'Enter\')dsSearch()">'
+      + '<button class="folder-btn folder-btn-primary" style="padding:6px 12px;font-size:12px" onclick="dsSearch()">Найти</button></div>'
+      + '<div id="dsStatus" class="rel-note" style="padding:2px 10px"></div>'
+      + '<div id="dsDownloads" style="padding:0 8px"></div>'
+      + '<div id="dsList"></div>'
+      + '<div id="dsCache" style="padding:8px"></div>';
+  }
+  relSearchReattach();
+  return _dsNode;
+}
+
+function relSearchReattach() {
+  if (!_dsNode) return;
+  var box = document.getElementById('newList');
+  if (box && _dsNode.parentNode !== box) box.appendChild(_dsNode);
+}
+
+function relSearchShow(on) {
+  _relSearchOn = !!on;
+  var box = document.getElementById('newList');
+  if (box) box.classList.toggle('rel-search-on', _relSearchOn);
+  if (!_relSearchOn) clearTimeout(dsInfoTimer);
+  syncRelHeader();
+}
+
+// q - сразу искать (кнопка «скачать» у карточки DROPS)
+function showRelSearch(q) {
+  if (activeTab !== 'new') showTab('new');
+  dsEnsureNode();
+  if (!_relSearchOn) { stopPreviewIfDrops(); relSearchShow(true); }
+  var box = document.getElementById('newList');
+  if (box) box.scrollTop = 0;
+  var inp = document.getElementById('dsQuery');
+  dsRenderCacheBtn();
+  if (q) { inp.value = q; dsSearch(); }
+  else if (!inp.value) { dsRenderList(); setTimeout(function(){ try { inp.focus(); } catch (e) {} }, 50); }
+  if (!torCacheLoaded) torSyncCache(function(){ dsRenderCacheBtn(); if (inp.value) dsSearch(); });
+  torPollDownloads();
+}
+
+// Отрывок DROPS относился к раскрытой карточке ленты - при уходе в поиск останавливаем, как при смене ленты.
+// Трек раздачи не трогаем: он мог играть из поиска.
+function stopPreviewIfDrops() {
+  if (_previewKey && _previewKey.indexOf('tor:') !== 0) closePreview();
+}
+
+function dsCheckJackett(cb) {
+  if (_isOffline) { dsJk = false; cb(); return; }
+  fetch('/api/jackett/status').then(function(r){return r.json()}).then(function(j) {
+    dsJk = !!(j && j.supported && j.libtorrent && j.installed && j.running && j.api_key);
+    cb();
+  }).catch(function(){ dsJk = false; cb(); });
+}
+
+function dsSearch() {
+  var q = document.getElementById('dsQuery').value.trim();
+  if (!q) return;
+  var my = ++dsSeq;
+  dsClose();
+  dsLocal = torCachedMatches(q).sort(function(a, b){ return torRelevance(q, b.title || b.name) - torRelevance(q, a.title || a.name); });
+  dsResults = []; dsTrackers = []; dsSearching = true;
+  dsRenderList();
+  dsCheckJackett(function() {
+    if (my !== dsSeq) return;
+    if (!dsJk) { dsSearching = false; dsRenderList(); return; }
+    fetch('/api/torrents/search', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({q: q})})
+    .then(function(r){return r.json()}).then(function(d) {
+      if (my !== dsSeq) return;
+      if (!d.ok) { dsSearching = false; dsRenderList(); return; }
+      var lastSig = '';
+      var poll = function() {
+        if (my !== dsSeq) return;
+        fetch('/api/torrents/job?id=' + encodeURIComponent(d.job)).then(function(r){return r.json()}).then(function(j) {
+          if (my !== dsSeq) return;
+          if (j.error === 'offline') { dsSearching = false; dsRenderList(); return; }
+          dsResults = j.result || []; dsTrackers = j.trackers || []; dsSearching = !!j.running;
+          var sig = dsResults.length + '|' + dsTrackers.map(function(t){return t.state + t.count}).join(',') + dsSearching;
+          if (sig !== lastSig) { lastSig = sig; dsRenderList(); }
+          if (j.running) setTimeout(poll, 700);
+        }).catch(function(){ if (my === dsSeq) setTimeout(poll, 1500); });
+      };
+      poll();
+    }).catch(function(){ if (my === dsSeq) { dsSearching = false; dsRenderList(); } });
+  });
+}
+
+function torRelevance(q, title) {
+  var norm = function(x) { return (x || '').toLowerCase().replace(/ё/g, 'е').replace(/[^0-9a-zа-я]+/g, ' ').trim(); };
+  var qw = norm(q).split(' ').filter(function(w){return w});
+  if (!qw.length) return 0;
+  var t = norm(title), tw = t.split(' ');
+  var hit = 0;
+  for (var i = 0; i < qw.length; i++) for (var k = 0; k < tw.length; k++) if (tw[k].indexOf(qw[i]) === 0) { hit++; break; }
+  var sc = hit / qw.length;
+  if (t.indexOf(qw.join(' ')) >= 0) sc += 0.5;
+  if (t.indexOf(qw[0]) === 0) sc += 0.2;
+  return sc;
+}
+
+// Карточка в духе DROPS: заглушка обложки (у раздач её нет), название, трекер, размер, сиды
+function dsCardHtml(kind, i, it) {
+  var key = kind + i;
+  var open = dsOpen === key;
+  var meta = kind === 'c'
+    ? [torSize(it.size), (it.files || []).length + ' файл.', it.tracker].filter(function(x){return x})
+    : [torSize(it.size), 'сиды ' + (it.seeders || 0), it.tracker].filter(function(x){return x});
+  var h = '<div class="rel-card' + (open ? ' expanded' : '') + '" data-ds="' + key + '" style="cursor:pointer' + (kind === 'r' && !it.seeders ? ';opacity:0.55' : '') + '" onclick="dsToggle(\'' + kind + '\',' + i + ')">'
+    + '<div class="rel-art-ph">&#9834;</div>'
+    + '<div class="rel-body"><div class="rel-title">' + relEsc(it.title || it.name || '') + '</div>'
+    + '<div class="rel-meta">' + (kind === 'c' ? '<span class="ds-saved">сохранено</span>' : '<span class="rel-badge kind-album">раздача</span>')
+    + meta.map(function(m){ return '<span class="rel-date">' + relEsc(m) + '</span>'; }).join('') + '</div></div></div>';
+  if (open) h += dsTracksHtml();
+  return h;
+}
+
+function dsTracksHtml() {
+  var info = '';
+  if (dsOffline) info = '<div class="ds-info" style="color:#e94560">Нет связи с сервером: список треков из сохранённой раздачи. Слушать и скачивать - когда сервер доступен.</div>';
+  else if (dsInfo && dsInfo.metadata) info = '<div class="ds-info">' + relEsc(dsInfoText()) + '</div>';
+  var h = '<div class="rel-tracks missing">' + info;
+  if (!dsFiles.length) {
+    return h + '<div class="rel-track"><div class="rel-track-name" style="color:rgba(255,255,255,0.35)">' + (dsInfo && dsInfo.wait ? relEsc(dsInfo.wait) : 'Получаю список треков...') + '</div></div></div>';
+  }
+  for (var i = 0; i < dsFiles.length; i++) {
+    var f = dsFiles[i];
+    var n = -1;
+    for (var k = 0; k < dsPlayable.length; k++) if (dsPlayable[k].idx === f.idx) { n = k; break; }
+    var can = f.playable && !dsOffline;
+    var note = f.image ? 'образ диска' : (!f.playable ? 'не играет в браузере' : torSize(f.size));
+    h += '<div class="rel-track"' + (n >= 0 ? ' data-n="' + n + '"' : '') + ' style="' + (can ? '' : 'opacity:0.45') + '"' + (n >= 0 ? ' onclick="dsPlay(' + n + ')"' : '') + '>'
+      + '<span class="rel-track-n">' + (i + 1) + '</span>'
+      + '<span class="rel-track-name">' + relEsc(torTrackTitle(f)) + '</span>'
+      + (torFormat(f) ? '<span class="ds-fmt">' + relEsc(torFormat(f)) + '</span>' : '')
+      + '<span class="rel-track-dur">' + relEsc(note) + '</span>'
+      + (can && userRole !== 'demo' ? '<button class="rel-btn" style="margin-left:6px" title="Скачать трек в открытую папку" onclick="event.stopPropagation();dsDownload(' + f.idx + ')"><svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg></button>' : '')
+      + '<span class="rel-track-bar"></span></div>';
+  }
+  return h + '</div>';
+}
+
+function dsInfoText() {
+  if (!dsInfo || !dsInfo.metadata) return '';
+  return [dsInfo.name, 'пиров ' + (dsInfo.peers || 0), dsInfo.seeds ? 'сидов ' + dsInfo.seeds : '',
+          dsInfo.down > 1024 ? '↓ ' + torSize(dsInfo.down) + '/с' : ''].filter(function(x){return x}).join(' · ');
+}
+
+function dsRenderList() {
+  var list = document.getElementById('dsList'), st = document.getElementById('dsStatus');
+  if (!list) return;
+  var q = (document.getElementById('dsQuery') || {}).value || '';
+  if (!q.trim()) {
+    st.innerHTML = torCache.items.length
+      ? 'Сохранено раздач: ' + torCache.items.length + '. Ищет по ним' + (_isOffline ? ' (без сервера - только они)' : ' и по трекерам Jackett') + '.'
+      : (_isOffline ? 'Без сервера ищутся только сохранённые раздачи, а их пока нет.' : 'Ищет по трекерам, подключённым в Jackett. Раздачи, которые открывали, сохраняются и находятся даже без сервера.');
+    list.innerHTML = '';
+    return;
+  }
+  var total = dsTrackers.length, done = 0, bad = 0;
+  for (var t = 0; t < total; t++) { if (dsTrackers[t].state !== 'running') done++; if (dsTrackers[t].state === 'error') bad++; }
+  st.innerHTML = (dsJk === false ? (_isOffline ? 'Без сервера - только сохранённые раздачи' : 'Jackett недоступен - только сохранённые раздачи')
+    : (dsSearching ? 'Ищу' : 'Готово') + (total ? ': ответили ' + done + ' из ' + total + (bad ? ', не ответили ' + bad : '') : ''))
+    + (dsLocal.length ? ' · сохранённых: ' + dsLocal.length : '') + (dsJk ? ' · найдено: ' + dsResults.length : '');
+  var h = '';
+  if (dsLocal.length) {
+    h += '<div class="rel-group-title">Сохранённые</div>';
+    for (var i = 0; i < dsLocal.length; i++) h += dsCardHtml('c', i, dsLocal[i]);
+  }
+  if (dsResults.length) {
+    h += '<div class="rel-group-title">Раздачи</div>';
+    for (var j = 0; j < dsResults.length; j++) h += dsCardHtml('r', j, dsResults[j]);
+  }
+  if (!h) h = '<div class="rel-note" style="text-align:center;padding:24px">' + (dsSearching ? 'Ищу по трекерам...' : 'Ничего не нашлось') + '</div>';
+  list.innerHTML = h;
+  paintPreviewState();
+}
+
+function dsRenderCacheBtn() {
+  var box = document.getElementById('dsCache');
+  if (!box) return;
+  var n = torCache.items.length;
+  box.innerHTML = n ? '<button class="folder-btn folder-btn-secondary" style="width:100%;font-size:11px;padding:6px" onclick="torClearCache()">Очистить кэш раздач (' + n + ')</button>' : '';
+}
+
+function dsClose() {
+  clearTimeout(dsInfoTimer);
+  dsOpen = null; dsIh = null; dsFiles = []; dsPlayable = []; dsInfo = null; dsOffline = false;
+}
+
+// Раскрытие сворачивает прежнюю раздачу: её треки выше исчезают, и без поправки нажатая карточка
+// уезжала, а список оставался на старой прокрутке. Держим карточку там же на экране, где по ней нажали.
+function dsKeepInView(key, render) {
+  var box = document.getElementById('newList');
+  var sel = '#dsList [data-ds="' + key + '"]';
+  var el = box && box.querySelector(sel);
+  var before = el ? el.getBoundingClientRect().top : null;
+  render();
+  var el2 = box && box.querySelector(sel);
+  if (!el2 || before === null) return;
+  // #newList прокручивается плавно (scroll-behavior: smooth) - поправка должна быть мгновенной, иначе рывок
+  var sb = box.style.scrollBehavior;
+  box.style.scrollBehavior = 'auto';
+  box.scrollTop += el2.getBoundingClientRect().top - before;
+  box.style.scrollBehavior = sb;
+}
+
+function dsToggle(kind, i) {
+  var key = kind + i;
+  if (dsOpen === key) { dsKeepInView(key, function(){ dsClose(); dsRenderList(); }); return; }
+  var it = kind === 'c' ? dsLocal[i] : dsResults[i];
+  if (!it) return;
+  dsKeepInView(key, function(){ dsClose(); dsOpen = key; dsRenderList(); });
+  var my = dsOpen;
+  var offlineList = function() {
+    dsOffline = true; dsIh = it.ih; dsFiles = it.files || []; dsPlayable = [];
+    dsRenderList();
+  };
+  if (kind === 'c' && _isOffline) { offlineList(); return; }
+  var body = kind === 'c'
+    ? {ih: it.ih, title: it.title, tracker: it.tracker, size: it.size, seeders: it.seeders, torrent_url: it.torrent_url, magnet: it.magnet}
+    : {torrent_url: it.torrent_url, magnet: it.magnet, title: it.title, tracker: it.tracker, size: it.size, seeders: it.seeders};
+  fetch('/api/torrents/open', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)})
+  .then(function(r){return r.json()}).then(function(d) {
+    if (dsOpen !== my) return;
+    if (d.error === 'offline' && kind === 'c') { offlineList(); return; }
+    if (!d.ok) { showToast(d.error || 'Ошибка'); dsClose(); dsRenderList(); return; }
+    torPollJob(d.job, function(err, ih) {
+      if (dsOpen !== my) return;
+      if (err) { showToast('Раздача не открылась: ' + err); dsClose(); dsRenderList(); return; }
+      dsIh = ih;
+      dsLoadInfo(0, my, it.title || it.name);
+    });
+  }).catch(function(){ if (dsOpen === my && kind === 'c') offlineList(); });
+}
+
+function dsLoadInfo(tries, my, name) {
+  if (dsOpen !== my || !dsIh) return;
+  fetch('/api/torrents/info?ih=' + encodeURIComponent(dsIh)).then(function(r){return r.json()}).then(function(d) {
+    if (dsOpen !== my) return;
+    if (!d.metadata) {
+      dsInfo = {wait: 'Ищу участников раздачи' + (d.peers ? ' (' + d.peers + ')' : '') + '...'};
+      if (tries >= 90) dsInfo.wait = 'Раздача не отвечает: нет участников';
+      dsRenderList();
+      if (tries < 90) dsInfoTimer = setTimeout(function(){ dsLoadInfo(tries + 1, my, name); }, 1500);
+      return;
+    }
+    var first = !dsFiles.length;
+    dsInfo = d;
+    if (first) {
+      dsFiles = d.files || [];
+      dsPlayable = [];
+      for (var i = 0; i < dsFiles.length; i++) if (dsFiles[i].playable) dsPlayable.push({idx: dsFiles[i].idx, title: torTrackTitle(dsFiles[i]), src: '/api/torrent/stream/' + dsIh + '/' + dsFiles[i].idx});
+      _extReleases['tor:' + dsIh] = {title: name || d.name, artist: '', art: '', badge: 'РАЗДАЧА', full: true};
+      // the server saved the release on this info call - pull it into the mirror
+      setTimeout(function(){ torSyncCache(dsRenderCacheBtn); }, 1500);
+    }
+    if (first) dsRenderList();
+    else {
+      // only the info line changes: rebuilding the rows would reset the playing track's bar
+      var infoEl = document.querySelector('#dsList .ds-info');
+      if (infoEl) infoEl.textContent = dsInfoText();
+    }
+    // release info (peers, speed) stays live while it is open and the tab is visible
+    dsInfoTimer = setTimeout(function(){ if (_relSearchOn && activeTab === 'new' && !document.hidden) dsLoadInfo(0, my, name); }, 4000);
+  }).catch(function(){});
+}
+
+// Listening goes through the DROPS preview player as a full track: the main queue pauses and stays intact
+function dsPlay(n) {
+  if (n < 0 || !dsIh || !dsPlayable[n]) return;
+  var key = 'tor:' + dsIh;
+  if (_previewKey !== key) { stopPreview(); _previewKey = key; }
+  _previewTracks = dsPlayable;
+  playPreview(n);
+}
+
+function dsDownload(idx) {
+  if (!_curFolder) { showToast('Сначала откройте папку, куда добавить трек'); return; }
+  fetch('/api/torrents/download', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ih: dsIh, idx: idx, folder: _curFolder, run_meta: true})})
+  .then(function(r){return r.json()}).then(function(d) {
+    if (!d.ok) { showToast(d.error || 'Ошибка'); return; }
+    showToast('Трек скачивается на сервер');
+    torPollDownloads();
+  });
 }
 
 // ── Playlists ──
@@ -13601,7 +14163,7 @@ function plCardHtml(pl, idx) {
       var trackIdx = tracks.indexOf(t);
       var plCachedDot = isTrackCached(file) ? '<span style="width:5px;height:5px;border-radius:50%;background:#52b788;flex-shrink:0;margin-left:auto"></span>' : '';
       var plOffDis = _isOffline && !isTrackCached(file);
-      html += '<div class="playlist-item' + (trackIdx === currentIdx ? ' active' : '') + '"'
+      html += '<div class="playlist-item' + (trackIdx === currentIdx && !_previewMode ? ' active' : '') + '"'
         + (plOffDis ? ' style="padding-left:20px;opacity:0.3;pointer-events:none"' : ' style="padding-left:20px"')
         + (plOffDis ? '' : ' onclick="event.stopPropagation();playFromPlaylist(\'' + esc_id + '\',' + ti + ')"') + '>'
         + '<div class="info"><div class="name" style="font-size:12px">' + esc(t.title) + '</div>'
@@ -14688,7 +15250,7 @@ function ctxToggleCache() {
   if (isTrackCached(file)) {
     uncacheTrack(file);
   } else {
-    cacheTrack(file, function(ok) { if (ok) { renderTracks(); showToast('Кэшировано'); } });
+    cacheOneTrack(file);      // кольцо прогресса в строке, ошибка - сообщением
   }
 }
 
@@ -15248,7 +15810,53 @@ function markTrackCached(file) {
 // | 'net' (fetch rejected — connection or TLS died) | 'db' (IndexedDB full).
 // The queue needs that distinction: one bad file should be skipped, a dead
 // connection must stop the run instead of racing through it.
-function cacheTrack(file, onDone) {
+// Ход загрузки трека в кэш: file -> процент (-1 - размер неизвестен). По нему рисуется кольцо в строке,
+// и оно переживает перерисовку списка. Раньше трек качался одним arrayBuffer() и до самого конца на
+// экране не менялось ничего - казалось, что нажатие не сработало.
+var _cachingNow = {};
+
+function cachingRowClass(file) {
+  var p = _cachingNow[file];
+  return p === undefined ? '' : (p < 0 ? ' caching indet' : ' caching');
+}
+function cachingRowStyle(file) {
+  var p = _cachingNow[file];
+  return p === undefined || p < 0 ? '' : ' style="--p:' + p + '"';
+}
+
+function setCachingProgress(file, pct) {
+  if (pct === null) delete _cachingNow[file]; else _cachingNow[file] = pct;
+  var list = document.getElementById('trackList');
+  if (list) {
+    var want = encodeURIComponent(file);
+    var rows = list.querySelectorAll('.playlist-item[data-file]');
+    for (var i = 0; i < rows.length; i++) {
+      if (rows[i].getAttribute('data-file') !== want) continue;
+      var btn = rows[i].querySelector('button[data-tip="Кэшировать"]');
+      if (btn) {
+        btn.className = 'track-edit-btn' + cachingRowClass(file);
+        if (pct !== null && pct >= 0) btn.style.setProperty('--p', pct); else btn.style.removeProperty('--p');
+      }
+      break;
+    }
+  }
+  if (cachingActive && cacheQueue[0] === file) updateCacheBtn(pct);
+}
+
+// Кнопка в строке трека: прогресс сразу, итог - отметкой или сообщением (раньше при ошибке молчало)
+function cacheOneTrack(file) {
+  if (_cachingNow[file] !== undefined) return;            // уже качается
+  setCachingProgress(file, -1);
+  cacheTrack(file, function(ok, reason) {
+    setCachingProgress(file, null);
+    if (ok) { markTrackCached(file); showToast('Кэшировано'); return; }
+    showToast(reason === 'db' ? 'Хранилище устройства переполнено'
+      : reason === 'http' ? 'Сервер не отдал этот трек' : 'Нет связи с сервером - трек не закэширован');
+  }, function(pct) { setCachingProgress(file, pct); });
+}
+
+// onProgress(pct) - 0..100 по Content-Length, -1 если размер неизвестен
+function cacheTrack(file, onDone, onProgress) {
   var url = '/api/stream/' + encodeURIComponent(file);
   var key = cacheKey(file);
   fetch(url).then(function(r) {
@@ -15258,7 +15866,30 @@ function cacheTrack(file, onDone) {
       // 200 with a JSON body means an error envelope, not a track.
       var e2 = new Error('not audio'); e2.kind = 'http'; throw e2;
     }
-    return r.arrayBuffer();
+    var total = parseInt(r.headers.get('content-length') || '0', 10);
+    if (!onProgress || !r.body || !r.body.getReader || !total) {
+      if (onProgress) onProgress(-1);
+      return r.arrayBuffer();
+    }
+    // read in chunks to report progress; the result is the same ArrayBuffer as before
+    var reader = r.body.getReader(), parts = [], got = 0, lastPct = -1;
+    return new Promise(function(resolve, reject) {
+      function pump() {
+        reader.read().then(function(res) {
+          if (res.done) {
+            var out = new Uint8Array(got), off = 0;
+            for (var i = 0; i < parts.length; i++) { out.set(parts[i], off); off += parts[i].length; }
+            resolve(out.buffer);
+            return;
+          }
+          parts.push(res.value); got += res.value.length;
+          var pct = Math.min(99, Math.floor(got * 100 / total));
+          if (pct !== lastPct) { lastPct = pct; onProgress(pct); }
+          pump();
+        }, reject);
+      }
+      pump();
+    });
   }).then(function(buf) {
     if (!buf || buf.byteLength < 2048) { var e3 = new Error('too small'); e3.kind = 'http'; throw e3; }
     openCacheDB(function(db) {
@@ -15516,8 +16147,9 @@ function cacheNextInQueue() {
   var done = cacheTotalCount - cacheQueue.length;
   showToast('Кэширование: ' + done + '/' + cacheTotalCount);
   var file = cacheQueue[0];
-  updateCacheBtn();
+  setCachingProgress(file, -1);
   cacheTrack(file, function(ok, reason) {
+    setCachingProgress(file, null);
     if (ok) {
       markTrackCached(file);          // отметка появляется сразу, а не в конце
       cacheQueue.shift();
@@ -15550,7 +16182,7 @@ function cacheNextInQueue() {
     _cacheFails++;
     if (_cacheFails < 4) { setTimeout(cacheNextInQueue, 1500 * _cacheFails); return; }
     pauseCachingOnError();
-  });
+  }, function(pct) { setCachingProgress(file, pct); });
 }
 
 function pauseCachingOnError() {
@@ -15600,9 +16232,21 @@ function stopCacheAll() {
   refreshCachedList();
 }
 
-function updateCacheBtn() {
+// Кнопка «Кэшировать» в шапке: идёт - кольцо общего хода (готовые треки + доля текущего) и подсказка
+// «N из M»; нажатие останавливает. pct - процент текущего трека, если известен.
+function updateCacheBtn(pct) {
   var btn = document.getElementById('cacheBtn');
-  if (btn) btn.classList.toggle('active', cachingActive);
+  if (!btn) return;
+  btn.classList.toggle('active', cachingActive);
+  if (!cachingActive || !cacheTotalCount) {
+    btn.style.removeProperty('--p');
+    btn.setAttribute('data-tip', 'Кэшировать для офлайн');
+    return;
+  }
+  var done = cacheTotalCount - cacheQueue.length;
+  var part = pct > 0 ? pct / 100 : 0;
+  btn.style.setProperty('--p', Math.round((done + part) * 100 / cacheTotalCount));
+  btn.setAttribute('data-tip', 'Кэширование: ' + done + ' из ' + cacheTotalCount + (pct > 0 ? ' (текущий ' + pct + '%)' : '') + ' · нажмите, чтобы остановить');
 }
 
 function cachePlaylist(plId) {
@@ -15741,9 +16385,11 @@ initMediaLogging();
 mediaLog('app:start', (window.navigator.standalone ? 'pwa' : 'browser') + ' ' + mediaLogState());
 initPlaybackContext();
 initWidgetBridge();
+setTimeout(function(){ torSyncCache(); }, 4000);   // кэш раздач на это устройство - не мешая старту
 
 // Detect online/offline transitions
 window.addEventListener('online', function() {
+  torSyncCache();             // кэш раздач: зеркало = список сервера (и очистки с других устройств)
   flushPlays();
   flushEras();
   flushPlaylists();
@@ -15863,6 +16509,7 @@ JK_LEASE_TTL = 120
 JK_DEFAULT_PORT = 9117
 JK_LOG_FILE = Path.home() / ".vinyl_jackett.log"
 TORRENT_DIR = Path.home() / ".vinyl_torrents"     # temporary: files leave for the catalog once downloaded
+TORRENT_CACHE_DIR = Path.home() / ".vinyl_torrent_cache"   # .torrent раздач, в которые заходили: открыть без Jackett
 TORRENT_PORT = 6882                                # cinema uses 6881
 TORZNAB_MUSIC_CATS = "3000,3010,3040"              # Audio, MP3, Lossless
 TORRENT_AUDIO = SUPPORTED_FORMATS | {'.ape', '.wv', '.dsf', '.dff'}
@@ -16449,12 +17096,113 @@ def _tor_files(h):
     return out
 
 
-def tor_open(torrent_url=None, magnet=None):
-    """Добавить раздачу (без скачивания: все файлы с приоритетом 0) и вернуть её id."""
+# ---------- кэш раздач ----------
+# Раздача, в которую зашли (видели треки), сохраняется: .torrent + список треков + откуда она.
+# Потом она открывается без Jackett и без трекера, ищется локально (и на PWA без сервера - зеркало
+# в IndexedDB). Индекс общий, у записи свой список пользователей; gen растёт при каждой правке -
+# клиенты по нему понимают, что зеркало надо заменить (очистка тоже доходит до всех устройств).
+_tc_lock = threading.Lock()
+
+
+def _tc_index():
+    try:
+        d = json.loads((TORRENT_CACHE_DIR / "index.json").read_text(encoding="utf-8"))
+        if isinstance(d, dict) and isinstance(d.get("items"), dict):
+            return d
+    except Exception:
+        pass
+    return {"gen": 0, "items": {}}
+
+
+def _tc_write(d):
+    TORRENT_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    d["gen"] = int(d.get("gen", 0)) + 1
+    tmp = TORRENT_CACHE_DIR / "index.json.tmp"
+    tmp.write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
+    tmp.replace(TORRENT_CACHE_DIR / "index.json")
+
+
+def _tc_file(ih):
+    return TORRENT_CACHE_DIR / (re.sub(r"[^0-9a-f]", "", ih.lower())[:64] + ".torrent")
+
+
+def tc_save(ih, h, rel, user):
+    """Раздача открылась и список треков известен - сохранить её .torrent (magnet -> .torrent из метаданных)."""
+    try:
+        ti = h.torrent_file()
+        f = _tc_file(ih)
+        if not f.exists():
+            TORRENT_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+            f.write_bytes(lt.bencode(lt.create_torrent(ti).generate()))
+        with _tc_lock:
+            d = _tc_index()
+            it = d["items"].get(ih) or {"ih": ih, "added": time.time(), "users": []}
+            rel = rel or {}
+            it.update({k: rel.get(k) for k in ("title", "tracker", "size", "seeders", "torrent_url", "magnet") if rel.get(k) is not None})
+            it["name"] = ti.name()
+            it["title"] = it.get("title") or ti.name()
+            it["files"] = _tor.get(ih, {}).get("files") or []
+            it["used"] = time.time()
+            if user and user not in it["users"]:
+                it["users"].append(user)
+            d["items"][ih] = it
+            _tc_write(d)
+    except Exception as e:
+        print("  кэш раздач: не сохранилось:", e)
+
+
+def tc_list(user):
+    """Кэш раздач пользователя для клиентов: вместе с .torrent (base64) - PWA держит копию у себя."""
+    d = _tc_index()
+    out = []
+    for it in d["items"].values():
+        if user not in it.get("users", []):
+            continue
+        x = {k: v for k, v in it.items() if k != "users"}
+        try:
+            x["torrent"] = base64.b64encode(_tc_file(it["ih"]).read_bytes()).decode()
+        except OSError:
+            continue
+        out.append(x)
+    out.sort(key=lambda x: -(x.get("used") or 0))
+    return {"gen": d.get("gen", 0), "items": out}
+
+
+def tc_clear(user):
+    """Очистить кэш раздач пользователя: файлы, на которые больше никто не ссылается, удаляются."""
+    with _tc_lock:
+        d = _tc_index()
+        n = 0
+        for ih, it in list(d["items"].items()):
+            if user in it.get("users", []):
+                it["users"].remove(user)
+                n += 1
+            if not it.get("users"):
+                d["items"].pop(ih)
+                try:
+                    _tc_file(ih).unlink()
+                except OSError:
+                    pass
+        _tc_write(d)
+    return n
+
+
+def tc_source(ih):
+    try:
+        return _tc_file(ih).read_bytes()
+    except OSError:
+        return None
+
+
+def tor_open(torrent_url=None, magnet=None, ih=None, rel=None, user=None):
+    """Добавить раздачу (без скачивания: все файлы с приоритетом 0) и вернуть её id.
+    ih - раздача из кэша: .torrent уже есть, к Jackett и трекеру не ходим."""
     if not HAS_LIBTORRENT:
         raise RuntimeError("Нет библиотеки libtorrent")
-    src = None
-    if torrent_url:
+    src = tc_source(ih) if ih else None
+    if ih and src is None and not (torrent_url or magnet):
+        raise RuntimeError("Раздачи нет в кэше - найдите её заново")
+    if src is None and torrent_url:
         try:
             src = _fetch_torrent(torrent_url)
         except Exception:
@@ -16475,6 +17223,9 @@ def tor_open(torrent_url=None, magnet=None):
         ih = str(h.info_hashes().get_best())
         _tor.setdefault(ih, {"h": h, "error": None})
         _tor[ih]["used"] = time.time()
+        _tor[ih]["rel"] = rel or _tor[ih].get("rel")       # для кэша: сохранится, когда придёт список треков
+        _tor[ih]["user"] = user
+        _tor[ih].pop("cached", None)
     return ih
 
 
@@ -16491,6 +17242,9 @@ def tor_info(ih):
         t["name"] = h.torrent_file().name()
         if not any(h.file_priority(f["idx"]) for f in t["files"]):
             h.prioritize_files([0] * h.torrent_file().num_files())
+    if not t.get("cached"):
+        t["cached"] = True                  # зашли в раздачу и видим треки - сохраняем её
+        threading.Thread(target=tc_save, args=(ih, h, t.get("rel"), t.get("user")), daemon=True).start()
     fp = h.file_progress()
     files = []
     for f in t["files"]:
@@ -16654,7 +17408,8 @@ def _tor_dl_worker(dl_id):
         # the catalog import shares vk_state with VK downloads - wait for a free slot
         while get_vk_state(d["user"]).get("running"):
             time.sleep(1)
-        local_import_worker([str(named)], d["folder"], "append", None, d["meta"], d["user"])
+        # на позицию 1, как «В начало» у остальных загрузок: скачанное только что - первым в каталоге
+        local_import_worker([str(named)], d["folder"], "prepend", None, d["meta"], d["user"])
         try:
             named.unlink()
         except OSError:
@@ -16725,6 +17480,28 @@ def tor_job(user, fn, *args):
     return job_id
 
 
+def _tor_norm(s):
+    return re.sub(r"[^\w]+", " ", (s or "").lower().replace("ё", "е")).strip()
+
+
+def tor_relevance(q, title):
+    """Насколько название раздачи похоже на запрос: доля слов запроса, найденных в названии
+    (по началу слова), плюс бонус за фразу целиком и за совпадение с начала. Выше - раньше в выдаче:
+    без этого то, что искали, тонуло под популярными раздачами с большим числом сидов."""
+    qw = _tor_norm(q).split()
+    if not qw:
+        return 0.0
+    t = _tor_norm(title)
+    tw = t.split()
+    hit = sum(1 for w in qw if any(x.startswith(w) for x in tw))
+    score = hit / float(len(qw))
+    if " ".join(qw) in t:
+        score += 0.5
+    if t.startswith(qw[0]):
+        score += 0.2
+    return round(score, 2)
+
+
 def tor_search_job(user, q):
     """Поиск по мере ответа: каждый трекер Jackett отдельно, по 8 сразу, у каждого свой таймаут -
     медленный больше не держит всех. Результаты копятся в задаче, клиент дорисовывает их при опросе."""
@@ -16746,7 +17523,7 @@ def tor_search_job(user, q):
                         seen.add(k)
                         it["tracker"] = it.get("tracker") or rec["name"]
                         job["result"].append(it)
-                job["result"].sort(key=lambda x: -x["seeders"])
+                job["result"].sort(key=lambda x: (-tor_relevance(q, x["title"]), -x["seeders"]))
             rec.update(state="done", count=len(got))
         except Exception as e:
             rec.update(state="error", error=str(e)[:150])
@@ -17337,6 +18114,9 @@ class Handler(BaseHTTPRequestHandler):
 
         elif path == "/api/torrents/downloads":
             self._respond_json({"items": tor_downloads(user) if HAS_LIBTORRENT else []})
+
+        elif path == "/api/torrents/cache":
+            self._respond_json(tc_list(user))
 
         elif path.startswith("/api/stream/"):
             filename = unquote(path[len("/api/stream/"):])
@@ -18062,7 +18842,13 @@ class Handler(BaseHTTPRequestHandler):
             if not HAS_LIBTORRENT:
                 self._respond_json({"ok": False, "error": "Нет библиотеки libtorrent"})
                 return
-            self._respond_json({"ok": True, "job": tor_job(user, tor_open, data.get("torrent_url"), data.get("magnet"))})
+            rel = {k: data.get(k) for k in ("title", "tracker", "size", "seeders", "torrent_url", "magnet") if data.get(k) is not None}
+            self._respond_json({"ok": True, "job": tor_job(user, tor_open, data.get("torrent_url"), data.get("magnet"),
+                                                           data.get("ih"), rel, user)})
+
+        elif path == "/api/torrents/cache/clear":
+            if self._deny_demo(udata): return
+            self._respond_json({"ok": True, "removed": tc_clear(user), **tc_list(user)})
 
         elif path == "/api/torrents/download":
             if self._deny_demo(udata): return
