@@ -13357,6 +13357,7 @@ function exitPreviewPlayerUI(silent) {
   paintPreviewState();
 }
 
+var _previewRetry = null;   // src трека раздачи, который уже переподключали после ошибки
 function playPreview(n) {
   var t = _previewTracks[n];
   if (!t) return;
@@ -13371,6 +13372,7 @@ function playPreview(n) {
   // иначе обработчик pause посчитает это системным прерыванием.
   if (!audio.paused) { setPlayState(false); audio.pause(); }
   _previewTrack = n;
+  _previewRetry = null;
   // Через свой сервер: он исправляет Content-Type, который у Apple нестандартный
   // t.src - own stream (torrent track), otherwise the DROPS preview proxy
   previewEl().src = t.src ? t.src : '/api/releases/preview?u=' + encodeURIComponent(t.preview);
@@ -13476,6 +13478,20 @@ function bindPreviewEvents(el) {
   });
   el.addEventListener('error', function() {
     if (_previewTrack < 0) return;
+    // Трек раздачи: обычно это оборванный поток (кусок не пришёл), а не формат - один повтор
+    // с того же места, потом честное сообщение вместо молчаливой остановки
+    var t = _previewTracks[_previewTrack];
+    if (t && t.src && t.src.indexOf('/api/torrent/stream/') === 0) {
+      if (_previewRetry !== t.src) {
+        _previewRetry = t.src;
+        var at = el.currentTime || 0;
+        el.src = t.src;
+        if (at > 0) el.addEventListener('loadedmetadata', function once() { el.removeEventListener('loadedmetadata', once); try { el.currentTime = at; } catch (e) {} });
+        var p = el.play(); if (p && p.catch) p.catch(function() {});
+        return;
+      }
+      showToast('Раздача не отдала трек: у участников нет нужных кусков или соединения режет VPN');
+    }
     _previewTrack = -1; paintPreviewState();
   });
   // Записи журнала по отрывку — здесь же: раньше они висели в initMediaLogging,
@@ -17306,8 +17322,21 @@ def tor_info(ih):
             "down": st.download_payload_rate}
 
 
-def _tor_wait(h, ti, idx, start, end, timeout=60):
-    """Дождаться кусков файла [start, end]; дальше вперёд просим ещё ~4 МБ."""
+def _peer_gone(conn):
+    """Слушатель закрыл соединение (перешёл к другому треку, перемотал). У TLS-сокета смотрим
+    сырые байты без расшифровки: пустое чтение - FIN, данные - не наше дело, считаем живым."""
+    import select
+    try:
+        r, _, _ = select.select([conn], [], [], 0)
+        return bool(r) and socket.socket.recv(conn, 1, socket.MSG_PEEK) == b""
+    except (OSError, ValueError):
+        return True
+
+
+def _tor_wait(h, ti, idx, start, end, timeout=60, conn=None):
+    """Дождаться кусков файла [start, end]; дальше вперёд просим ещё ~4 МБ.
+    С conn (поток трека) ждём, пока слушатель на месте: прежние 60 с обрывали трек при одном
+    медленном участнике, и браузер молча гасил его как ошибку."""
     plen = ti.piece_length()
     first = ti.map_file(idx, start, 1).piece
     last = ti.map_file(idx, max(start, end), 1).piece
@@ -17315,10 +17344,15 @@ def _tor_wait(h, ti, idx, start, end, timeout=60):
     for i, p in enumerate(range(first, ahead + 1)):
         if not h.have_piece(p):
             h.set_piece_deadline(p, 200 + i * 120)
-    t0 = time.time()
+    t0 = last_check = time.time()
     while not all(h.have_piece(p) for p in range(first, last + 1)):
-        if time.time() - t0 > timeout:
+        now = time.time()
+        if now - t0 > timeout:
             raise TimeoutError("нет участников с нужными кусками")
+        if conn is not None and now - last_check > 1:
+            last_check = now
+            if _peer_gone(conn):
+                raise ConnectionError("слушатель ушёл")
         time.sleep(0.1)
 
 
@@ -17356,12 +17390,12 @@ def tor_stream_worker(conn, ih, idx, rng, user):
                 "Connection: close"]
         if partial:
             head.append("Content-Range: bytes {}-{}/{}".format(start, end, size))
-        _tor_wait(h, ti, idx, start, min(end, start + 256 * 1024))   # first bytes before headers: player shows buffering
+        _tor_wait(h, ti, idx, start, min(end, start + 256 * 1024), timeout=900, conn=conn)   # first bytes before headers: player shows buffering
         conn.sendall(("\r\n".join(head) + "\r\n\r\n").encode())
         pos = start
         while pos <= end:
             n = min(256 * 1024, end - pos + 1)
-            _tor_wait(h, ti, idx, pos, pos + n - 1)
+            _tor_wait(h, ti, idx, pos, pos + n - 1, timeout=900, conn=conn)
             with open(str(path), "rb") as f:
                 f.seek(pos)
                 chunk = f.read(n)
