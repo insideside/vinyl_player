@@ -1,0 +1,30 @@
+{
+  "version": "v0.24.2780",
+  "files": {
+    "Jackett.Binaries.LinuxAMDx64.tar.gz": {
+      "sha256": "17e7b915ac4776ed21c54c19770ebe0d0d35ae5c011825e4e9c047f5a45d3b7d",
+      "size": 50903857,
+      "url": "https://github.com/Jackett/Jackett/releases/download/v0.24.2780/Jackett.Binaries.LinuxAMDx64.tar.gz"
+    },
+    "Jackett.Binaries.LinuxARM64.tar.gz": {
+      "sha256": "188a3d7bcc572544414661afe9dcd479e266e188421642413f02fd56d7865de9",
+      "size": 48888898,
+      "url": "https://github.com/Jackett/Jackett/releases/download/v0.24.2780/Jackett.Binaries.LinuxARM64.tar.gz"
+    },
+    "Jackett.Binaries.macOS.tar.gz": {
+      "sha256": "51895eb4f488301f010ef2e874790263a74c95e3fa70c5c2fd94b31f9ee3779b",
+      "size": 50103536,
+      "url": "https://github.com/Jackett/Jackett/releases/download/v0.24.2780/Jackett.Binaries.macOS.tar.gz"
+    },
+    "Jackett.Binaries.macOSARM64.tar.gz": {
+      "sha256": "997f657951c0741db3f3911ccd54834d72deb56c30efdb6071773a87135e3121",
+      "size": 47860079,
+      "url": "https://github.com/Jackett/Jackett/releases/download/v0.24.2780/Jackett.Binaries.macOSARM64.tar.gz"
+    },
+    "Jackett.Binaries.Windows.zip": {
+      "sha256": "ec123de98152bda5c99ca525ed1c8969a3fc924e0ff3290006869e8d68c91cae",
+      "size": 57048974,
+      "url": "https://github.com/Jackett/Jackett/releases/download/v0.24.2780/Jackett.Binaries.Windows.zip"
+    }
+  }
+}

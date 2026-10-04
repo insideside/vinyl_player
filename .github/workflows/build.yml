@@ -14,7 +14,7 @@ jobs:
         with:
           python-version: '3.11'
       - name: Install dependencies
-        run: pip install pyinstaller httpx mutagen vkpymusic musicbrainzngs Pillow
+        run: pip install pyinstaller httpx mutagen vkpymusic musicbrainzngs Pillow libtorrent
       - name: Generate icon PNGs
         run: |
           python3 -c "
@@ -54,7 +54,7 @@ jobs:
         with:
           python-version: '3.11'
       - name: Install dependencies
-        run: pip install pyinstaller httpx mutagen vkpymusic musicbrainzngs Pillow
+        run: pip install pyinstaller httpx mutagen vkpymusic musicbrainzngs Pillow libtorrent
       - name: Generate icon
         run: |
           python -c "
@@ -74,9 +74,11 @@ jobs:
           "
       - name: Download cloudflared
         run: curl -fsSL -o build_assets\cloudflared.exe https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe
+      - name: Fetch Jackett installer
+        run: python scripts/fetch_jackett.py --current
       - name: Build
         run: |
-          python -m PyInstaller --name VinylPlayer --windowed --icon build_assets\icon_256.png --onefile --noconfirm --clean --hidden-import httpx --hidden-import httpx._transports --hidden-import httpx._transports.default --hidden-import httpcore --hidden-import httpcore._async --hidden-import httpcore._sync --hidden-import h11 --hidden-import anyio --hidden-import anyio._backends --hidden-import anyio._backends._asyncio --hidden-import certifi --hidden-import mutagen --hidden-import mutagen.mp3 --hidden-import mutagen.id3 --hidden-import mutagen.id3._frames --hidden-import mutagen.id3._specs --hidden-import mutagen.flac --hidden-import mutagen.mp4 --hidden-import mutagen.oggvorbis --hidden-import mutagen.ogg --hidden-import vkpymusic --hidden-import musicbrainzngs --collect-all vkpymusic --collect-all musicbrainzngs --add-binary "build_assets\cloudflared.exe;." vinyl_player.py
+          python -m PyInstaller --name VinylPlayer --windowed --icon build_assets\icon_256.png --onefile --noconfirm --clean --hidden-import httpx --hidden-import httpx._transports --hidden-import httpx._transports.default --hidden-import httpcore --hidden-import httpcore._async --hidden-import httpcore._sync --hidden-import h11 --hidden-import anyio --hidden-import anyio._backends --hidden-import anyio._backends._asyncio --hidden-import certifi --hidden-import mutagen --hidden-import mutagen.mp3 --hidden-import mutagen.id3 --hidden-import mutagen.id3._frames --hidden-import mutagen.id3._specs --hidden-import mutagen.flac --hidden-import mutagen.mp4 --hidden-import mutagen.oggvorbis --hidden-import mutagen.ogg --hidden-import vkpymusic --hidden-import musicbrainzngs --collect-all vkpymusic --collect-all musicbrainzngs --add-binary "build_assets\cloudflared.exe;." --collect-all libtorrent --add-data "vendor\jackett\Jackett.Binaries.Windows.zip;vendor/jackett" --add-data "vendor\jackett\manifest.json;vendor/jackett" vinyl_player.py
       - uses: actions/upload-artifact@v4
         with:
           name: VinylPlayer-Windows
@@ -90,7 +92,7 @@ jobs:
         with:
           python-version: '3.11'
       - name: Install dependencies
-        run: pip install pyinstaller httpx mutagen vkpymusic musicbrainzngs Pillow
+        run: pip install pyinstaller httpx mutagen vkpymusic musicbrainzngs Pillow libtorrent
       - name: Generate icon
         run: |
           python3 -c "

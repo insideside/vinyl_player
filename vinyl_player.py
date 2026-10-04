@@ -3123,7 +3123,7 @@ self.addEventListener('fetch', function(e) {
   // Иконки и манифест тоже мимо: их запрашивает не страница, а система в
   // момент «На экран „Домой“». Ответ, подменённый Service Worker'ом (а он на
   // неудачный запрос отдаёт JSON про офлайн), оставил бы iPhone без иконки.
-  if (url.pathname.startsWith('/api/stream/') || url.pathname.startsWith('/api/cover/') || url.pathname === '/reset'
+  if (url.pathname.startsWith('/api/stream/') || url.pathname.startsWith('/api/torrent/stream/') || url.pathname.startsWith('/api/cover/') || url.pathname === '/reset'
       || url.pathname === '/manifest.json' || url.pathname === '/favicon.ico'
       || url.pathname.indexOf('/icon') === 0 || url.pathname.indexOf('/apple-touch-icon') === 0) {
     return;
@@ -5034,6 +5034,7 @@ html.ui-idle .radio-halo.on { animation-play-state: paused; }
       <button class="folder-btn folder-btn-secondary imp-tab" onclick="showImpTab('apple')" id="impTabApple" style="flex:1;padding:6px 4px;font-size:11px;min-width:60px">Apple</button>
       <button class="folder-btn folder-btn-secondary imp-tab" onclick="showImpTab('soundcloud')" id="impTabSoundcloud" style="flex:1;padding:6px 4px;font-size:11px;min-width:60px">SoundCloud</button>
       <button class="folder-btn folder-btn-secondary imp-tab" onclick="showImpTab('search')" id="impTabSearch" style="flex:1;padding:6px 4px;font-size:11px;min-width:60px">Поиск</button>
+      <button class="folder-btn folder-btn-secondary imp-tab" onclick="showImpTab('torrents')" id="impTabTorrents" style="flex:1;padding:6px 4px;font-size:11px;min-width:60px">Раздачи</button>
     </div>
     <div style="flex:1;overflow-y:auto;min-height:0">
     <!-- VK Playlists -->
@@ -5093,6 +5094,26 @@ html.ui-idle .radio-halo.on { animation-play-state: paused; }
           <label style="display:flex;align-items:center;gap:4px;color:rgba(255,255,255,0.4);font-size:11px;white-space:nowrap;cursor:pointer"><input type="checkbox" id="vkSearchMeta" style="accent-color:#e94560"> Meta</label>
         </div>
         <button class="folder-btn folder-btn-primary" style="width:100%;margin-top:6px;font-size:12px" onclick="vkDownloadSelected()">Скачать очередь</button>
+      </div>
+    </div>
+    <!-- Torrents: search via Jackett, listen before download, one track at a time -->
+    <div id="impTorrents" style="display:none">
+      <div id="torStatus" style="font-size:11px;margin-bottom:6px"></div>
+      <div id="torSearchBox" style="display:none">
+        <div style="display:flex;gap:6px;margin-bottom:8px">
+          <input type="text" id="torQuery" class="folder-path-input" style="flex:1;font-size:11px" placeholder="Артист, альбом, «demo», «bootleg»..." onkeydown="if(event.key==='Enter')torSearch()">
+          <button class="folder-btn folder-btn-primary" style="padding:6px 12px;font-size:11px" onclick="torSearch()">Найти</button>
+        </div>
+        <div id="torResults" style="max-height:30vh;overflow-y:auto;border-radius:8px"></div>
+        <div id="torRelease" style="display:none;margin-top:8px">
+          <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">
+            <button class="folder-btn folder-btn-secondary" style="padding:3px 8px;font-size:11px" onclick="torBack()">&#8592;</button>
+            <div id="torRelTitle" style="flex:1;min-width:0;font-size:12px;color:rgba(255,255,255,0.7);white-space:nowrap;overflow:hidden;text-overflow:ellipsis"></div>
+          </div>
+          <div style="font-size:10px;color:rgba(255,255,255,0.3);margin-bottom:4px">&#9654; - послушать до загрузки (качает сервер, по мере игры) · &#8595; - добавить трек в открытую папку</div>
+          <div id="torTracks" style="max-height:34vh;overflow-y:auto;border-radius:8px"></div>
+        </div>
+        <div id="torDownloads" style="margin-top:8px"></div>
       </div>
     </div>
     </div>
@@ -5315,6 +5336,8 @@ html.ui-idle .radio-halo.on { animation-play-state: paused; }
         <i>Свечение вокруг плеера перестанет вращаться и пульсировать. Цвет останется.</i></span></label>
       </div>
     </div>
+
+    <div id="jkSection" style="display:none;margin-top:16px;padding-top:12px;border-top:1px solid rgba(255,255,255,0.06)"></div>
 
     <div style="margin-top:16px;padding-top:12px;border-top:1px solid rgba(255,255,255,0.06)">
       <div style="font-size:12px;color:rgba(255,255,255,0.4);margin-bottom:8px">Офлайн-кэш</div>
@@ -10942,11 +10965,304 @@ function showImpTab(tab) {
   var btn = document.getElementById('impTab' + tab.charAt(0).toUpperCase() + tab.slice(1));
   if (btn) btn.classList.add('active');
   document.getElementById('impVk').style.display = tab === 'vk' ? '' : 'none';
-  document.getElementById('impExternal').style.display = (tab !== 'vk' && tab !== 'search') ? '' : 'none';
+  document.getElementById('impExternal').style.display = (tab !== 'vk' && tab !== 'search' && tab !== 'torrents') ? '' : 'none';
   document.getElementById('impSearch').style.display = tab === 'search' ? '' : 'none';
+  document.getElementById('impTorrents').style.display = tab === 'torrents' ? '' : 'none';
+  if (tab === 'torrents') torOpenTab();
 }
 // Keep old name for compat
 function showVkTab(t) { showImpTab(t === 'playlist' ? 'vk' : 'search'); }
+
+// ---------- Torrents: search via Jackett, listen first, download one track ----------
+// Long server jobs (Jackett search takes up to a minute) run in the background:
+// the server is single-threaded, so the client polls /api/torrents/job.
+var torResults = [], torIh = null, torRelName = '', torFiles = [], torInfoTimer = null, torDlTimer = null;
+var torLastDone = {};
+
+function torSize(b) {
+  if (!b) return '';
+  if (b >= 1073741824) return (b / 1073741824).toFixed(1) + ' ГБ';
+  if (b >= 1048576) return Math.round(b / 1048576) + ' МБ';
+  return Math.round(b / 1024) + ' КБ';
+}
+
+function torPollJob(id, cb) {
+  fetch('/api/torrents/job?id=' + encodeURIComponent(id)).then(function(r){return r.json()}).then(function(d) {
+    if (d.error === 'offline') { cb('Нет связи с сервером'); return; }
+    if (d.running) { setTimeout(function(){ torPollJob(id, cb); }, 800); return; }
+    cb(d.error, d.result);
+  }).catch(function(){ cb('Нет связи с сервером'); });
+}
+
+// What is missing for torrents - shown instead of the search, never a dead button
+function torOpenTab() {
+  var st = document.getElementById('torStatus');
+  st.innerHTML = '<span style="color:rgba(255,255,255,0.3)">Проверяю поиск раздач...</span>';
+  fetch('/api/jackett/status').then(function(r){return r.json()}).then(function(j) {
+    var warn = '';
+    if (j.error === 'offline') warn = 'Раздачи ищет и качает сервер - он сейчас недоступен.';
+    else if (!j.supported) warn = 'На этом устройстве раздачи недоступны: поиск и загрузку ведёт сервер на компьютере.';
+    else if (!j.libtorrent) warn = 'На сервере нет компонента libtorrent - без него раздачи не скачать. Установите: python -m pip install libtorrent';
+    else if (!j.installed) warn = 'Для поиска раздач нужен Jackett. ' + (isAdmin ? 'Установите его в Профиль &rarr; Поиск раздач.' : 'Попросите администратора установить его.');
+    else if (!j.running) warn = 'Jackett не запущен. ' + (isAdmin ? 'Запустите его в Профиль &rarr; Поиск раздач.' : '');
+    else if (!j.api_key) warn = 'Jackett ещё запускается - попробуйте через несколько секунд.';
+    if (warn) {
+      st.innerHTML = '<span style="color:#e94560">' + warn + '</span>';
+      document.getElementById('torSearchBox').style.display = 'none';
+      return;
+    }
+    st.innerHTML = '<span style="color:rgba(255,255,255,0.3)">Ищет по трекерам, подключённым в Jackett. Найденное слушается сразу, скачивается по одному треку.</span>';
+    document.getElementById('torSearchBox').style.display = '';
+    torPollDownloads();
+  });
+}
+
+var torSearchSeq = 0, torTrackers = [], torSearching = false;
+
+// Results grow as trackers answer: the server asks each Jackett tracker separately
+// and accumulates; we poll the job and redraw only when something changed.
+function torSearch() {
+  var q = document.getElementById('torQuery').value.trim();
+  if (!q) return;
+  torBack();
+  var my = ++torSearchSeq;
+  torResults = []; torTrackers = []; torSearching = true;
+  var box = document.getElementById('torResults');
+  box.innerHTML = '<div style="padding:12px;color:rgba(255,255,255,0.3);text-align:center">Ищу по трекерам...</div>';
+  fetch('/api/torrents/search', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({q: q})})
+  .then(function(r){return r.json()}).then(function(d) {
+    if (!d.ok) { box.innerHTML = ''; showToast(d.error || 'Ошибка поиска'); return; }
+    var lastSig = '';
+    var poll = function() {
+      if (my !== torSearchSeq) return;
+      fetch('/api/torrents/job?id=' + encodeURIComponent(d.job)).then(function(r){return r.json()}).then(function(j) {
+        if (my !== torSearchSeq) return;
+        if (j.error === 'offline') { torSearching = false; showToast('Нет связи с сервером'); return; }
+        torResults = j.result || []; torTrackers = j.trackers || []; torSearching = !!j.running;
+        var sig = torResults.length + '|' + torTrackers.map(function(t){return t.state + t.count}).join(',') + torSearching;
+        if (sig !== lastSig) { lastSig = sig; renderTorResults(); }
+        if (j.running) setTimeout(poll, 700);
+      }).catch(function(){ if (my === torSearchSeq) setTimeout(poll, 1500); });
+    };
+    poll();
+  });
+}
+
+function torStatusHtml() {
+  var total = torTrackers.length, done = 0, bad = [];
+  for (var i = 0; i < total; i++) {
+    if (torTrackers[i].state !== 'running') done++;
+    if (torTrackers[i].state === 'error') bad.push(torTrackers[i]);
+  }
+  var h = '<div style="font-size:11px;color:rgba(255,255,255,0.4);margin:2px 0 6px">'
+    + (torSearching ? 'Ищу' : 'Готово') + (total ? ': ответили ' + done + ' из ' + total : '') + ', найдено ' + torResults.length;
+  if (bad.length) {
+    h += ' · <a href="#" style="color:rgba(255,255,255,0.5)" onclick="var e=document.getElementById(\'torBad\');e.style.display=e.style.display===\'none\'?\'\':\'none\';return false">не ответили: ' + bad.length + '</a>'
+      + '<div id="torBad" style="display:none;margin-top:4px">';
+    for (var k = 0; k < bad.length; k++) h += '<div><b style="color:rgba(255,255,255,0.6)">' + esc(bad[k].name) + '</b> - ' + esc(bad[k].error || 'ошибка') + '</div>';
+    h += '</div>';
+  }
+  return h + '</div>';
+}
+
+function renderTorResults() {
+  // keep the "not answered" list open across redraws
+  var badOpen = document.getElementById('torBad') && document.getElementById('torBad').style.display !== 'none';
+  var html = torStatusHtml();
+  if (!torResults.length) html += '<div style="padding:12px;color:rgba(255,255,255,0.3);text-align:center">' + (torSearching ? 'Ищу по трекерам...' : 'Ничего не нашлось') + '</div>';
+  for (var i = 0; i < torResults.length; i++) {
+    var r = torResults[i];
+    var meta = [torSize(r.size), 'сиды ' + (r.seeders || 0), r.tracker].filter(function(x){return x}).join(' · ');
+    html += '<div class="playlist-item" style="cursor:pointer' + (r.seeders ? '' : ';opacity:0.5') + '" onclick="torOpen(' + i + ')">'
+      + '<div class="info" style="flex:1;min-width:0"><div class="name">' + esc(r.title) + '</div>'
+      + '<div class="artist">' + esc(meta) + '</div></div>'
+      + '<div style="color:rgba(255,255,255,0.3);font-size:14px;flex-shrink:0">&#8250;</div></div>';
+  }
+  document.getElementById('torResults').innerHTML = html;
+  if (badOpen && document.getElementById('torBad')) document.getElementById('torBad').style.display = '';
+}
+
+function torBack() {
+  clearTimeout(torInfoTimer);
+  document.getElementById('torRelease').style.display = 'none';
+  document.getElementById('torResults').style.display = '';
+  torIh = null;
+}
+
+function torOpen(i) {
+  var r = torResults[i];
+  if (!r) return;
+  document.getElementById('torResults').style.display = 'none';
+  document.getElementById('torRelease').style.display = '';
+  document.getElementById('torRelTitle').textContent = r.title;
+  document.getElementById('torTracks').innerHTML = '<div style="padding:12px;color:rgba(255,255,255,0.3);text-align:center">Получаю список треков...</div>';
+  torRelName = r.title;
+  fetch('/api/torrents/open', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({torrent_url: r.torrent_url, magnet: r.magnet})})
+  .then(function(x){return x.json()}).then(function(d) {
+    if (!d.ok) { showToast(d.error || 'Ошибка'); torBack(); return; }
+    torPollJob(d.job, function(err, ih) {
+      if (err) { showToast('Раздача не открылась: ' + err); torBack(); return; }
+      torIh = ih;
+      torLoadInfo(0);
+    });
+  });
+}
+
+// Magnet links need the file list from peers first - poll until it arrives
+function torLoadInfo(tries) {
+  if (!torIh) return;
+  var ih = torIh;
+  fetch('/api/torrents/info?ih=' + encodeURIComponent(ih)).then(function(r){return r.json()}).then(function(d) {
+    if (ih !== torIh) return;
+    if (!d.metadata) {
+      document.getElementById('torTracks').innerHTML = '<div style="padding:12px;color:rgba(255,255,255,0.3);text-align:center">Ищу участников раздачи' + (d.peers ? ' (' + d.peers + ')' : '') + '...</div>';
+      if (tries < 90) torInfoTimer = setTimeout(function(){ torLoadInfo(tries + 1); }, 1500);
+      else document.getElementById('torTracks').innerHTML = '<div style="padding:12px;color:#e94560;text-align:center">Раздача не отвечает: нет участников</div>';
+      return;
+    }
+    torFiles = d.files || [];
+    renderTorTracks();
+  });
+}
+
+function torTrackTitle(f) {
+  return f.name.replace(/\.[^.]+$/, '').replace(/^\s*\d{1,3}\s*[-._)]\s*/, '');
+}
+
+function renderTorTracks() {
+  // only playable tracks take part in listening; their position is data-n for the preview player
+  var playable = [], html = '';
+  _extReleases['tor:' + torIh] = {title: torRelName, artist: '', art: '', badge: 'РАЗДАЧА'};
+  for (var i = 0; i < torFiles.length; i++) {
+    var f = torFiles[i];
+    var n = -1;
+    if (f.playable) { n = playable.length; playable.push({title: torTrackTitle(f), src: '/api/torrent/stream/' + torIh + '/' + f.idx}); }
+    var dir = f.path.indexOf('/') >= 0 ? f.path.replace(/\/[^\/]*$/, '') : '';
+    var note = f.image ? 'образ диска - по трекам не скачать' : (!f.playable ? 'формат не играет в браузере' : torSize(f.size));
+    html += '<div class="rel-track"' + (n >= 0 ? ' data-n="' + n + '"' : '') + ' style="display:flex;align-items:center;gap:6px;padding:6px 8px;position:relative' + (f.playable ? '' : ';opacity:0.45') + '">'
+      + (f.playable ? '<button class="folder-btn folder-btn-secondary tor-play" style="padding:3px 8px;font-size:11px;flex-shrink:0;min-width:30px" onclick="torPlay(' + n + ')" title="Послушать">&#9654;</button>' : '<span style="width:30px"></span>')
+      + '<div style="flex:1;min-width:0"><div style="font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + esc(torTrackTitle(f)) + '</div>'
+      + '<div style="font-size:10px;color:rgba(255,255,255,0.35);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + esc([dir, note].filter(function(x){return x}).join(' · ')) + '</div></div>'
+      + (f.playable ? '<button class="folder-btn folder-btn-secondary" style="padding:3px 8px;font-size:11px;flex-shrink:0" onclick="torDownload(' + f.idx + ')" title="Скачать трек в открытую папку">&#8595;</button>' : '')
+      + '<div class="rel-track-bar" style="position:absolute;left:0;bottom:0;height:2px;background:#e94560;width:0"></div>'
+      + '</div>';
+  }
+  if (!torFiles.length) html = '<div style="padding:12px;color:rgba(255,255,255,0.3);text-align:center">В раздаче нет аудио</div>';
+  document.getElementById('torTracks').innerHTML = html;
+  torPlayable = playable;
+}
+var torPlayable = [];
+
+// Listening goes through the DROPS preview player: the main queue pauses and stays intact
+function torPlay(n) {
+  var key = 'tor:' + torIh;
+  if (_previewKey !== key) { stopPreview(); _previewKey = key; }
+  _previewTracks = torPlayable;
+  playPreview(n);
+}
+
+function torDownload(idx) {
+  if (!_curFolder) { showToast('Сначала откройте папку, куда добавить трек'); return; }
+  fetch('/api/torrents/download', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ih: torIh, idx: idx, folder: _curFolder, run_meta: true})})
+  .then(function(r){return r.json()}).then(function(d) {
+    if (!d.ok) { showToast(d.error || 'Ошибка'); return; }
+    showToast('Трек скачивается на сервер');
+    torPollDownloads();
+  });
+}
+
+function torCancel(id) {
+  fetch('/api/torrents/cancel', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({id: id})})
+  .then(function(){ torPollDownloads(); });
+}
+
+function torPollDownloads() {
+  clearTimeout(torDlTimer);
+  fetch('/api/torrents/downloads').then(function(r){return r.json()}).then(function(d) {
+    var items = d.items || [];
+    var active = false, html = '';
+    var labels = {downloading: 'качается', importing: 'добавляю в папку', done: 'готово', error: 'ошибка', cancelled: 'отменено'};
+    for (var i = 0; i < items.length && i < 12; i++) {
+      var it = items[i];
+      if (it.state === 'downloading' || it.state === 'importing') active = true;
+      // a fresh "done" refreshes the catalog so the track shows up at once
+      if (it.state === 'done' && !torLastDone[it.id]) {
+        torLastDone[it.id] = true;
+        if (_curFolder) loadFolder(_curFolder);
+      }
+      var pct = Math.round((it.progress || 0) * 100);
+      html += '<div class="playlist-item" style="padding:6px 8px">'
+        + '<div class="info" style="flex:1;min-width:0"><div class="name" style="font-size:12px">' + esc(torTrackTitle({name: it.name})) + '</div>'
+        + '<div class="artist" style="font-size:10px">' + esc((labels[it.state] || it.state) + (it.state === 'downloading' ? ' ' + pct + '%' : '') + (it.error ? ': ' + it.error : '') + (it.size ? ' · ' + torSize(it.size) : '')) + '</div>'
+        + (it.state === 'downloading' ? '<div class="meta-bar" style="margin-top:4px"><div class="meta-bar-fill" style="width:' + pct + '%"></div></div>' : '')
+        + '</div>'
+        + (it.state === 'downloading' ? '<button class="folder-btn folder-btn-secondary" style="padding:3px 8px;font-size:11px;flex-shrink:0" onclick="torCancel(\'' + it.id + '\')">&#10005;</button>' : '')
+        + '</div>';
+    }
+    var box = document.getElementById('torDownloads');
+    if (box) box.innerHTML = items.length ? '<div style="font-size:11px;color:rgba(255,255,255,0.3);margin-bottom:4px">Загрузки на сервер</div>' + html : '';
+    if (active) torDlTimer = setTimeout(torPollDownloads, 1500);
+  }).catch(function(){});
+}
+
+// ---------- Profile: Jackett (search over trackers) ----------
+function loadJackettSettings() {
+  var box = document.getElementById('jkSection');
+  if (!isAdmin) { box.style.display = 'none'; return; }
+  fetch('/api/jackett/status').then(function(r){return r.json()}).then(function(j) {
+    if (j.error === 'offline' || !j.supported) { box.style.display = 'none'; return; }
+    box.style.display = '';
+    renderJackettSettings(j);
+  });
+}
+
+function renderJackettSettings(j) {
+  var box = document.getElementById('jkSection');
+  var h = '<div style="font-size:12px;color:rgba(255,255,255,0.4);margin-bottom:8px">Поиск раздач</div>';
+  var hint = 'font-size:11px;color:rgba(255,255,255,0.4);margin-top:4px';
+  if (!j.libtorrent) {
+    h += '<div style="font-size:11px;color:#e94560;margin-bottom:8px">Нет компонента libtorrent - сервер не сможет качать раздачи. Установите: python -m pip install libtorrent</div>';
+  }
+  if (!j.installed) {
+    h += '<div style="font-size:11px;color:#e94560">Jackett не установлен: без него поиск по трекерам не работает.</div>';
+    if (j.bundled) {
+      h += '<button class="folder-btn folder-btn-primary" id="jkInstallBtn" style="width:100%;margin-top:8px" onclick="jackettInstall()">Установить Jackett</button>'
+        + '<div style="' + hint + '">Установщик есть в приложении. Jackett будет доступен только с этого компьютера и общий с другими приложениями insideside.</div>';
+    } else {
+      h += '<div style="' + hint + '">Для этой системы (' + esc(j.platform) + ') установщика в приложении нет - поставьте Jackett вручную с jackett.github.io.</div>';
+    }
+  } else if (!j.running) {
+    h += '<div style="font-size:11px;color:#e94560">Jackett установлен, но не запущен' + (j.error ? ': ' + esc(j.error) : '') + '.</div>'
+      + '<button class="folder-btn folder-btn-secondary" style="width:100%;margin-top:8px" onclick="jackettAutostart(true)">Запустить</button>';
+  } else {
+    var who = j.service ? 'работает как служба системы' : (j.shared_with.length ? 'им пользуется и ' + esc(j.shared_with.join(', ')) + ' - при выходе музыки он не остановится' : 'остановится вместе с сервером');
+    h += '<div style="font-size:12px">Jackett: <a href="' + esc(j.url) + '" target="_blank" rel="noopener" style="color:#e94560">' + esc(j.url) + '</a></div>'
+      + '<div style="' + hint + '">' + who + '. Трекеры подключаются на этой странице (откройте на компьютере с сервером).</div>';
+  }
+  if (j.installed) {
+    h += '<label class="perf-row" style="margin-top:8px"><input type="checkbox"' + (j.enabled ? ' checked' : '') + ' onchange="jackettAutostart(this.checked)">'
+      + '<span><b>Запускать вместе с сервером</b><i>И останавливать при выходе, если им не пользуются другие приложения insideside.</i></span></label>';
+  }
+  box.innerHTML = h;
+}
+
+function jackettInstall() {
+  var b = document.getElementById('jkInstallBtn');
+  if (b) { b.disabled = true; b.textContent = 'Устанавливаю...'; }
+  fetch('/api/jackett/install', {method:'POST', headers:{'Content-Type':'application/json'}, body: '{}'})
+  .then(function(r){return r.json()}).then(function(d) {
+    if (!d.ok) { showToast(d.error || 'Ошибка установки'); if (b) { b.disabled = false; b.textContent = 'Установить Jackett'; } return; }
+    showToast('Jackett установлен и запущен');
+    renderJackettSettings(d.status);
+  });
+}
+
+function jackettAutostart(on) {
+  fetch('/api/jackett/autostart', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({on: !!on})})
+  .then(function(r){return r.json()}).then(function(d) { if (d.status) renderJackettSettings(d.status); else showToast(d.error || 'Ошибка'); });
+}
 
 var impMatches = [];
 var impOriginalTracks = []; // full track list from external platform
@@ -11450,6 +11766,7 @@ function openProfile() {
   var infoEl = document.getElementById('profileCacheInfo');
   infoEl.textContent = count ? count + ' треков в кэше' : 'Кэш пуст';
   renderBuildInfo();
+  loadJackettSettings();
   document.getElementById('profileOverlay').classList.add('show');
   // Calculate cache size asynchronously
   if (count) {
@@ -12627,7 +12944,10 @@ function closePreview() {
   applyExpansion();
 }
 
+var _extReleases = {};   // releases that are not DROPS (torrents): key -> {title, artist, art, badge}
+
 function findRelease(key) {
+  if (_extReleases[key]) return _extReleases[key];
   var d = relF().data;
   if (!d) return null;
   for (var i = 0; i < d.items.length; i++) {
@@ -12749,7 +13069,7 @@ function enterPreviewPlayerUI(rel, tr) {
   }
   var badge = document.getElementById('trackTitleBadge');
   if (badge) {
-    badge.textContent = 'DROPS';
+    badge.textContent = rel.badge || 'DROPS';
     badge.className = 'fmt-badge fmt-badge-player fmt-drops';
     badge.style.display = '';
   }
@@ -12799,7 +13119,8 @@ function playPreview(n) {
   if (!audio.paused) { setPlayState(false); audio.pause(); }
   _previewTrack = n;
   // Через свой сервер: он исправляет Content-Type, который у Apple нестандартный
-  previewEl().src = '/api/releases/preview?u=' + encodeURIComponent(t.preview);
+  // t.src - own stream (torrent track), otherwise the DROPS preview proxy
+  previewEl().src = t.src ? t.src : '/api/releases/preview?u=' + encodeURIComponent(t.preview);
   var rel = findRelease(_previewKey);
   if (rel) enterPreviewPlayerUI(rel, t);
   var p = previewAudio.play();
@@ -12817,12 +13138,24 @@ function playPreview(n) {
 // Точечная перерисовка строк — полный renderReleases на каждом тике прогресса
 // сбрасывал бы прокрутку списка.
 function paintPreviewState() {
-  var rows = document.querySelectorAll('#newList .rel-track');
+  var rows = document.querySelectorAll('#newList .rel-track, #torTracks .rel-track');
   for (var i = 0; i < rows.length; i++) {
     var on = parseInt(rows[i].getAttribute('data-n'), 10) === _previewTrack;
     rows[i].classList.toggle('playing', on);
     var bar = rows[i].querySelector('.rel-track-bar');
     if (bar && !on) bar.style.width = '0';
+    // torrent rows: play turns into stop while this track sounds (or is buffering), and back
+    var tb = rows[i].querySelector('.tor-play');
+    if (tb) {
+      var act = on && !!previewAudio && !previewAudio.paused;
+      if (tb.getAttribute('data-act') !== String(act)) {
+        tb.setAttribute('data-act', String(act));
+        tb.innerHTML = act ? '&#9632;' : '&#9654;';
+        tb.title = act ? 'Остановить' : 'Послушать';
+        tb.classList.toggle('folder-btn-primary', act);
+        tb.classList.toggle('folder-btn-secondary', !act);
+      }
+    }
   }
   var all = document.querySelectorAll('#newList .rel-btn-prev');
   for (var j = 0; j < all.length; j++) {
@@ -12839,7 +13172,8 @@ function paintPreviewState() {
 function bindPreviewEvents(el) {
   el.addEventListener('timeupdate', function() {
     if (_previewTrack < 0 || !el.duration) return;
-    var row = document.querySelector('#newList .rel-track[data-n="' + _previewTrack + '"] .rel-track-bar');
+    var row = document.querySelector('#newList .rel-track[data-n="' + _previewTrack + '"] .rel-track-bar')
+      || document.querySelector('#torTracks .rel-track[data-n="' + _previewTrack + '"] .rel-track-bar');
     if (row) row.style.width = (el.currentTime / el.duration * 100) + '%';
   });
   el.addEventListener('play', function(){
@@ -15508,6 +15842,951 @@ function doSetup(){
 </script></body></html>"""
 
 
+# ============================================================================
+# Раздачи: поиск через Jackett, прослушивание и загрузка по одному треку
+# ============================================================================
+# Jackett - общий для приложений insideside (кино, музыка), но без зависимости
+# между ними: договорённость через папку insideside/jackett (аренды, owner.json).
+# Протокол 1, такой же в cinema/app/jackett.py. Качает только сервер.
+
+try:
+    import libtorrent as lt
+    HAS_LIBTORRENT = True
+except ImportError:
+    HAS_LIBTORRENT = False
+
+IS_ANDROID = "ANDROID_DATA" in os.environ or hasattr(sys, "getandroidapilevel")
+JK_APP = "music"
+JK_PROTOCOL = 1
+JK_HEARTBEAT = 30
+JK_LEASE_TTL = 120
+JK_DEFAULT_PORT = 9117
+JK_LOG_FILE = Path.home() / ".vinyl_jackett.log"
+TORRENT_DIR = Path.home() / ".vinyl_torrents"     # temporary: files leave for the catalog once downloaded
+TORRENT_PORT = 6882                                # cinema uses 6881
+TORZNAB_MUSIC_CATS = "3000,3010,3040"              # Audio, MP3, Lossless
+TORRENT_AUDIO = SUPPORTED_FORMATS | {'.ape', '.wv', '.dsf', '.dff'}
+_IS_WIN = sys.platform == "win32"
+_IS_MAC = sys.platform == "darwin"
+_jk_state = {"error": None, "installing": False}
+_jk_stop_hb = threading.Event()
+_jk_hb = None
+
+
+def _vendor_dirs():
+    here = Path(__file__).resolve().parent
+    out = [here / "vendor" / "jackett"]
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        out.insert(0, Path(meipass) / "vendor" / "jackett")
+    return out
+
+
+def jk_shared_dir():
+    """Общая папка приложений insideside: аренды, установленный Jackett."""
+    if os.environ.get("INSIDESIDE_SHARED_DIR"):
+        d = Path(os.environ["INSIDESIDE_SHARED_DIR"])
+    elif _IS_MAC:
+        d = Path.home() / "Library/Application Support/insideside/jackett"
+    elif _IS_WIN:
+        d = Path(os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData/Local")) / "insideside" / "jackett"
+    else:
+        d = Path(os.environ.get("XDG_DATA_HOME") or (Path.home() / ".local/share")) / "insideside" / "jackett"
+    (d / "leases").mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def jk_data_dir():
+    """Настройки самого Jackett (трекеры, ключ) - стандартная папка, общая для любой установки."""
+    if _IS_MAC:
+        return Path.home() / "Library/Application Support/Jackett"
+    if _IS_WIN:
+        return Path(os.environ.get("ProgramData") or "C:/ProgramData") / "Jackett"
+    return Path(os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config")) / "Jackett"
+
+
+def _jk_config():
+    try:
+        return json.loads((jk_data_dir() / "ServerConfig.json").read_text(encoding="utf-8-sig"))
+    except Exception:
+        return {}
+
+
+def jk_port():
+    return int(os.environ.get("INSIDESIDE_JACKETT_PORT") or _jk_config().get("Port") or JK_DEFAULT_PORT)
+
+
+def jk_url():
+    return "http://127.0.0.1:{}".format(jk_port())
+
+
+def jk_api_key():
+    return _jk_config().get("APIKey") or None
+
+
+def jk_archive_name():
+    import platform as _pf
+    m = _pf.machine().lower()
+    arm = m in ("arm64", "aarch64")
+    if _IS_MAC:
+        return "Jackett.Binaries.macOSARM64.tar.gz" if arm else "Jackett.Binaries.macOS.tar.gz"
+    if _IS_WIN:
+        return "Jackett.Binaries.Windows.zip" if m in ("amd64", "x86_64") else None
+    if sys.platform.startswith("linux"):
+        return "Jackett.Binaries.LinuxARM64.tar.gz" if arm else "Jackett.Binaries.LinuxAMDx64.tar.gz"
+    return None
+
+
+def _jk_manifest():
+    for d in _vendor_dirs():
+        try:
+            return json.loads((d / "manifest.json").read_text())
+        except Exception:
+            continue
+    return {}
+
+
+def jk_bundled():
+    name = jk_archive_name()
+    if not name or IS_ANDROID:
+        return None
+    for d in _vendor_dirs():
+        if (d / name).is_file():
+            return d / name
+    return None
+
+
+def _jk_exe_in(folder):
+    p = folder / "Jackett" / ("JackettConsole.exe" if _IS_WIN else "jackett")
+    return p if p.is_file() else None
+
+
+def jk_binary():
+    """Установленный приложениями insideside Jackett, иначе системный (Homebrew, PATH)."""
+    app = jk_shared_dir() / "app"
+    if app.is_dir():
+        for v in sorted(app.iterdir(), reverse=True):
+            exe = _jk_exe_in(v)
+            if exe:
+                return exe
+    for p in ("/opt/homebrew/opt/jackett/bin/jackett", "/usr/local/opt/jackett/bin/jackett"):
+        if os.access(p, os.X_OK):
+            return Path(p)
+    w = shutil.which("jackett") or shutil.which("JackettConsole")
+    return Path(w) if w else None
+
+
+class _JkLock(object):
+    """Межпроцессная блокировка общей папки (fcntl / msvcrt)."""
+
+    def __enter__(self):
+        self.f = open(str(jk_shared_dir() / "lock"), "a+")
+        if _IS_WIN:
+            import msvcrt
+            for _ in range(100):
+                try:
+                    msvcrt.locking(self.f.fileno(), msvcrt.LK_NBLCK, 1)
+                    break
+                except OSError:
+                    time.sleep(0.1)
+        else:
+            import fcntl
+            fcntl.flock(self.f, fcntl.LOCK_EX)
+        return self
+
+    def __exit__(self, *a):
+        try:
+            if _IS_WIN:
+                import msvcrt
+                self.f.seek(0)
+                msvcrt.locking(self.f.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(self.f, fcntl.LOCK_UN)
+        except Exception:
+            pass
+        self.f.close()
+
+
+def _no_window():
+    return 0x08000000 if _IS_WIN else 0
+
+
+def _pid_alive(pid):
+    if not pid:
+        return False
+    if _IS_WIN:
+        import ctypes
+        h = ctypes.windll.kernel32.OpenProcess(0x1000, False, int(pid))
+        if not h:
+            return False
+        code = ctypes.c_ulong()
+        ctypes.windll.kernel32.GetExitCodeProcess(h, ctypes.byref(code))
+        ctypes.windll.kernel32.CloseHandle(h)
+        return code.value == 259
+    try:
+        os.kill(int(pid), 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
+def _pid_cmdline(pid):
+    try:
+        if _IS_WIN:
+            out = subprocess.run(["tasklist", "/FI", "PID eq {}".format(pid), "/FO", "CSV", "/NH"],
+                                 stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=5,
+                                 creationflags=_no_window()).stdout
+        else:
+            out = subprocess.run(["ps", "-o", "command=", "-p", str(pid)], stdin=subprocess.DEVNULL,
+                                 capture_output=True, text=True, timeout=5).stdout
+        return out.lower()
+    except Exception:
+        return ""
+
+
+def jk_listening():
+    try:
+        socket.create_connection(("127.0.0.1", jk_port()), timeout=0.5).close()
+        return True
+    except OSError:
+        return False
+
+
+def _jk_service():
+    try:
+        if _IS_MAC:
+            out = subprocess.run(["/bin/launchctl", "list"], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=5).stdout
+            return "homebrew.mxcl.jackett" in out
+        if _IS_WIN:
+            out = subprocess.run(["sc", "query", "Jackett"], stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                                 timeout=5, creationflags=_no_window()).stdout
+            return "RUNNING" in out
+        out = subprocess.run(["systemctl", "is-active", "jackett"], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=5).stdout
+        return out.strip() == "active"
+    except Exception:
+        return False
+
+
+def _jk_pid_on_port():
+    try:
+        if _IS_WIN:
+            out = subprocess.run(["netstat", "-ano", "-p", "TCP"], stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                                 timeout=5, creationflags=_no_window()).stdout
+            for line in out.splitlines():
+                parts = line.split()
+                if len(parts) >= 5 and parts[1].endswith(":{}".format(jk_port())) and parts[3] == "LISTENING":
+                    return int(parts[4])
+            return None
+        out = subprocess.run(["lsof", "-nP", "-ti", "tcp:{}".format(jk_port()), "-sTCP:LISTEN"], stdin=subprocess.DEVNULL,
+                             capture_output=True, text=True, timeout=5).stdout.split()
+        return int(out[0]) if out else None
+    except Exception:
+        return None
+
+
+def _jk_lease_path():
+    return jk_shared_dir() / "leases" / "{}-{}.json".format(JK_APP, os.getpid())
+
+
+def _jk_touch_lease():
+    p = _jk_lease_path()
+    tmp = p.with_suffix(".tmp")
+    tmp.write_text(json.dumps({"app": JK_APP, "pid": os.getpid(), "ts": time.time(), "protocol": JK_PROTOCOL}))
+    tmp.replace(p)
+
+
+def _jk_leases():
+    """Живые аренды других приложений; мёртвые удаляем."""
+    out = []
+    for p in (jk_shared_dir() / "leases").glob("*.json"):
+        try:
+            d = json.loads(p.read_text())
+        except Exception:
+            continue
+        if d.get("pid") == os.getpid():
+            continue
+        if _pid_alive(d.get("pid")) and time.time() - (d.get("ts") or 0) < JK_LEASE_TTL:
+            out.append(d)
+        else:
+            try:
+                p.unlink()
+            except OSError:
+                pass
+    return out
+
+
+def _jk_owner():
+    try:
+        return json.loads((jk_shared_dir() / "owner.json").read_text())
+    except Exception:
+        return {}
+
+
+def _jk_set_owner(pid, by=None):
+    p = jk_shared_dir() / "owner.json"
+    if pid:
+        p.write_text(json.dumps({"pid": pid, "started_by": by or JK_APP, "ts": time.time(), "protocol": JK_PROTOCOL}))
+    else:
+        try:
+            p.unlink()
+        except OSError:
+            pass
+
+
+def jk_enabled():
+    return bool(load_settings().get("jackett_autostart", True))
+
+
+def jk_install():
+    """Распаковать Jackett из архива приложения в общую папку insideside (сумма из manifest.json)."""
+    import tarfile, zipfile, tempfile
+    arch = jk_bundled()
+    if not arch:
+        raise RuntimeError("В приложении нет установщика Jackett для этой системы")
+    man = _jk_manifest()
+    want = (man.get("files") or {}).get(arch.name, {}).get("sha256")
+    h = hashlib.sha256()
+    with open(str(arch), "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    if want and h.hexdigest() != want:
+        raise RuntimeError("Архив Jackett повреждён (контрольная сумма не совпала)")
+    dest = jk_shared_dir() / "app" / (man.get("version") or "local")
+    _jk_state["installing"] = True
+    try:
+        with _JkLock():
+            if _jk_exe_in(dest):
+                return _jk_exe_in(dest)
+            tmp = Path(tempfile.mkdtemp(prefix="jackett-", dir=str(jk_shared_dir())))
+            try:
+                if arch.suffix == ".zip":
+                    with zipfile.ZipFile(str(arch)) as z:
+                        z.extractall(str(tmp))
+                else:
+                    with tarfile.open(str(arch)) as t:
+                        if hasattr(tarfile, "data_filter"):
+                            t.extractall(str(tmp), filter="tar")
+                        else:
+                            t.extractall(str(tmp))
+                if dest.exists():
+                    shutil.rmtree(str(dest), ignore_errors=True)
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                tmp.rename(dest)
+            finally:
+                shutil.rmtree(str(tmp), ignore_errors=True)
+        exe = _jk_exe_in(dest)
+        if not exe:
+            raise RuntimeError("В архиве Jackett не нашлось программы запуска")
+        if not _IS_WIN:
+            exe.chmod(0o755)
+        return exe
+    finally:
+        _jk_state["installing"] = False
+
+
+def _jk_heartbeat():
+    while not _jk_stop_hb.wait(JK_HEARTBEAT):
+        try:
+            _jk_touch_lease()
+        except OSError:
+            pass
+
+
+def jk_start():
+    """Сервер стартовал: берём аренду; если Jackett не работает - запускаем."""
+    global _jk_hb
+    _jk_state["error"] = None
+    if IS_ANDROID or not jk_enabled():
+        return
+    exe = jk_binary()
+    if not exe:
+        return
+    _jk_touch_lease()
+    if _jk_hb is None or not _jk_hb.is_alive():
+        _jk_stop_hb.clear()
+        _jk_hb = threading.Thread(target=_jk_heartbeat, daemon=True)
+        _jk_hb.start()
+    with _JkLock():
+        if _jk_service():
+            return
+        if jk_listening():
+            own = _jk_owner()
+            if not (own.get("pid") and _pid_alive(own["pid"])):
+                pid = _jk_pid_on_port()
+                if pid and "jackett" in _pid_cmdline(pid):
+                    _jk_set_owner(pid, "adopted")
+            return
+        # --ListenPrivate: only this computer (Jackett is open to the whole LAN without a password by default)
+        try:
+            JK_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+            log = open(str(JK_LOG_FILE), "ab")
+        except OSError:
+            log = subprocess.DEVNULL
+        kw = {"stdin": subprocess.DEVNULL, "stdout": log, "stderr": subprocess.STDOUT, "cwd": str(exe.parent)}
+        if _IS_WIN:
+            kw["creationflags"] = 0x00000008 | 0x00000200 | 0x08000000
+        else:
+            kw["start_new_session"] = True
+        # Homebrew's wrapper already passes --NoUpdates; Jackett rejects a repeated option and exits
+        args = [str(exe)]
+        try:
+            head = exe.read_bytes()[:4096] if exe.stat().st_size < 65536 else b""
+        except OSError:
+            head = b""
+        if b"--NoUpdates" not in head:
+            args.append("--NoUpdates")
+        args.append("--ListenPrivate")
+        try:
+            pid = subprocess.Popen(args, **kw).pid
+        except OSError as e:
+            _jk_state["error"] = str(e)
+            return
+        time.sleep(2)
+        if not _pid_alive(pid):
+            # exited at once (bad options, busy port): show the reason from its log in the profile
+            try:
+                lines = [x.strip() for x in JK_LOG_FILE.read_text(errors="replace").splitlines() if x.strip()][-40:]
+            except OSError:
+                lines = []
+            errs = [x for x in lines if "error" in x.lower() or "exception" in x.lower() or "defined" in x.lower()]
+            _jk_state["error"] = ((errs or lines or ["Jackett завершился сразу после запуска"])[-1])[:200]
+            print("Jackett не запустился: " + _jk_state["error"])
+            return
+        _jk_set_owner(pid)
+        print("Jackett запущен (PID {}): {}".format(pid, jk_url()))
+
+
+def jk_stop():
+    """Сервер уходит: отдаём аренду; Jackett останавливаем, только если мы последние."""
+    _jk_stop_hb.set()
+    try:
+        _jk_lease_path().unlink()
+    except OSError:
+        pass
+    if IS_ANDROID:
+        return
+    with _JkLock():
+        others = _jk_leases()
+        if others:
+            print("Jackett продолжает работать: им пользуется " + ", ".join(sorted(set(d.get("app", "?") for d in others))))
+            return
+        own = _jk_owner()
+        pid = own.get("pid")
+        if pid and _pid_alive(pid) and "jackett" in _pid_cmdline(pid) and not _jk_service():
+            if _IS_WIN:
+                subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], stdin=subprocess.DEVNULL,
+                               capture_output=True, timeout=15, creationflags=_no_window())
+            else:
+                try:
+                    os.kill(pid, signal.SIGTERM)
+                    for _ in range(50):
+                        time.sleep(0.2)
+                        if not _pid_alive(pid):
+                            break
+                    else:
+                        os.kill(pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            print("Jackett остановлен")
+        _jk_set_owner(None)
+
+
+def jk_status():
+    exe = jk_binary()
+    running = jk_listening()
+    try:
+        others = sorted(set(d.get("app", "?") for d in _jk_leases())) if exe else []
+    except Exception:
+        others = []
+    import platform as _pf
+    return {
+        "supported": not IS_ANDROID, "libtorrent": HAS_LIBTORRENT,
+        "installed": bool(exe), "running": running, "service": running and _jk_service(),
+        "url": jk_url() if running else None, "api_key": bool(jk_api_key()), "bundled": bool(jk_bundled()),
+        "installing": _jk_state["installing"], "error": _jk_state["error"], "enabled": jk_enabled(),
+        "shared_with": others, "platform": "{} {}".format(_pf.system(), _pf.machine()),
+        "version": _jk_manifest().get("version"),
+    }
+
+
+# ---------- поиск раздач (Torznab) ----------
+
+def tracker_reason(text):
+    """Ошибка трекера из Jackett (<error description="...">) - человеческими словами."""
+    m = re.search(r'description="([^"]*)"', text or "")
+    d = (m.group(1) if m else text or "").replace("&#xA;", "\n")
+    low = d.lower()
+    if "flaresolverr" in low or "challenge detected" in low:
+        return "сайт закрыт защитой Cloudflare - нужен FlareSolverr"
+    if "lawfilter" in low or "blocked" in low:
+        return "заблокирован провайдером"
+    if "redirected to another domain" in low:
+        return "сайт переехал - поправьте адрес трекера в Jackett"
+    if "login" in low or "credentials" in low or "unauthorized" in low:
+        return "нужен вход - проверьте логин в Jackett"
+    if "timed out" in low or "timeout" in low:
+        return "не ответил вовремя"
+    first = d.split("\n")[0]
+    return re.sub(r"^[\w.]+Exception: (Exception \([^)]*\): )?", "", first)[:120] or "ошибка"
+
+
+_jk_indexers = {"ts": 0, "items": []}
+
+
+def jk_music_indexers():
+    """Трекеры Jackett с аудио (кэш 5 минут) - спрашиваем их по отдельности."""
+    import xml.etree.ElementTree as ET
+    if time.time() - _jk_indexers["ts"] < 300 and _jk_indexers["items"]:
+        return _jk_indexers["items"]
+    r = HttpClient(timeout=20, follow_redirects=True).get(
+        jk_url() + "/api/v2.0/indexers/all/results/torznab/api",
+        params={"apikey": jk_api_key() or "", "t": "indexers", "configured": "true"})
+    r.raise_for_status()
+    out = []
+    for ix in ET.fromstring(r.content).findall("indexer"):
+        if any((c.get("id") or "").startswith("3") and len(c.get("id") or "") == 4 for c in ix.iter("category")):
+            out.append({"id": ix.get("id"), "title": ix.findtext("title") or ix.get("id")})
+    _jk_indexers.update(ts=time.time(), items=out)
+    return out
+
+
+def torznab_search(q, limit=60, indexer="all", timeout=120):
+    """Поиск в Jackett по музыкальным категориям: список раздач (одного трекера или всех)."""
+    import xml.etree.ElementTree as ET
+    key = jk_api_key()
+    if not jk_listening() or not key:
+        raise RuntimeError("Jackett не запущен")
+    ns = "{http://torznab.com/schemas/2015/feed}"
+    r = HttpClient(timeout=timeout, follow_redirects=True).get(
+        jk_url() + "/api/v2.0/indexers/{}/results/torznab/api".format(indexer),
+        params={"apikey": key, "t": "search", "q": q, "cat": TORZNAB_MUSIC_CATS})
+    if r.status_code in (400, 500):
+        raise RuntimeError(tracker_reason(r.text))
+    r.raise_for_status()
+    root = ET.fromstring(r.content)
+    out = []
+    for it in root.iter("item"):
+        attrs = {}
+        for a in it.iter(ns + "attr"):
+            attrs[a.get("name")] = a.get("value")
+        enc = it.find("enclosure")
+        link = (it.findtext("link") or "").strip()
+        magnet = attrs.get("magneturl") or (link if link.startswith("magnet:") else None)
+        turl = None
+        for u in ((enc.get("url") if enc is not None else None), link):
+            if u and u.startswith("http"):
+                turl = u
+                break
+        try:
+            size = int(it.findtext("size") or attrs.get("size") or 0)
+        except ValueError:
+            size = 0
+        try:
+            seeds = int(attrs.get("seeders") or 0)
+        except ValueError:
+            seeds = 0
+        out.append({"title": it.findtext("title") or "", "size": size, "seeders": seeds,
+                    "tracker": it.findtext("jackettindexer") or "", "magnet": magnet, "torrent_url": turl})
+    out.sort(key=lambda x: -x["seeders"])
+    return out[:limit]
+
+
+# ---------- торрент-движок ----------
+
+_tor_ses = None
+_tor_lock = threading.Lock()
+_tor = {}            # ih -> {"h": handle, "name", "files": [...], "error", "used": ts}
+_tor_dl = {}         # dl_id -> {"ih", "idx", "name", "state", "progress", "error", "user", "folder", "meta"}
+
+
+def _tor_session():
+    global _tor_ses
+    if _tor_ses is None:
+        _tor_ses = lt.session({
+            "listen_interfaces": "0.0.0.0:{0},[::]:{0}".format(TORRENT_PORT),
+            "enable_dht": True, "enable_lsd": True, "enable_upnp": True, "enable_natpmp": True,
+            "alert_mask": lt.alert.category_t.error_notification,
+            "user_agent": "insideside-music/1.0 libtorrent/" + lt.__version__,
+            "max_web_seed_connections": 8, "urlseed_max_request_bytes": 2 * 1024 * 1024,
+            "request_timeout": 10, "piece_timeout": 10,
+        })
+        for r in (("router.bittorrent.com", 6881), ("dht.transmissionbt.com", 6881)):
+            _tor_ses.add_dht_node(r)
+    return _tor_ses
+
+
+def _fetch_torrent(url):
+    """Ссылка из Jackett: .torrent или перенаправление на magnet."""
+    c = HttpClient(timeout=30, follow_redirects=False)
+    for _ in range(5):
+        r = c.get(url)
+        if r.status_code in (301, 302, 303, 307, 308):
+            loc = r.headers.get("location", "")
+            if loc.startswith("magnet:"):
+                return loc
+            url = str(r.url.join(loc))
+            continue
+        r.raise_for_status()
+        return r.content
+    raise RuntimeError("слишком много перенаправлений")
+
+
+def _tor_files(h):
+    ti = h.torrent_file()
+    fs = ti.files()
+    out = []
+    for i in range(fs.num_files()):
+        path = fs.file_path(i).replace("\\", "/")
+        ext = os.path.splitext(path)[1].lower()
+        if ext in TORRENT_AUDIO or ext == ".cue":
+            out.append({"idx": i, "path": path, "name": os.path.basename(path), "size": fs.file_size(i),
+                        "playable": ext in SUPPORTED_FORMATS and ext not in ('.aiff', '.aif', '.alac'),
+                        "image": ext in ('.ape', '.wv') or ext == ".cue"})
+    out.sort(key=lambda f: f["path"].lower())
+    return out
+
+
+def tor_open(torrent_url=None, magnet=None):
+    """Добавить раздачу (без скачивания: все файлы с приоритетом 0) и вернуть её id."""
+    if not HAS_LIBTORRENT:
+        raise RuntimeError("Нет библиотеки libtorrent")
+    src = None
+    if torrent_url:
+        try:
+            src = _fetch_torrent(torrent_url)
+        except Exception:
+            if not magnet:
+                raise
+    src = src or magnet
+    if isinstance(src, bytes):
+        atp = lt.add_torrent_params()
+        atp.ti = lt.torrent_info(lt.bdecode(src))
+    else:
+        atp = lt.parse_magnet_uri(src)
+    TORRENT_DIR.mkdir(parents=True, exist_ok=True)
+    atp.save_path = str(TORRENT_DIR)
+    if atp.ti:
+        atp.file_priorities = [0] * atp.ti.num_files()
+    with _tor_lock:
+        h = _tor_session().add_torrent(atp)
+        ih = str(h.info_hashes().get_best())
+        _tor.setdefault(ih, {"h": h, "error": None})
+        _tor[ih]["used"] = time.time()
+    return ih
+
+
+def tor_info(ih):
+    t = _tor.get(ih)
+    if not t:
+        return None
+    h = t["h"]
+    st = h.status()
+    if not st.has_metadata:
+        return {"ih": ih, "metadata": False, "peers": st.num_peers}
+    if "files" not in t:
+        t["files"] = _tor_files(h)
+        t["name"] = h.torrent_file().name()
+        if not any(h.file_priority(f["idx"]) for f in t["files"]):
+            h.prioritize_files([0] * h.torrent_file().num_files())
+    fp = h.file_progress()
+    files = []
+    for f in t["files"]:
+        d = dict(f)
+        d["done"] = fp[f["idx"]] if f["idx"] < len(fp) else 0
+        files.append(d)
+    return {"ih": ih, "metadata": True, "name": t["name"], "files": files, "peers": st.num_peers, "seeds": st.num_seeds,
+            "down": st.download_payload_rate}
+
+
+def _tor_wait(h, ti, idx, start, end, timeout=60):
+    """Дождаться кусков файла [start, end]; дальше вперёд просим ещё ~4 МБ."""
+    plen = ti.piece_length()
+    first = ti.map_file(idx, start, 1).piece
+    last = ti.map_file(idx, max(start, end), 1).piece
+    ahead = min(ti.num_pieces() - 1, last + max(2, (4 * 1024 * 1024) // plen))
+    for i, p in enumerate(range(first, ahead + 1)):
+        if not h.have_piece(p):
+            h.set_piece_deadline(p, 200 + i * 120)
+    t0 = time.time()
+    while not all(h.have_piece(p) for p in range(first, last + 1)):
+        if time.time() - t0 > timeout:
+            raise TimeoutError("нет участников с нужными кусками")
+        time.sleep(0.1)
+
+
+def tor_stream_worker(conn, ih, idx, rng, user):
+    """Прослушивание до загрузки: куски трека по мере игры. Работает в своём потоке -
+    однопоточный сервер не ждёт раздачу (сокет передан сюда из обработчика)."""
+    try:
+        t = _tor.get(ih)
+        if not t or not t["h"].status().has_metadata:
+            conn.sendall(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+            return
+        t["used"] = time.time()
+        h = t["h"]
+        ti = h.torrent_file()
+        fs = ti.files()
+        size = fs.file_size(idx)
+        path = Path(h.status().save_path) / fs.file_path(idx)
+        if h.file_priority(idx) == 0:
+            h.file_priority(idx, 1)          # trickle the rest of the track in for smooth seeking
+        start, end, partial = 0, size - 1, False
+        m = re.match(r'bytes=(\d*)-(\d*)', rng or "")
+        if m and (m.group(1) or m.group(2)):
+            partial = True
+            if m.group(1):
+                start = int(m.group(1))
+                end = min(int(m.group(2)), size - 1) if m.group(2) else size - 1
+            else:
+                start = max(0, size - int(m.group(2)))
+        if start >= size:
+            conn.sendall("HTTP/1.1 416 Range Not Satisfiable\r\nContent-Range: bytes */{}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".format(size).encode())
+            return
+        mime = AUDIO_MIME.get(os.path.splitext(fs.file_path(idx))[1].lower()) or "audio/mpeg"
+        head = ["HTTP/1.1 {}".format("206 Partial Content" if partial else "200 OK"), "Content-Type: " + mime,
+                "Content-Length: {}".format(end - start + 1), "Accept-Ranges: bytes", "Cache-Control: no-store",
+                "Connection: close"]
+        if partial:
+            head.append("Content-Range: bytes {}-{}/{}".format(start, end, size))
+        _tor_wait(h, ti, idx, start, min(end, start + 256 * 1024))   # first bytes before headers: player shows buffering
+        conn.sendall(("\r\n".join(head) + "\r\n\r\n").encode())
+        pos = start
+        while pos <= end:
+            n = min(256 * 1024, end - pos + 1)
+            _tor_wait(h, ti, idx, pos, pos + n - 1)
+            with open(str(path), "rb") as f:
+                f.seek(pos)
+                chunk = f.read(n)
+            if not chunk:
+                time.sleep(0.2)
+                continue
+            conn.sendall(chunk)
+            pos += len(chunk)
+    except Exception:
+        pass
+    finally:
+        try:
+            conn.shutdown(socket.SHUT_RDWR)
+        except Exception:
+            pass
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def _track_name_from(fp, fallback_path, release):
+    """«Исполнитель - Название» для каталога: из тегов файла, иначе из папки раздачи и имени файла."""
+    meta = {}
+    try:
+        meta = get_metadata(str(fp)) or {}
+    except Exception:
+        pass
+    title = (meta.get("title") or "").strip()
+    artist = (meta.get("artist") or "").strip()
+    if not title:
+        stem = os.path.splitext(os.path.basename(fallback_path))[0]
+        title = re.sub(r"^\s*\d{1,3}\s*[-._)]\s*", "", stem).strip() or stem
+    title = title.strip(" -\u2013>") or title      # live sets tag segues as "Bertha ->"
+    if not artist:
+        top = (release or "").split(" - ")[0].strip()
+        artist = re.sub(r"[\[(].*$", "", top).strip()
+    return artist, title
+
+
+def tor_download(ih, idx, user, folder, run_meta):
+    """Скачать один трек раздачи и встроить его в папку (как локальный импорт)."""
+    t = _tor.get(ih)
+    if not t or "files" not in t:
+        raise RuntimeError("Раздача ещё не готова")
+    f = next((x for x in t["files"] if x["idx"] == idx), None)
+    if not f or not f["playable"]:
+        raise RuntimeError("Этот файл не скачать отдельным треком")
+    dl_id = "{}:{}".format(ih[:12], idx)
+    cur = _tor_dl.get(dl_id)
+    if cur and cur["state"] in ("queued", "downloading", "importing"):
+        return dl_id
+    _tor_dl[dl_id] = {"id": dl_id, "ih": ih, "idx": idx, "name": f["name"], "release": t.get("name", ""),
+                      "state": "downloading", "progress": 0.0, "error": None, "user": user, "folder": folder,
+                      "meta": bool(run_meta), "size": f["size"], "added": time.time()}
+    t["h"].file_priority(idx, 7)
+    threading.Thread(target=_tor_dl_worker, args=(dl_id,), daemon=True).start()
+    return dl_id
+
+
+def _tor_dl_worker(dl_id):
+    d = _tor_dl[dl_id]
+    t = _tor.get(d["ih"])
+    try:
+        h = t["h"]
+        ti = h.torrent_file()
+        fs = ti.files()
+        idx = d["idx"]
+        size = fs.file_size(idx)
+        last_change, last_bytes = time.time(), -1
+        while True:
+            if d["state"] == "cancelled":
+                h.file_priority(idx, 0)
+                return
+            done = h.file_progress()[idx]
+            d["progress"] = (done / float(size)) if size else 1.0
+            if done >= size:
+                break
+            if done != last_bytes:
+                last_bytes, last_change = done, time.time()
+            elif time.time() - last_change > 600:
+                raise RuntimeError("10 минут нет ни одного участника раздачи с этим треком")
+            time.sleep(0.5)
+        h.flush_cache()
+        time.sleep(0.5)
+        src = Path(h.status().save_path) / fs.file_path(idx)
+        artist, title = _track_name_from(src, fs.file_path(idx), t.get("name"))
+        # copy under a readable name first: the catalog file is "NN. Artist - Title.ext"
+        staging = TORRENT_DIR / "_import"
+        staging.mkdir(parents=True, exist_ok=True)
+        named = staging / ("{} - {}{}".format(vk_safe_filename(artist), vk_safe_filename(title), src.suffix) if artist
+                           else vk_safe_filename(title) + src.suffix)
+        shutil.copy2(str(src), str(named))
+        d["state"] = "importing"
+        # the catalog import shares vk_state with VK downloads - wait for a free slot
+        while get_vk_state(d["user"]).get("running"):
+            time.sleep(1)
+        local_import_worker([str(named)], d["folder"], "append", None, d["meta"], d["user"])
+        try:
+            named.unlink()
+        except OSError:
+            pass
+        d["state"] = "done"
+        d["progress"] = 1.0
+        h.file_priority(idx, 0)
+        _tor_gc(d["ih"])
+    except Exception as e:
+        d["state"] = "error"
+        d["error"] = str(e)[:200]
+
+
+def tor_cancel(dl_id):
+    d = _tor_dl.get(dl_id)
+    if d and d["state"] in ("queued", "downloading"):
+        d["state"] = "cancelled"
+
+
+def _tor_gc(ih, idle=900):
+    """Раздача больше не нужна (ничего не качается и не слушается) - убираем вместе с файлами."""
+    t = _tor.get(ih)
+    if not t:
+        return
+    busy = any(d["ih"] == ih and d["state"] in ("queued", "downloading", "importing") for d in _tor_dl.values())
+    if busy or time.time() - t.get("used", 0) < idle:
+        return
+    with _tor_lock:
+        try:
+            _tor_session().remove_torrent(t["h"], lt.session.delete_files)
+        except Exception:
+            pass
+        _tor.pop(ih, None)
+
+
+def _tor_janitor():
+    while True:
+        time.sleep(300)
+        for ih in list(_tor):
+            _tor_gc(ih)
+
+
+def tor_downloads(user):
+    return sorted([{k: v for k, v in d.items() if k not in ("user", "folder")} for d in _tor_dl.values() if d["user"] == user],
+                  key=lambda d: -d["added"])
+
+
+_tor_jobs = {}       # job_id -> {"user", "running", "result", "error", "ts"}
+
+
+def tor_job(user, fn, *args):
+    """Долгая операция (поиск в Jackett - до минуты, открытие раздачи) в фоне: сервер однопоточный,
+    ждать её в обработчике значило бы остановить плеер. Клиент опрашивает /api/torrents/job."""
+    job_id = secrets.token_hex(6)
+    job = {"user": user, "running": True, "result": None, "error": None, "ts": time.time()}
+    _tor_jobs[job_id] = job
+
+    def run():
+        try:
+            job["result"] = fn(*args)
+        except Exception as e:
+            job["error"] = str(e)[:200]
+        finally:
+            job["running"] = False
+    threading.Thread(target=run, daemon=True).start()
+    for k in [k for k, j in _tor_jobs.items() if time.time() - j["ts"] > 3600]:
+        _tor_jobs.pop(k, None)
+    return job_id
+
+
+def tor_search_job(user, q):
+    """Поиск по мере ответа: каждый трекер Jackett отдельно, по 8 сразу, у каждого свой таймаут -
+    медленный больше не держит всех. Результаты копятся в задаче, клиент дорисовывает их при опросе."""
+    from concurrent.futures import ThreadPoolExecutor
+    job_id = secrets.token_hex(6)
+    job = {"user": user, "running": True, "result": [], "error": None, "ts": time.time(), "trackers": []}
+    _tor_jobs[job_id] = job
+    lock = threading.Lock()
+
+    def one(rec, indexer):
+        t0 = time.time()
+        try:
+            got = torznab_search(q, 100, indexer, 30)
+            with lock:
+                seen = set((x.get("magnet") or x.get("torrent_url") or x["title"]) for x in job["result"])
+                for it in got:
+                    k = it.get("magnet") or it.get("torrent_url") or it["title"]
+                    if k not in seen:
+                        seen.add(k)
+                        it["tracker"] = it.get("tracker") or rec["name"]
+                        job["result"].append(it)
+                job["result"].sort(key=lambda x: -x["seeders"])
+            rec.update(state="done", count=len(got))
+        except Exception as e:
+            rec.update(state="error", error=str(e)[:150])
+        rec["ms"] = int((time.time() - t0) * 1000)
+
+    def run():
+        try:
+            try:
+                idx = jk_music_indexers()
+            except Exception:
+                idx = []
+            targets = [(ix["id"], ix["title"]) for ix in idx] or [("all", "Jackett")]
+            job["trackers"] = [{"name": t, "state": "running", "count": 0, "error": None, "ms": None} for _, t in targets]
+            with ThreadPoolExecutor(max_workers=8) as ex:
+                for (iid, _), rec in zip(targets, job["trackers"]):
+                    ex.submit(one, rec, iid)
+        finally:
+            job["running"] = False
+    threading.Thread(target=run, daemon=True).start()
+    return job_id
+
+
+def torrents_start():
+    """При запуске сервера: Jackett (аренда) и уборка старых временных раздач."""
+    if IS_ANDROID:
+        return
+    threading.Thread(target=jk_start, daemon=True).start()
+    if HAS_LIBTORRENT:
+        threading.Thread(target=_tor_janitor, daemon=True).start()
+        # leftovers of a previous run: downloads are not resumed, the files are only temporary
+        shutil.rmtree(str(TORRENT_DIR), ignore_errors=True)
+
+
+def torrents_stop():
+    try:
+        jk_stop()
+    except Exception:
+        pass
+
+
 class Handler(BaseHTTPRequestHandler):
     def _is_demo(self, udata):
         return udata.get("role") == "demo" if udata else False
@@ -16012,6 +17291,52 @@ class Handler(BaseHTTPRequestHandler):
             for uname, ud in all_users.items():
                 user_list.append({"username": uname, "is_admin": ud.get("is_admin", False), "role": ud.get("role", "user"), "folders": ud.get("folders", [])})
             self._respond_json({"users": user_list})
+
+        elif path.startswith("/api/torrent/stream/"):
+            # Прослушивание трека из раздачи: отдаёт отдельный поток - ждать куски
+            # здесь значило бы остановить весь однопоточный сервер.
+            if not HAS_LIBTORRENT:
+                self._respond(404, "text/plain", b"Not found")
+                return
+            parts = path[len("/api/torrent/stream/"):].split("/")
+            try:
+                ih, idx = parts[0], int(parts[1])
+            except (IndexError, ValueError):
+                self._respond(400, "text/plain", b"Bad request")
+                return
+            if ih not in _tor:
+                self._respond(404, "text/plain", b"Not found")
+                return
+            self.close_connection = True
+            try:
+                self.wfile.flush()
+            except Exception:
+                pass
+            if not hasattr(self.server, "_detached"):
+                self.server._detached = set()
+            self.server._detached.add(self.request)
+            threading.Thread(target=tor_stream_worker, args=(self.request, ih, idx, self.headers.get("Range"), user),
+                             daemon=True).start()
+            return
+
+        elif path == "/api/jackett/status":
+            self._respond_json(jk_status())
+
+        elif path == "/api/torrents/info":
+            ih = (parse_qs(parsed.query).get("ih") or [""])[0]
+            info = tor_info(ih) if HAS_LIBTORRENT else None
+            self._respond_json(info or {"error": "Раздача не найдена"})
+
+        elif path == "/api/torrents/job":
+            j = _tor_jobs.get((parse_qs(parsed.query).get("id") or [""])[0])
+            if not j or j["user"] != user:
+                self._respond_json({"error": "Задача не найдена"})
+            else:
+                self._respond_json({"running": j["running"], "result": j["result"], "error": j["error"],
+                                    "trackers": j.get("trackers")})
+
+        elif path == "/api/torrents/downloads":
+            self._respond_json({"items": tor_downloads(user) if HAS_LIBTORRENT else []})
 
         elif path.startswith("/api/stream/"):
             filename = unquote(path[len("/api/stream/"):])
@@ -16720,6 +18045,63 @@ class Handler(BaseHTTPRequestHandler):
             t = threading.Thread(target=dl_tracks, daemon=True)
             t.start()
             self._respond_json({"ok": True})
+
+        elif path == "/api/torrents/search":
+            if self._deny_demo(udata): return
+            q = (data.get("q") or "").strip()
+            if not q:
+                self._respond_json({"ok": False, "error": "Пустой запрос"})
+                return
+            if not jk_listening():
+                self._respond_json({"ok": False, "error": "Jackett не запущен"})
+                return
+            self._respond_json({"ok": True, "job": tor_search_job(user, q)})
+
+        elif path == "/api/torrents/open":
+            if self._deny_demo(udata): return
+            if not HAS_LIBTORRENT:
+                self._respond_json({"ok": False, "error": "Нет библиотеки libtorrent"})
+                return
+            self._respond_json({"ok": True, "job": tor_job(user, tor_open, data.get("torrent_url"), data.get("magnet"))})
+
+        elif path == "/api/torrents/download":
+            if self._deny_demo(udata): return
+            folder = data.get("folder") or _user_music_dirs.get(user, "") or get_user_last_folder(user)
+            if not folder or folder not in get_user_folders(user):
+                self._respond_json({"ok": False, "error": "Откройте папку, куда добавить трек"})
+                return
+            try:
+                dl_id = tor_download(data.get("ih", ""), int(data.get("idx", -1)), user, folder, data.get("run_meta", True))
+                self._respond_json({"ok": True, "id": dl_id})
+            except Exception as e:
+                self._respond_json({"ok": False, "error": str(e)[:200]})
+
+        elif path == "/api/torrents/cancel":
+            tor_cancel(data.get("id", ""))
+            self._respond_json({"ok": True})
+
+        elif path == "/api/jackett/install":
+            if not udata.get("is_admin"):
+                self._respond_json({"ok": False, "error": "Только для администратора"})
+                return
+            try:
+                jk_install()
+                s = load_settings(); s["jackett_autostart"] = True; save_settings(s)
+                jk_start()
+                self._respond_json({"ok": True, "status": jk_status()})
+            except Exception as e:
+                self._respond_json({"ok": False, "error": "Не удалось установить Jackett: " + str(e)[:150]})
+
+        elif path == "/api/jackett/autostart":
+            if not udata.get("is_admin"):
+                self._respond_json({"ok": False, "error": "Только для администратора"})
+                return
+            s = load_settings(); s["jackett_autostart"] = bool(data.get("on")); save_settings(s)
+            if s["jackett_autostart"]:
+                jk_start()
+            else:
+                jk_stop()
+            self._respond_json({"ok": True, "status": jk_status()})
 
         elif path == "/api/track/delete":
             if self._deny_demo(udata): return
@@ -18164,6 +19546,15 @@ def active_cert_pair():
 class ReusableHTTPServer(HTTPServer):
     allow_reuse_address = True
 
+    def shutdown_request(self, request):
+        # The torrent stream hands its socket to a worker thread (the server is
+        # single-threaded and must not wait for pieces); that thread closes it.
+        d = getattr(self, "_detached", None)
+        if d is not None and request in d:
+            d.discard(request)
+            return
+        HTTPServer.shutdown_request(self, request)
+
     def server_bind(self):
         self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
@@ -18418,6 +19809,7 @@ def _shutdown_cleanup():
         stop_tunnel()  # stops cloudflared + clears saved WAN config
     except Exception:
         pass
+    torrents_stop()   # Jackett stops only if no other insideside app still uses it
 
 
 def _on_exit_signal(signum, frame):
@@ -18474,6 +19866,8 @@ def main():
 
     # Always-on local entry point (its own port + plain HTTP — never disrupted by LAN).
     _start_local_server()
+    # Jackett lease + temp torrent cleanup (music search over trackers)
+    torrents_start()
     # LAN/WAN server (0.0.0.0:SERVER_PORT, HTTPS) only when public.
     if IS_PUBLIC:
         _start_server("0.0.0.0")

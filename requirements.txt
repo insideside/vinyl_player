@@ -4,3 +4,4 @@ vkpymusic
 musicbrainzngs
 Pillow
 cryptography
+libtorrent

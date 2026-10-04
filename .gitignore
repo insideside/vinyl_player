@@ -34,3 +34,8 @@ logs/
 
 # python virtualenv (created by macos-widget/setup.command)
 .venv/
+
+# Jackett installers: ~50 MB each, fetched by scripts/fetch_jackett.py (manifest.json is tracked)
+vendor/jackett/*.tar.gz
+vendor/jackett/*.zip
+vendor/jackett/*.part

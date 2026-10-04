@@ -3,7 +3,10 @@ set -e
 echo "Building Vinyl Player for macOS..."
 
 # Install Python dependencies
-pip3 install pyinstaller httpx mutagen vkpymusic musicbrainzngs Pillow 2>/dev/null
+pip3 install pyinstaller httpx mutagen vkpymusic musicbrainzngs Pillow libtorrent 2>/dev/null
+
+# Jackett installer for this platform (search over trackers, installed from the app on demand)
+JK_ARCH=$(python3 scripts/fetch_jackett.py --current)
 
 # Download cloudflared if not present
 ARCH=$(uname -m)
@@ -51,6 +54,9 @@ python3 -m PyInstaller \
     --collect-all musicbrainzngs \
     --add-data "build_assets/VinylPlayer.icns:." \
     --add-binary "${CF_BIN}:." \
+    --collect-all libtorrent \
+    --add-data "${JK_ARCH}:vendor/jackett" \
+    --add-data "vendor/jackett/manifest.json:vendor/jackett" \
     vinyl_player.py
 
 echo ""

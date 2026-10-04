@@ -1,7 +1,10 @@
 @echo off
 echo Building Vinyl Player for Windows...
 
-pip install pyinstaller httpx mutagen vkpymusic musicbrainzngs Pillow 2>nul
+pip install pyinstaller httpx mutagen vkpymusic musicbrainzngs Pillow libtorrent 2>nul
+
+rem Jackett installer for this platform (search over trackers, installed from the app on demand)
+for /f "delims=" %%i in ('python scripts\fetch_jackett.py --current') do set JK_ARCH=%%i
 
 :: Download cloudflared if not present
 if not exist "build_assets\cloudflared.exe" (
@@ -41,6 +44,9 @@ python -m PyInstaller ^
     --collect-all vkpymusic ^
     --collect-all musicbrainzngs ^
     --add-binary "build_assets\cloudflared.exe;." ^
+    --collect-all libtorrent ^
+    --add-data "%JK_ARCH%;vendor/jackett" ^
+    --add-data "vendor\jackett\manifest.json;vendor/jackett" ^
     vinyl_player.py
 
 echo.
